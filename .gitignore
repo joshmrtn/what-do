@@ -1,0 +1,15 @@
+.env
+config/config.yaml
+database/
+logs/
+data/likes.txt
+data/dislikes.txt
+data/blocklist.json
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+.venv/
+venv/

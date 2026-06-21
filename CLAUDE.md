@@ -114,6 +114,32 @@ Rules:
 
 ---
 
+## Docstrings
+
+Use Google style. Keep them terse — one summary line is enough for simple functions.
+Only expand with `Args:` / `Returns:` / `Raises:` sections when the signature alone
+isn't self-explanatory.
+
+```python
+def load_config(config_path: Path | None = None) -> AppConfig:
+    """Load and validate application config from YAML and environment.
+
+    Args:
+        config_path: Path to config.yaml. Defaults to config/config.yaml.
+
+    Returns:
+        Validated AppConfig instance.
+
+    Raises:
+        ConfigError: If required config fields are missing.
+    """
+```
+
+Every public function, method, and class gets a docstring. Private helpers (`_foo`)
+only if the logic is non-obvious.
+
+---
+
 ## Commit conventions
 
 Use conventional commits with atomic scope. Subject line ≤ 50 characters.

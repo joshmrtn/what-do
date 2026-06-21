@@ -1,0 +1,7 @@
+[general]
+sports bars
+trivia nights
+cover bands
+
+[restaurants]
+fast food

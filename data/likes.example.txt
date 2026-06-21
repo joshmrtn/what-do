@@ -1,0 +1,15 @@
+[general]
+live music
+karaoke
+board games
+comedy shows
+art exhibitions
+
+[movies]
+independent cinema
+horror films
+documentary
+
+[restaurants]
+italian cuisine
+sushi
