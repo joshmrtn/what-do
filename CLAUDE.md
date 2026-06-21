@@ -220,7 +220,7 @@ OLLAMA_HOST=http://localhost:11434
 | 1 | Config & database foundation | ✅ complete |
 | 2 | Venue discovery | ✅ complete |
 | 3 | Event ingestion | ✅ complete |
-| 4 | Normalization & deduplication | ⬜ not started |
+| 4 | Normalization & deduplication | ✅ complete |
 | 5 | Environmental enrichment | ⬜ not started |
 | 6 | LLM extraction pipeline | ⬜ not started |
 | 7 | Semantic matching engine | ⬜ not started |

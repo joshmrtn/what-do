@@ -143,3 +143,34 @@ def test_lookback_days_reads_from_config(tmp_path):
     data["scraping"] = {"lookback_days": 14}
     cfg = load_config(config_path=_write_config(tmp_path, data))
     assert cfg.scraping.lookback_days == 14
+
+
+# --- deduplication config ---
+
+def test_deduplication_defaults_when_section_absent(tmp_path):
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.deduplication.fuzzy_title_threshold == 0.85
+    assert cfg.deduplication.time_window_hours == 2.0
+    assert cfg.deduplication.semantic_threshold == 0.92
+
+
+def test_deduplication_reads_from_config(tmp_path):
+    data = _valid_location_data()
+    data["deduplication"] = {
+        "fuzzy_title_threshold": 0.90,
+        "time_window_hours": 4.0,
+        "semantic_threshold": 0.95,
+    }
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    assert cfg.deduplication.fuzzy_title_threshold == 0.90
+    assert cfg.deduplication.time_window_hours == 4.0
+    assert cfg.deduplication.semantic_threshold == 0.95
+
+
+def test_deduplication_partial_overrides_keep_defaults(tmp_path):
+    data = _valid_location_data()
+    data["deduplication"] = {"fuzzy_title_threshold": 0.80}
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    assert cfg.deduplication.fuzzy_title_threshold == 0.80
+    assert cfg.deduplication.time_window_hours == 2.0
+    assert cfg.deduplication.semantic_threshold == 0.92

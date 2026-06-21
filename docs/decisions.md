@@ -195,6 +195,108 @@ aggressively at ingestion risks silently losing events that normalization could 
 
 ---
 
+## Malformed record policy at normalization time
+
+**Decision:** At normalization, discard a record if both `title` AND `start_time` are absent.
+Records missing only one are retained and flagged in `metadata` (`missing_title: true` or
+`missing_start_time: true`). Discards are logged with the candidate's source handle and reason.
+
+**Rationale:** Normalization is the last point before canonical `Event` objects enter the
+pipeline. A record with neither a title nor a time is unrecoverable — no enrichment or LLM
+pass can manufacture those. A record with only one missing can still be surfaced to the user
+with partial information. This is stricter than ingestion-time policy (see above) by design.
+
+---
+
+## `source_event_candidates` stores IDs, not full objects
+
+**Decision:** `Event.source_event_candidates` is `list[str]` — a list of `EventCandidate.id`
+values. The full `EventCandidate` data is not embedded in the `Event`.
+
+**Rationale:** Full candidates are already persisted in the `event_candidates` table. Carrying
+them inside `Event` would duplicate data and bloat in-memory representations during dedup and
+enrichment. Attribution is preserved via IDs; any downstream code that needs the original
+candidate data can look it up by ID.
+
+---
+
+## Dedup Pass 1: None-field symmetry rule
+
+**Decision:** When comparing two candidates for duplication, each criterion (title, venue,
+start_time) follows a symmetric None rule:
+
+- **Both values None** → criterion **passes** (nothing to distinguish them on this axis; the
+  other criteria still gate the final decision).
+- **Exactly one value None** → criterion **fails** (asymmetric data means we can't confirm
+  they're the same event).
+- **Both values present** → normal comparison (fuzzy ratio ≥ threshold for title; exact
+  canonical match for venue; abs(Δ) ≤ window for start_time).
+
+**Rationale:** Two events with identical venue and overlapping times but no titles are more
+likely the same event than not. Treating both-None as a mismatch would silently prevent dedup
+for any pair of incomplete records. The other criteria still act as guards, so the risk of
+false-positive merges is low. The one-sided-None case is safer to reject — we have no way
+to compare a known title against an absent one.
+
+---
+
+## Dedup Pass 1: venue matching is exact on canonical form
+
+**Decision:** The venue criterion in dedup uses exact string equality on the canonicalized
+venue name, not a fuzzy match.
+
+**Rationale:** Title already carries the fuzzy comparison; adding fuzziness to venue too
+increases false-positive merge risk. Canonicalization (see below) handles the common surface
+variations (casing, article position) before the comparison, so exact equality is sufficient
+in practice. If the same physical venue appears under genuinely different spellings from two
+sources, the title + time criteria alone should still be enough signal.
+
+---
+
+## Venue name canonicalization
+
+**Decision:** Canonical venue name = title-case with leading English article ("The", "A", "An")
+moved to the front. Implementation:
+1. Strip and collapse whitespace.
+2. If name ends with `, The` / `, A` / `, An` (case-insensitive) → move article to front.
+3. Title-case the result.
+
+So `"vault, the"` → `"The Vault"`, `"VAULT, THE"` → `"The Vault"`.
+
+**Rationale:** Social media sources and cinema APIs write venue names inconsistently. This
+normalization is deterministic, reversible, and covers the two most common variants (prefix
+article vs suffix article). We apply it before dedup so "The Vault" and "vault, the" from
+two different sources merge correctly.
+
+---
+
+## Naive datetime treatment at normalization
+
+**Decision:** If a datetime from an `EventCandidate` is timezone-naive, assume it is already
+in the local timezone (derived from config lat/lng). Attach the config timezone; do not
+convert.
+
+**Rationale:** Scraped event times are almost always expressed in local time — a venue
+posting "Saturday 8pm" means local 8pm. Treating naive datetimes as UTC would shift times
+by several hours for US timezones. The only times we'd want UTC treatment are from standardized
+APIs that explicitly return UTC, but those would already be timezone-aware.
+
+---
+
+## NormalizationEngine and DeduplicationEngine are pure (no I/O)
+
+**Decision:** `NormalizationEngine` and `DeduplicationEngine` are pure classes — no DB access,
+no logging, no filesystem. `NormalizationService` orchestrates them and owns the I/O
+(logging discards, persisting events). Same separation used in Phase 3 (ingestion adapters
+are pure; `IngestionService` owns I/O).
+
+**Rationale:** Pure engines are testable in a single function call with no fixtures.
+The service layer is tested with a real SQLite tmp file, matching the existing pattern.
+Mixing I/O into the engines would make unit tests require DB setup for every normalization
+edge case.
+
+---
+
 ## Known gap: discovery_context not populated by HandleExtractor
 
 **Gap identified:** Phase 3 built `HandleExtractor` and `DisambiguationStep` but did not wire

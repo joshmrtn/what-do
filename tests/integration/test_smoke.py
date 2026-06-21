@@ -214,3 +214,93 @@ def test_phase3_ingestion_smoke(tmp_path: Path) -> None:
     assert result2.persisted == 1
     failing.fetch.assert_called_once()
     fallback.fetch.assert_called_once()
+
+
+def test_phase4_normalization_smoke(tmp_path: Path) -> None:
+    """2 identical candidates + 1 unique + 1 malformed → 2 events, 1 discard, merged attribution."""
+    import io
+    import uuid
+    from datetime import datetime, timezone
+
+    from src.config import AppConfig, DeduplicationConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
+    from src.models.event_candidate import EventCandidate
+    from src.normalization.service import NormalizationService
+    from src.storage.db import init_db
+    from src.utils.logging import get_logger
+
+    now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    event_time = datetime(2025, 6, 15, 20, 0, 0, tzinfo=timezone.utc)
+
+    dup_a = EventCandidate(
+        id="dup-a",
+        source="@source_one",
+        source_type="apify",
+        discovered_at=now,
+        title="Jazz Night",
+        venue="The Vault",
+        start_time=event_time,
+    )
+    dup_b = EventCandidate(
+        id="dup-b",
+        source="@source_two",
+        source_type="apify",
+        discovered_at=now,
+        title="Jazz Night",
+        venue="The Vault",
+        start_time=event_time,
+    )
+    unique = EventCandidate(
+        id="unique-1",
+        source="@source_one",
+        source_type="apify",
+        discovered_at=now,
+        title="Trivia Tuesday",
+        venue="The Anchor",
+        start_time=event_time,
+    )
+    malformed = EventCandidate(
+        id="bad-1",
+        source="@source_one",
+        source_type="apify",
+        discovered_at=now,
+    )
+
+    db_path = tmp_path / "smoke4.db"
+    init_db(db_path)
+
+    cfg = AppConfig(
+        location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
+        scraping=ScrapingConfig(),
+        venue_discovery=VenueDiscoveryConfig(),
+        deduplication=DeduplicationConfig(),
+    )
+
+    log_stream = io.StringIO()
+    svc = NormalizationService(
+        config=cfg,
+        db_path=db_path,
+        logger=get_logger("smoke4", stream=log_stream),
+    )
+    result = svc.run([dup_a, dup_b, unique, malformed], get_now=lambda: now)
+
+    assert result.persisted == 2, f"expected 2 persisted, got {result.persisted}"
+    assert result.discarded == 1, f"expected 1 discarded, got {result.discarded}"
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT title, source_event_candidates FROM events ORDER BY title").fetchall()
+    conn.close()
+
+    assert len(rows) == 2
+    titles = {r[0] for r in rows}
+    assert "Jazz Night" in titles
+    assert "Trivia Tuesday" in titles
+
+    jazz_row = next(r for r in rows if r[0] == "Jazz Night")
+    attribution = json.loads(jazz_row[1])
+    assert set(attribution) == {"dup-a", "dup-b"}, (
+        f"merged event should attribute both sources, got {attribution}"
+    )
+
+    log_stream.seek(0)
+    log_lines = log_stream.read()
+    assert "discard" in log_lines.lower() or "missing" in log_lines.lower()

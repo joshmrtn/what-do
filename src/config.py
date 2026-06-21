@@ -43,11 +43,19 @@ class VenueDiscoveryConfig:
 
 
 @dataclass
+class DeduplicationConfig:
+    fuzzy_title_threshold: float = 0.85
+    time_window_hours: float = 2.0
+    semantic_threshold: float = 0.92
+
+
+@dataclass
 class AppConfig:
     location: LocationConfig
     scraping: ScrapingConfig
     venue_discovery: VenueDiscoveryConfig
-    ollama_host: str
+    deduplication: DeduplicationConfig = field(default_factory=DeduplicationConfig)
+    ollama_host: str = "http://localhost:11434"
 
 
 def load_config(
@@ -132,9 +140,17 @@ def load_config(
         ),
     )
 
+    dedup_data = data.get("deduplication", {})
+    deduplication = DeduplicationConfig(
+        fuzzy_title_threshold=float(dedup_data.get("fuzzy_title_threshold", 0.85)),
+        time_window_hours=float(dedup_data.get("time_window_hours", 2.0)),
+        semantic_threshold=float(dedup_data.get("semantic_threshold", 0.92)),
+    )
+
     return AppConfig(
         location=location,
         scraping=scraping,
         venue_discovery=venue_discovery,
+        deduplication=deduplication,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
     )
