@@ -30,9 +30,23 @@ class ScrapingConfig:
 
 
 @dataclass
+class VenueDiscoveryConfig:
+    categories: list[str] = field(
+        default_factory=lambda: [
+            "cafe", "theater", "music_venue", "bar",
+            "restaurant", "museum", "park",
+        ]
+    )
+    name_match_threshold: float = 0.92
+    address_match_threshold: float = 0.85
+    blocklist_name_match_threshold: float = 0.80
+
+
+@dataclass
 class AppConfig:
     location: LocationConfig
     scraping: ScrapingConfig
+    venue_discovery: VenueDiscoveryConfig
     ollama_host: str
 
 
@@ -105,8 +119,22 @@ def load_config(
         ),
     )
 
+    vd_data = data.get("venue_discovery", {})
+    venue_discovery = VenueDiscoveryConfig(
+        categories=vd_data.get(
+            "categories",
+            ["cafe", "theater", "music_venue", "bar", "restaurant", "museum", "park"],
+        ),
+        name_match_threshold=float(vd_data.get("name_match_threshold", 0.92)),
+        address_match_threshold=float(vd_data.get("address_match_threshold", 0.85)),
+        blocklist_name_match_threshold=float(
+            vd_data.get("blocklist_name_match_threshold", 0.80)
+        ),
+    )
+
     return AppConfig(
         location=location,
         scraping=scraping,
+        venue_discovery=venue_discovery,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
     )

@@ -4,6 +4,12 @@ location:
   postal_code: "00000"
   search_radius_miles: 10
 
+venue_discovery:
+  categories: [cafe, theater, music_venue, bar, restaurant, museum, park]
+  name_match_threshold: 0.92
+  address_match_threshold: 0.85
+  blocklist_name_match_threshold: 0.80
+
 scraping:
   lookback_days: 30
   max_discovery_depth: 2

@@ -212,13 +212,13 @@ OLLAMA_HOST=http://localhost:11434
 
 ---
 
-## Implementation phases (current status: not started)
+## Implementation phases
 
 | Phase | Name | Status |
 |---|---|---|
-| 0 | Project skeleton | ⬜ not started |
-| 1 | Config & database foundation | ⬜ not started |
-| 2 | Venue discovery | ⬜ not started |
+| 0 | Project skeleton | ✅ complete |
+| 1 | Config & database foundation | ✅ complete |
+| 2 | Venue discovery | ✅ complete |
 | 3 | Event ingestion | ⬜ not started |
 | 4 | Normalization & deduplication | ⬜ not started |
 | 5 | Environmental enrichment | ⬜ not started |
