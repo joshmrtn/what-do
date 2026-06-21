@@ -85,6 +85,35 @@ Tier thresholds, summary_weight, and match_multipliers live in `config.yaml`, no
    test passes. See `docs/implementation-plan.md` for smoke test per phase.
 5. **No hardcoded geography, credentials, or magic numbers.** Everything configurable.
 
+## Test structure
+
+Tests live in `tests/` and mirror the `src/` package structure.
+
+```
+tests/
+  unit/             ← pure logic, no I/O, no network
+    test_config.py
+    utils/
+      test_vectors.py
+    ingestion/
+      test_adapters.py
+    ...
+  integration/      ← cross-module, real SQLite, real Ollama; no external network
+    test_smoke.py
+  e2e/              ← full CLI invocations against a populated DB
+    test_cli.py
+```
+
+Rules:
+- A module at `src/foo/bar.py` gets its unit tests at `tests/unit/foo/test_bar.py`
+- Smoke tests per phase live in `tests/integration/test_smoke.py` and accumulate
+- Never write tests that assert directories or files exist — a missing `__init__.py`
+  or template file will surface immediately as an import error or runtime failure
+- No phase-labelled test names (e.g. `test_phase0_*`, `describe('P0: ...')`) —
+  plan structure belongs in the plan file, not in source
+
+---
+
 ## Commit conventions
 
 Use conventional commits with atomic scope. Subject line ≤ 50 characters.
