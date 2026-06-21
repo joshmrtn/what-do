@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+from timezonefinder import TimezoneFinder
 
 
 class ConfigError(ValueError):
@@ -18,11 +19,20 @@ class LocationConfig:
     longitude: float
     postal_code: str
     search_radius_miles: float
+    timezone: str
+
+
+@dataclass
+class ScrapingConfig:
+    lookback_days: int = 30
+    max_discovery_depth: int = 2
+    candidate_promotion_threshold: int = 3
 
 
 @dataclass
 class AppConfig:
     location: LocationConfig
+    scraping: ScrapingConfig
     ollama_host: str
 
 
@@ -40,7 +50,7 @@ def load_config(
         Validated AppConfig instance.
 
     Raises:
-        ConfigError: If required config fields are missing.
+        ConfigError: If required config fields are missing or values are invalid.
     """
     if env_path is not None:
         load_dotenv(env_path)
@@ -57,18 +67,46 @@ def load_config(
         raise ConfigError("Config missing required section: 'location'")
 
     loc = data["location"]
-    for field in ("latitude", "longitude", "postal_code", "search_radius_miles"):
-        if field not in loc:
-            raise ConfigError(f"Config missing required location field: '{field}'")
+    for required in ("latitude", "longitude", "postal_code", "search_radius_miles"):
+        if required not in loc:
+            raise ConfigError(f"Config missing required location field: '{required}'")
+
+    latitude = float(loc["latitude"])
+    longitude = float(loc["longitude"])
+    search_radius = float(loc["search_radius_miles"])
+
+    if not -90 <= latitude <= 90:
+        raise ConfigError(f"Invalid latitude {latitude}: must be between -90 and 90")
+    if not -180 <= longitude <= 180:
+        raise ConfigError(f"Invalid longitude {longitude}: must be between -180 and 180")
+    if search_radius <= 0:
+        raise ConfigError(f"Invalid search_radius_miles {search_radius}: must be positive")
+
+    tz_name = TimezoneFinder().timezone_at(lat=latitude, lng=longitude)
+    if tz_name is None:
+        raise ConfigError(
+            f"Could not derive timezone from coordinates ({latitude}, {longitude})"
+        )
 
     location = LocationConfig(
-        latitude=float(loc["latitude"]),
-        longitude=float(loc["longitude"]),
+        latitude=latitude,
+        longitude=longitude,
         postal_code=str(loc["postal_code"]),
-        search_radius_miles=float(loc["search_radius_miles"]),
+        search_radius_miles=search_radius,
+        timezone=tz_name,
+    )
+
+    scraping_data = data.get("scraping", {})
+    scraping = ScrapingConfig(
+        lookback_days=int(scraping_data.get("lookback_days", 30)),
+        max_discovery_depth=int(scraping_data.get("max_discovery_depth", 2)),
+        candidate_promotion_threshold=int(
+            scraping_data.get("candidate_promotion_threshold", 3)
+        ),
     )
 
     return AppConfig(
         location=location,
+        scraping=scraping,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
     )

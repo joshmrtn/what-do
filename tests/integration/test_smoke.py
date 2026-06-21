@@ -31,3 +31,23 @@ def test_phase0_config_smoke(sample_config):
     cfg = load_config(config_path=sample_config)
     assert isinstance(cfg.location.latitude, float)
     assert cfg.location.latitude == 42.52
+
+
+def test_phase1_db_and_logger_smoke(sample_config, tmp_path):
+    """DB initialises and logger writes a structured entry without error."""
+    import io
+    import json
+
+    from src.storage.db import init_db
+    from src.utils.logging import get_logger
+
+    init_db(db_path=tmp_path / "smoke.db")
+
+    stream = io.StringIO()
+    log = get_logger("smoke", stream=stream)
+    log.info("Phase 1 smoke test", component="smoke", duration_ms=0)
+
+    stream.seek(0)
+    entry = json.loads(stream.readline())
+    assert entry["message"] == "Phase 1 smoke test"
+    assert entry["component"] == "smoke"
