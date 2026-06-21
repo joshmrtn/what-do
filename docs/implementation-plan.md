@@ -809,6 +809,8 @@ STOP otherwise.
 
 > **Addendum — LLM Pass 2:** A second LLM pass (fuzzy conflict resolution between like/dislike similarity scores) was originally scoped for this phase. It has been deferred to post-v1. In v1 the scoring layer handles conflicts deterministically. The pipeline slot is reserved. Do not implement LLM Pass 2 until v1 is complete.
 
+> **Addendum — OllamaDisambiguationProvider + discovery_context fix:** Phase 3 built `DisambiguationProvider` ABC and `DisambiguationStep` but left the real Ollama implementation as a stub. Phase 6 must implement `OllamaDisambiguationProvider` (using `gemma4:e2b`) and fix the known gap where `HandleExtractor` does not populate `discovery_context`. Specifically: (1) implement `OllamaDisambiguationProvider.classify(handle, context)`; (2) update `HandleExtractor._upsert()` to store the surrounding caption text in `discovery_context` (truncated, e.g. 300 chars); (3) update `HandleExtractor.process()` to pass the source text through. Add red tests for all three before implementing. See `docs/decisions.md` — "Known gap: discovery_context not populated by HandleExtractor".
+
 ---
 
 # 10. Phase 7 - Semantic Matching Engine

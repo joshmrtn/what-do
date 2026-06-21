@@ -192,3 +192,23 @@ both absent).
 **Rationale:** The ingestion layer should be permissive — partial records may still have useful
 content. Phase 4 normalization is the appropriate place for stricter triage. Discarding too
 aggressively at ingestion risks silently losing events that normalization could have recovered.
+
+---
+
+## Known gap: discovery_context not populated by HandleExtractor
+
+**Gap identified:** Phase 3 built `HandleExtractor` and `DisambiguationStep` but did not wire
+them together on the context field. `HandleExtractor` stores discovered handles in
+`candidate_entities` but does not populate the `discovery_context` column (the surrounding post
+caption that mentioned the handle). `DisambiguationStep` reads `discovery_context` and passes it
+to the provider — which will always receive an empty string until this is fixed.
+
+**Impact:** Tests pass because `DisambiguationProvider` is mocked and ignores context. The real
+`OllamaDisambiguationProvider` (not yet implemented) will receive no context, making it a blind
+binary classifier with degraded accuracy.
+
+**Fix:** In Phase 6, when `OllamaDisambiguationProvider` is implemented:
+1. Update `HandleExtractor._upsert()` to accept and store the surrounding text snippet as
+   `discovery_context` (truncated to a reasonable length, e.g. 300 chars).
+2. Update `HandleExtractor.process()` to pass the source `text` through to `_upsert`.
+3. Add a test that `discovery_context` is populated after extraction.
