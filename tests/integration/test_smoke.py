@@ -125,3 +125,92 @@ def test_phase2_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
     assert "The Vault Lounge" in venue_names, "provider venue should be persisted"
     assert "@cinemasalem" in handles, "seed handle should be in candidate_entities"
     assert len(venue_names) == 2
+
+
+def test_phase3_ingestion_smoke(tmp_path: Path) -> None:
+    """3 valid events + 1 malformed; failover path works when primary adapter raises."""
+    import io
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+
+    import yaml
+
+    from src.config import AppConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
+    from src.ingestion.ingestion_service import IngestionService
+    from src.ingestion.source import IngestionSource
+    from src.models.event_candidate import EventCandidate
+    from src.storage.db import init_db
+    from src.utils.logging import get_logger
+
+    now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now - timedelta(days=5)
+
+    def _ec(title, description="desc", days_ago=5):
+        return EventCandidate(
+            id=str(uuid.uuid4()),
+            source="@smoke_seed",
+            source_type="apify",
+            title=title,
+            description=description,
+            raw_published_at=now - timedelta(days=days_ago),
+            discovered_at=now,
+        )
+
+    malformed = EventCandidate(
+        id=str(uuid.uuid4()),
+        source="@smoke_seed",
+        source_type="apify",
+        discovered_at=now,
+    )
+
+    good_source = MagicMock(spec=IngestionSource)
+    good_source.fetch.return_value = [_ec("Event A"), _ec("Event B"), _ec("Event C"), malformed]
+
+    seeds_path = tmp_path / "seeds.yaml"
+    seeds_path.write_text(yaml.dump({"handles": ["@smoke_seed"], "venues": []}))
+
+    db_path = tmp_path / "smoke3.db"
+    init_db(db_path)
+
+    cfg = AppConfig(
+        location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
+        scraping=ScrapingConfig(lookback_days=30),
+        venue_discovery=VenueDiscoveryConfig(),
+        ollama_host="http://localhost:11434",
+    )
+
+    svc = IngestionService(
+        config=cfg,
+        db_path=db_path,
+        seeds_path=seeds_path,
+        social_sources=[good_source],
+        movie_sources=[],
+        logger=get_logger("smoke3", stream=io.StringIO()),
+    )
+    result = svc.run(get_now=lambda: now)
+
+    assert result.persisted == 3, f"expected 3 persisted, got {result.persisted}"
+    assert result.discarded == 1, f"expected 1 discarded, got {result.discarded}"
+
+    # Failover: primary fails, secondary succeeds
+    failing = MagicMock(spec=IngestionSource)
+    failing.fetch.side_effect = RuntimeError("provider down")
+    fallback = MagicMock(spec=IngestionSource)
+    fallback.fetch.return_value = [_ec("Fallback Event")]
+
+    db2 = tmp_path / "smoke3b.db"
+    init_db(db2)
+    svc2 = IngestionService(
+        config=cfg,
+        db_path=db2,
+        seeds_path=seeds_path,
+        social_sources=[failing, fallback],
+        movie_sources=[],
+        logger=get_logger("smoke3b", stream=io.StringIO()),
+    )
+    result2 = svc2.run(get_now=lambda: now)
+
+    assert result2.persisted == 1
+    failing.fetch.assert_called_once()
+    fallback.fetch.assert_called_once()

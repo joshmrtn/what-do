@@ -480,37 +480,70 @@ Raw event persistence.
 
 Provider interface:
 
-- provider returns `EventCandidate` objects with all required fields: `id`, `source`, `source_type`, `url`, `image_url`, `title`, `description`, `venue`, `location`, `start_time`, `end_time`, `discovered_at`
+- provider returns `EventCandidate` objects with all required fields: `id`, `source`, `source_type`, `url`, `image_url`, `raw_published_at`, `title`, `description`, `venue`, `location`, `start_time`, `end_time`, `discovered_at`
 - provider abstraction respected: mock provider substitutable with no changes to ingestion service
+
+Failover chain:
+
+- primary source fails → secondary source attempted → events still returned
+- all sources fail → empty result returned, error logged, pipeline continues
 
 Scraping:
 
-- events within lookback window (default 30 days) → ingested
-- events outside lookback window → discarded
+- events with `raw_published_at` within lookback window (default 30 days) → ingested
+- events with `raw_published_at` outside lookback window → discarded
+- events with `raw_published_at = None` (movie schedules) → always ingested regardless of lookback
 - lookback window reads from config (not hardcoded)
-- failover chain: primary source fails → secondary source attempted → events still returned
-- all sources fail → empty result returned, error logged, pipeline continues
+- uses injected `get_now` (never calls `datetime.now()` directly)
 
 Movie adapters:
 
 - Cinema Salem adapter returns `EventCandidates` with `source_type='cinema_veezi'`
 - AMC adapter returns `EventCandidates` with `source_type='amc'`
 
+Schema:
+
+- after `init_db()`, `event_candidates` table has `raw_published_at` column
+- after `init_db()`, `candidate_entities` table has `depth` and `mention_sources` columns
+
+Seed loading:
+
+- handles from `seeds.yaml` upserted into `candidate_entities` as `active`, `depth=0`
+- seed load is idempotent (running twice produces no duplicates)
+- handle in `candidate_entities` as `probationary` that appears in seeds → promoted to `active`
+
 Recursive discovery:
 
-- `@handle` mention in post caption → added to candidate entities table
-- discovery respects configurable `max_depth` (at depth limit, no further handles queued)
+- `@handle` in post caption → added to `candidate_entities` as `probationary`, `depth = parent_depth + 1`
+- `@handle` already in `candidate_entities` → `mention_count` incremented, source added to `mention_sources` (if not already present)
+- same source mentioning same handle twice → count incremented only once (idempotent per source)
+- handle at `max_depth` → not stored; skipped and logged
+- blocklisted handle → not stored
 
-Seed management:
+Disambiguation step (3a):
 
-- `what-do add-source @newhandle` → written to `seeds.yaml`
-- running `what-do add-source @newhandle` again → no duplicate added
-- `what-do add-source` with a venue name and address → written to `seeds.yaml` venues list
+- new `probationary` handles classified as `venue` or `person` by injected `DisambiguationProvider`
+- handles classified as `person` → state set to `discarded`
+- handles classified as `venue` → remain `probationary`
+- already-classified handles (state ≠ `probationary`) → skipped (provider not called)
+- provider failure → handle stays `probationary`, failure logged, pipeline continues
+
+Promotion:
+
+- handle with `mention_count >= candidate_promotion_threshold` AND a seed source in `mention_sources` → promoted to `active`
+- handle meeting count threshold but no seed source in `mention_sources` → remains `probationary`
+- threshold read from config, not hardcoded
+
+Seed management CLI:
+
+- `what-do add-source @newhandle` → handle written to `seeds.yaml`
+- `what-do add-source @newhandle` run twice → no duplicate in `seeds.yaml`
+- `what-do add-source --venue "Name" --address "123 Main St"` → written to `seeds.yaml` venues list
 
 Error handling:
 
-- malformed record (missing required fields) → discarded
-- discard written to log with source adapter name and specific reason
+- malformed record (title, description, and start_time all absent) → discarded
+- discard written to log with source adapter name and reason
 - one malformed record does not stop ingestion of remaining records
 
 ---
@@ -521,13 +554,15 @@ Events persist successfully with all fields.
 
 Failures do not terminate execution.
 
-Lookback window enforced.
+Lookback window enforced correctly (None raw_published_at bypasses filter).
+
+Handles discovered, classified, and promoted correctly.
 
 ---
 
 ## Smoke Test
 
-Run ingestion with a mock social adapter returning 3 events and one malformed record. Confirm 3 `EventCandidates` in DB, 1 discard logged. Run with mock adapter raising an exception. Confirm pipeline completes using remaining adapters.
+Run ingestion with a mock social adapter returning 3 valid events and one malformed record (all key fields absent). Confirm 3 `EventCandidates` in DB, 1 discard logged. Run with mock adapter raising an exception. Confirm pipeline completes using remaining adapters.
 
 ---
 

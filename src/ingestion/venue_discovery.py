@@ -189,12 +189,16 @@ class VenueDiscoveryService:
                 "SELECT id FROM candidate_entities WHERE handle = ?", (handle,)
             ).fetchone()
             if existing:
+                conn.execute(
+                    "UPDATE candidate_entities SET state = 'active', depth = 0, updated_at = ? WHERE handle = ?",
+                    (now, handle),
+                )
                 continue
             conn.execute(
                 """INSERT INTO candidate_entities
-                   (id, handle, state, mention_count, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (str(uuid.uuid4()), handle, "probationary", 0, now, now),
+                   (id, handle, state, depth, mention_count, mention_sources, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), handle, "active", 0, 0, "[]", now, now),
             )
 
     # ------------------------------------------------------------------

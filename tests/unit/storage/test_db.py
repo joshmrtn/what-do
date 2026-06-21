@@ -62,3 +62,28 @@ def test_init_db_idempotent(tmp_path):
     db_path = tmp_path / "test.db"
     init_db(db_path=db_path)
     init_db(db_path=db_path)  # must not raise or duplicate tables
+
+
+def test_event_candidates_has_raw_published_at(tmp_path):
+    from src.storage.db import init_db
+
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    cursor = conn.execute("PRAGMA table_info(event_candidates)")
+    columns = {row[1] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "raw_published_at" in columns
+
+
+def test_candidate_entities_has_depth_and_mention_sources(tmp_path):
+    from src.storage.db import init_db
+
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    cursor = conn.execute("PRAGMA table_info(candidate_entities)")
+    columns = {row[1] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "depth" in columns
+    assert "mention_sources" in columns

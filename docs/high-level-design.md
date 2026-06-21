@@ -159,6 +159,15 @@ The background pipeline shall execute once per day.
 ↓
 
 3. Scrape event sources (social media adapters, movie/theater adapters)
+   → extract @handles from post captions → store as probationary in candidate_entities
+
+↓
+
+3a. Disambiguate candidate entities (gemma4:e2b)
+    → classify each new probationary handle as venue or person
+    → persons → state = discarded (removed from pipeline)
+    → venues → remain probationary
+    → evaluate promotion: handles with mention_count ≥ threshold from seed sources → active
 
 ↓
 
@@ -212,6 +221,8 @@ END
 ```
 
 > **Addendum:** Step 12 (LLM Pass 2) is deferred to post-v1. In v1, similarity scores from step 11 feed directly into deterministic scoring at step 13. The pipeline slot is preserved so LLM Pass 2 can be inserted later without restructuring the pipeline. See section 4.5 for detail.
+
+> **Addendum:** Step 3a (Disambiguate candidate entities) was added during Phase 3 design. The original HLD described handle disambiguation within the ingestion layer, but the ingestion layer must not invoke semantic models (section 4.1). Step 3a is a dedicated post-scraping stage that classifies discovered handles using gemma4:e2b and evaluates handle promotion. This keeps ingestion LLM-free while still classifying handles within the same batch run.
 
 ## 3.1.1 Per-Event vs Set Operations
 
@@ -340,17 +351,32 @@ During scraping, post content may reference additional social handles (e.g. `@lo
 
 The system shall collect discovered handles as candidate entities and evaluate them for follow-up scraping.
 
-Disambiguation approach (hybrid):
+Handle states:
 
-- The LLM shall classify each discovered handle as `venue` or `person` using the surrounding caption as context.
-- Default model for disambiguation: `gemma4:e2b` (smaller and faster — this is a simple binary classification task).
-- A newly discovered handle shall enter a `probationary` state and shall not be scraped immediately.
-- A handle shall be promoted to `active` only after appearing in posts from N distinct trusted sources (configurable threshold).
-- Handles classified as `person` shall be discarded.
+- `active` — scraped on every batch run. Seed handles start here (user-trusted). Promoted probationary handles land here.
+- `probationary` — discovered during scraping; not yet scraped. Awaiting classification and promotion.
+- `discarded` — classified as a person handle; permanently excluded.
 
-This prevents runaway discovery and limits false positives without requiring manual review of every mention.
+Disambiguation (step 3a — runs after scraping, before normalization):
 
-A configurable `max_depth` parameter shall prevent recursive discovery from exceeding a set number of hops from the original seed sources.
+- The LLM classifies each new `probationary` handle as `venue` or `person` using the surrounding caption as context.
+- Default model: `gemma4:e2b` (smaller and faster — simple binary classification task).
+- Handles classified as `person` → state set to `discarded`.
+- Handles classified as `venue` → remain `probationary`, continue toward promotion.
+- Already-classified handles (state ≠ `probationary`) are skipped.
+
+Promotion (also in step 3a, after disambiguation):
+
+- A handle is promoted to `active` when `mention_count ≥ candidate_promotion_threshold` AND at least one entry in `mention_sources` is a seed source.
+- Trusted sources (v1) = seed sources only. This prevents two low-quality discovered handles from promoting each other.
+- The promotion threshold is configurable (`scraping.candidate_promotion_threshold` in `config.yaml`).
+
+Depth tracking:
+
+- Seed handles: `depth = 0`.
+- Handles discovered in posts from depth-0 sources: `depth = 1`.
+- A configurable `max_depth` prevents recursive discovery beyond a set number of hops from seed sources.
+- Handles at `max_depth` are not stored.
 
 ---
 
@@ -727,8 +753,8 @@ Responsibilities:
 Tables:
 
 - `venues` — name, address, coordinates, category, social handles, blocklist flag, discovery source
-- `candidate_entities` — handles in probationary state, trusted-source mention count, LLM classification result, discovery context
-- `event_candidates` — raw scraped events, source, discovered_at
+- `candidate_entities` — handle, state (active/probationary/discarded), mention_count, mention_sources (JSON array of source handles), LLM classification, discovery context, depth
+- `event_candidates` — raw scraped events, source, discovered_at, raw_published_at
 - `events` — normalized, deduplicated canonical events with enrichment data attached
 - `recommendations` — event_id, score, match label, score reasons, run_date
 - `preference_embeddings_cache` — file hash per line, embedding vectors, generated_at
@@ -807,6 +833,8 @@ source_type (e.g. instagram, facebook, cinema_veezi, amc, synthetic)
 url (original post or listing URL)
 
 image_url (optional — populated when source provides an image; passed to multimodal LLM)
+
+raw_published_at (optional — timestamp of the original post; None for movie schedules; used for lookback window filtering)
 
 title
 
