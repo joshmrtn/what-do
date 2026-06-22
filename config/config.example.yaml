@@ -46,12 +46,24 @@ scheduling:
 
 data_retention_days: 365
 
+# Synthetic activities are generated when all specified conditions are met.
+# Omit time_window to allow the activity at any time of day.
+# time_window supports: "after sunset", "before sunrise", or "anchor_offset to anchor_offset"
+# Anchors: sunrise, sunset, dawn, dusk — with optional _plus_Nh or _minus_Nh suffix
 synthetic_activities:
   - name: "Evening walk"
     conditions:
-      min_temp_f: 55
+      min_temp_f: 45
       max_temp_f: 85
       weather: [clear, partly_cloudy]
-      time_window: "sunset_minus_1h to sunset_plus_2h"
+      # no time_window — valid any time
     tags: [outdoor, walking, low_key]
-    summary: "A pleasant evening walk"
+    summary: "A pleasant walk around town"
+
+  - name: "Sunset picnic"
+    conditions:
+      min_temp_f: 65
+      weather: [clear]
+      time_window: "sunset_minus_2h to sunset_plus_30min"
+    tags: [outdoor, picnic, social]
+    summary: "A picnic at sunset"

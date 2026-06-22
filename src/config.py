@@ -50,11 +50,54 @@ class DeduplicationConfig:
 
 
 @dataclass
+class WeatherConfig:
+    """Weather provider configuration."""
+
+    provider: str = "open-meteo"
+
+
+@dataclass
+class ScoringConfig:
+    """Scoring thresholds and multipliers."""
+
+    top_picks_min: float = 0.5
+    worth_considering_min: float = 0.1
+    summary_weight: float = 0.3
+    match_multiplier_yes: float = 1.5
+    match_multiplier_maybe: float = 1.0
+    match_multiplier_no: float = 0.5
+    min_tags_per_event: int = 5
+
+
+@dataclass
+class SyntheticConditions:
+    """Environmental conditions that must be satisfied to generate a synthetic activity."""
+
+    min_temp_f: float | None = None
+    max_temp_f: float | None = None
+    weather: list[str] = field(default_factory=list)
+    time_window: str | None = None
+
+
+@dataclass
+class SyntheticActivityRule:
+    """A single rule for generating a synthetic activity event."""
+
+    name: str
+    conditions: SyntheticConditions
+    tags: list[str]
+    summary: str
+
+
+@dataclass
 class AppConfig:
     location: LocationConfig
     scraping: ScrapingConfig
     venue_discovery: VenueDiscoveryConfig
     deduplication: DeduplicationConfig = field(default_factory=DeduplicationConfig)
+    weather: WeatherConfig = field(default_factory=WeatherConfig)
+    scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
 
 
@@ -147,10 +190,49 @@ def load_config(
         semantic_threshold=float(dedup_data.get("semantic_threshold", 0.92)),
     )
 
+    weather_data = data.get("weather", {})
+    weather = WeatherConfig(
+        provider=weather_data.get("provider", "open-meteo"),
+    )
+
+    scoring_data = data.get("scoring", {})
+    tiers_data = scoring_data.get("tiers", {})
+    multipliers_data = scoring_data.get("match_multipliers", {})
+    scoring = ScoringConfig(
+        top_picks_min=float(tiers_data.get("top_picks_min", 0.5)),
+        worth_considering_min=float(tiers_data.get("worth_considering_min", 0.1)),
+        summary_weight=float(scoring_data.get("summary_weight", 0.3)),
+        match_multiplier_yes=float(multipliers_data.get("yes", 1.5)),
+        match_multiplier_maybe=float(multipliers_data.get("maybe", 1.0)),
+        match_multiplier_no=float(multipliers_data.get("no", 0.5)),
+        min_tags_per_event=int(scoring_data.get("min_tags_per_event", 5)),
+    )
+
+    synthetic_activities: list[SyntheticActivityRule] = []
+    for rule_data in data.get("synthetic_activities", []):
+        cond_data = rule_data.get("conditions", {})
+        conditions = SyntheticConditions(
+            min_temp_f=float(cond_data["min_temp_f"]) if "min_temp_f" in cond_data else None,
+            max_temp_f=float(cond_data["max_temp_f"]) if "max_temp_f" in cond_data else None,
+            weather=list(cond_data.get("weather", [])),
+            time_window=cond_data.get("time_window"),
+        )
+        synthetic_activities.append(
+            SyntheticActivityRule(
+                name=str(rule_data["name"]),
+                conditions=conditions,
+                tags=list(rule_data.get("tags", [])),
+                summary=str(rule_data.get("summary", "")),
+            )
+        )
+
     return AppConfig(
         location=location,
         scraping=scraping,
         venue_discovery=venue_discovery,
         deduplication=deduplication,
+        weather=weather,
+        scoring=scoring,
+        synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
     )

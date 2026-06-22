@@ -174,3 +174,129 @@ def test_deduplication_partial_overrides_keep_defaults(tmp_path):
     assert cfg.deduplication.fuzzy_title_threshold == 0.80
     assert cfg.deduplication.time_window_hours == 2.0
     assert cfg.deduplication.semantic_threshold == 0.92
+
+
+# --- weather config ---
+
+def test_weather_section_absent_uses_defaults(tmp_path):
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.weather.provider == "open-meteo"
+
+
+def test_weather_provider_reads_from_config(tmp_path):
+    data = _valid_location_data()
+    data["weather"] = {"provider": "custom-provider"}
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    assert cfg.weather.provider == "custom-provider"
+
+
+# --- scoring config ---
+
+def test_scoring_section_absent_uses_defaults(tmp_path):
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.scoring.top_picks_min == 0.5
+    assert cfg.scoring.worth_considering_min == 0.1
+    assert cfg.scoring.summary_weight == 0.3
+    assert cfg.scoring.match_multiplier_yes == 1.5
+    assert cfg.scoring.match_multiplier_maybe == 1.0
+    assert cfg.scoring.match_multiplier_no == 0.5
+    assert cfg.scoring.min_tags_per_event == 5
+
+
+def test_scoring_reads_from_config(tmp_path):
+    data = _valid_location_data()
+    data["scoring"] = {
+        "tiers": {"top_picks_min": 0.7, "worth_considering_min": 0.2},
+        "summary_weight": 0.4,
+        "match_multipliers": {"yes": 2.0, "maybe": 1.0, "no": 0.25},
+        "min_tags_per_event": 8,
+    }
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    assert cfg.scoring.top_picks_min == 0.7
+    assert cfg.scoring.worth_considering_min == 0.2
+    assert cfg.scoring.summary_weight == 0.4
+    assert cfg.scoring.match_multiplier_yes == 2.0
+    assert cfg.scoring.match_multiplier_no == 0.25
+    assert cfg.scoring.min_tags_per_event == 8
+
+
+# --- synthetic activities config ---
+
+def test_synthetic_activities_absent_returns_empty_list(tmp_path):
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.synthetic_activities == []
+
+
+def test_synthetic_activity_rule_parsed_correctly(tmp_path):
+    data = _valid_location_data()
+    data["synthetic_activities"] = [
+        {
+            "name": "Evening walk",
+            "conditions": {
+                "min_temp_f": 45.0,
+                "max_temp_f": 85.0,
+                "weather": ["clear", "partly_cloudy"],
+            },
+            "tags": ["outdoor", "walking", "low_key"],
+            "summary": "A pleasant walk around town",
+        }
+    ]
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    assert len(cfg.synthetic_activities) == 1
+    rule = cfg.synthetic_activities[0]
+    assert rule.name == "Evening walk"
+    assert rule.conditions.min_temp_f == 45.0
+    assert rule.conditions.max_temp_f == 85.0
+    assert rule.conditions.weather == ["clear", "partly_cloudy"]
+    assert rule.conditions.time_window is None
+    assert rule.tags == ["outdoor", "walking", "low_key"]
+    assert rule.summary == "A pleasant walk around town"
+
+
+def test_synthetic_activity_with_time_window(tmp_path):
+    data = _valid_location_data()
+    data["synthetic_activities"] = [
+        {
+            "name": "Sunset picnic",
+            "conditions": {
+                "min_temp_f": 65.0,
+                "weather": ["clear"],
+                "time_window": "sunset_minus_2h to sunset_plus_30min",
+            },
+            "tags": ["outdoor", "picnic"],
+            "summary": "A picnic at sunset",
+        }
+    ]
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    rule = cfg.synthetic_activities[0]
+    assert rule.conditions.time_window == "sunset_minus_2h to sunset_plus_30min"
+
+
+def test_synthetic_activity_no_temp_constraints(tmp_path):
+    data = _valid_location_data()
+    data["synthetic_activities"] = [
+        {
+            "name": "Any time walk",
+            "conditions": {},
+            "tags": ["outdoor"],
+            "summary": "A walk",
+        }
+    ]
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    rule = cfg.synthetic_activities[0]
+    assert rule.conditions.min_temp_f is None
+    assert rule.conditions.max_temp_f is None
+    assert rule.conditions.weather == []
+    assert rule.conditions.time_window is None
+
+
+def test_multiple_synthetic_activity_rules(tmp_path):
+    data = _valid_location_data()
+    data["synthetic_activities"] = [
+        {"name": "Walk", "conditions": {}, "tags": ["outdoor"], "summary": "Walk"},
+        {"name": "Picnic", "conditions": {}, "tags": ["outdoor", "picnic"], "summary": "Picnic"},
+    ]
+    cfg = load_config(config_path=_write_config(tmp_path, data))
+    assert len(cfg.synthetic_activities) == 2
+    assert cfg.synthetic_activities[0].name == "Walk"
+    assert cfg.synthetic_activities[1].name == "Picnic"

@@ -12,6 +12,7 @@ dependencies = [
     "timezonefinder>=6.0",
     "requests>=2.31",
     "rapidfuzz>=3.0",
+    "astral>=3.0",
 ]
 
 [project.optional-dependencies]

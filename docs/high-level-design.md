@@ -497,9 +497,9 @@ synthetic_activities:
     tags: [outdoor, walking, low_key]
 ```
 
-When conditions are satisfied, the enrichment layer injects a synthetic EventCandidate into the pipeline.
+When conditions are satisfied, the enrichment layer injects a synthetic Event (fully formed, not an EventCandidate) into the pipeline. Synthetic events have tags and summary pre-populated from config, so LLM Pass 1 bypass triggers automatically. They skip normalization and dedup entirely.
 
-Synthetic events are processed identically to discovered events — they receive embedding scores, pass through the ranking engine, and appear in the final output.
+Synthetic events are processed identically to other enriched events — they receive embedding scores, pass through the ranking engine, and appear in the final output.
 
 Output:
 

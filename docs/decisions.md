@@ -314,3 +314,33 @@ binary classifier with degraded accuracy.
    `discovery_context` (truncated to a reasonable length, e.g. 300 chars).
 2. Update `HandleExtractor.process()` to pass the source `text` through to `_upsert`.
 3. Add a test that `discovery_context` is populated after extraction.
+
+---
+
+## Injectable logger on EnrichmentService
+
+**Decision:** `EnrichmentService.__init__` accepts an optional `logger: StructuredLogger | None`
+parameter that defaults to `get_logger("enrichment")`.
+
+**Rationale:** The service logs weather and movie provider failures. Without an injectable logger,
+tests that need to assert "error was logged" would have to intercept stdout or the stdlib logging
+system — brittle and indirect. An injectable logger follows the same pattern established by
+`NormalizationService` and keeps failure-path tests simple and explicit. The default value means
+production callers that don't care about log capture pay no cost.
+
+**How to apply:** Any service that logs errors on failure paths and has test coverage on those
+paths should accept an injectable `StructuredLogger`. Create one internally as the default.
+
+---
+
+## EnrichmentService: run_date weather fetch not de-duped against event-date cache
+
+**Decision:** In `EnrichmentService.enrich()`, the weather fetch for `run_date` (used for
+synthetic activity generation) is made via a direct `_fetch_weather` call after the event loop,
+rather than consulting the per-call in-memory cache that was built during event enrichment.
+
+**Rationale:** The cost of the "extra" fetch is one DB read that hits the weather_cache table —
+no additional provider call occurs, since the DB cache is always checked first. Fixing it cleanly
+requires a sentinel-aware dict lookup to distinguish "not yet cached" from "cached as None", which
+adds complexity for a negligible gain. If batch sizes or DB overhead ever become measurable,
+revisit by extending the in-memory dict to cover the run_date fetch.

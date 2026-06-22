@@ -29,7 +29,7 @@ def sample_config(tmp_path):
     return config_file
 
 
-def test_phase0_config_smoke(sample_config):
+def test_config_smoke(sample_config):
     """Config loads and exposes typed location data."""
     from src.config import load_config
 
@@ -38,7 +38,7 @@ def test_phase0_config_smoke(sample_config):
     assert cfg.location.latitude == 42.52
 
 
-def test_phase1_db_and_logger_smoke(sample_config, tmp_path):
+def test_db_and_logger_smoke(sample_config, tmp_path):
     """DB initialises and logger writes a structured entry without error."""
     import io
     import json
@@ -58,7 +58,7 @@ def test_phase1_db_and_logger_smoke(sample_config, tmp_path):
     assert entry["component"] == "smoke"
 
 
-def test_phase2_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
+def test_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
     """Venue discovery persists a seed venue and a provider venue end-to-end."""
     import io
 
@@ -127,7 +127,7 @@ def test_phase2_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
     assert len(venue_names) == 2
 
 
-def test_phase3_ingestion_smoke(tmp_path: Path) -> None:
+def test_ingestion_smoke(tmp_path: Path) -> None:
     """3 valid events + 1 malformed; failover path works when primary adapter raises."""
     import io
     import uuid
@@ -216,7 +216,7 @@ def test_phase3_ingestion_smoke(tmp_path: Path) -> None:
     fallback.fetch.assert_called_once()
 
 
-def test_phase4_normalization_smoke(tmp_path: Path) -> None:
+def test_normalization_smoke(tmp_path: Path) -> None:
     """2 identical candidates + 1 unique + 1 malformed → 2 events, 1 discard, merged attribution."""
     import io
     import uuid
@@ -304,3 +304,100 @@ def test_phase4_normalization_smoke(tmp_path: Path) -> None:
     log_stream.seek(0)
     log_lines = log_stream.read()
     assert "discard" in log_lines.lower() or "missing" in log_lines.lower()
+
+
+def test_enrichment_smoke(tmp_path: Path) -> None:
+    """Enrichment attaches weather/solar to a real event and injects a synthetic activity."""
+    import zoneinfo
+    from datetime import date, datetime, timezone
+    from unittest.mock import MagicMock
+
+    from src.config import (
+        AppConfig,
+        LocationConfig,
+        ScrapingConfig,
+        SyntheticActivityRule,
+        SyntheticConditions,
+        VenueDiscoveryConfig,
+    )
+    from src.enrichment.astronomical import AstronomicalCalculator
+    from src.enrichment.service import EnrichmentService
+    from src.enrichment.weather import WeatherProvider
+    from src.models.event import Event
+    from src.storage.db import init_db
+
+    run_date = date(2025, 6, 21)
+    now = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
+    local_tz = zoneinfo.ZoneInfo("America/New_York")
+
+    # Event happening tomorrow (within forecast window)
+    tomorrow = datetime(2025, 6, 22, 19, 0, tzinfo=local_tz)
+    event = Event(
+        event_id="smoke5-evt",
+        source_event_candidates=[],
+        source_type="instagram",
+        created_at=now,
+        updated_at=now,
+        title="Jazz Night",
+        start_time=tomorrow,
+    )
+
+    # Mock weather provider returning clear 70°F
+    clear_weather = {
+        "temperature_f": 70.0,
+        "condition": "clear",
+        "precipitation_mm": 0.0,
+        "wind_speed_mph": 5.0,
+    }
+    mock_weather = MagicMock(spec=WeatherProvider)
+    mock_weather.fetch.return_value = clear_weather
+
+    # Synthetic rule that matches clear weather at ≥60°F
+    walk_rule = SyntheticActivityRule(
+        name="Evening walk",
+        conditions=SyntheticConditions(
+            min_temp_f=60.0,
+            weather=["clear", "partly_cloudy"],
+        ),
+        tags=["outdoor", "walking", "low_key"],
+        summary="A pleasant evening walk",
+    )
+
+    cfg = AppConfig(
+        location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
+        scraping=ScrapingConfig(),
+        venue_discovery=VenueDiscoveryConfig(),
+    )
+
+    db_path = tmp_path / "smoke5.db"
+    init_db(db_path)
+
+    svc = EnrichmentService(
+        weather_provider=mock_weather,
+        movie_provider=None,
+        astronomical_calculator=AstronomicalCalculator(),
+        synthetic_rules=[walk_rule],
+        config=cfg,
+        db_path=db_path,
+        get_now=lambda: now,
+    )
+
+    results = svc.enrich([event], run_date)
+
+    # Real event assertions
+    assert results[0].weather is not None, "weather should be attached"
+    assert results[0].weather["temperature_f"] == 70.0
+    assert results[0].astronomical_data is not None, "astronomical_data should be attached"
+    assert "sunrise" in results[0].astronomical_data
+    assert "sunset" in results[0].astronomical_data
+    assert "dawn" in results[0].astronomical_data
+    assert "dusk" in results[0].astronomical_data
+
+    # Synthetic event assertions
+    synthetic = [e for e in results if e.source_type == "synthetic"]
+    assert len(synthetic) == 1, f"expected 1 synthetic event, got {len(synthetic)}"
+    syn = synthetic[0]
+    assert syn.source_type == "synthetic"
+    assert syn.tags == ["outdoor", "walking", "low_key"]
+    assert syn.summary == "A pleasant evening walk"
+    assert "evening_walk" in syn.event_id
