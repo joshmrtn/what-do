@@ -349,3 +349,48 @@ no additional provider call occurs, since the DB cache is always checked first. 
 requires a sentinel-aware dict lookup to distinguish "not yet cached" from "cached as None", which
 adds complexity for a negligible gain. If batch sizes or DB overhead ever become measurable,
 revisit by extending the in-memory dict to cover the run_date fetch.
+
+---
+
+## Pluggable LLM backend: `ChatClient` protocol + `LLMError`, Gemini alongside Ollama
+
+**Decision:** Extraction and disambiguation providers depend on a `ChatClient` structural protocol
+(a `chat(model, messages, images)` method) and a shared `LLMError` base — not on `OllamaClient`
+directly. `GeminiClient` (google-genai) is a drop-in second implementation. Ollama stays the
+production default; Gemini is opt-in via `GEMINI_API_KEY`.
+
+**Rationale:** The Phase 6 plan wrote the providers against `OllamaClient` concretely. The trigger
+to generalize was the real-Ollama smoke test taking ~10 minutes and being killed by the shell
+tool's timeout, which made end-to-end validation painful — a fast hosted model unblocks iteration.
+Beyond that immediate need, a backend-agnostic seam gives the *processing* side of the pipeline
+flexibility to swap or add LLMs (llama.cpp, Anthropic, DeepSeek) cheaply. It is a convenience and a
+hedge, **not** a move away from local-first: production is still targeted at 100% local, and on the
+same caption `gemma4:e4b` produced the same five tags, venue, and summary as Gemini flash. Any future backend just implements `ChatClient` and raises an
+`LLMError` subclass; callers already `except LLMError`.
+
+---
+
+## Default Gemini model is the `gemini-flash-latest` alias, not a pinned version
+
+**Decision:** The default `gemini_model` is `gemini-flash-latest`, a moving alias, rather than a
+pinned version string. Override with `GEMINI_MODEL` when a fixed version is needed.
+
+**Rationale:** The first pick, `gemini-2.0-flash`, was retired by Google *during this session* and
+began returning HTTP 404. Pinning a version invites recurring breakage as models retire. The
+Gemini tests assert structure (≥5 tags, correct date resolution), not exact wording, so a moving
+target is acceptable; anyone needing reproducibility can pin via `GEMINI_MODEL`.
+
+---
+
+## Date grounding anchors on `get_now()` (seen date), not the post's published date
+
+**Decision:** `ExtractionStage` injects `get_now()` (the daily-scrape "today") as the extraction
+`reference_date`, so the model resolves relative dates like "this Saturday" against a concrete
+anchor. It does **not** use the post's own published date, even though `EventCandidate.raw_published_at`
+captures it for some sources.
+
+**Rationale:** LLMs have no clock; without an anchor, models either hallucinate a date
+(`gemma4:e4b` produced 2024-10-26 for "this Saturday") or return null (Gemini flash). Grounding on
+"today" fixes the common case: most sources have no reliable post date, and a daily scrape makes
+seen-date ≈ posted-date in practice. Propagating `raw_published_at` onto the `Event` model (more
+accurate for backdated posts) was out of scope — tracked as issue #5.
