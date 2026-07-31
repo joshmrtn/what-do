@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,6 +27,33 @@ def _valid_response(tags: list[str] | None = None, include_summary: bool = True)
     if not include_summary:
         del payload["summary"]
     return json.dumps(payload)
+
+
+# ---------------------------------------------------------------------------
+# Reference date grounding
+# ---------------------------------------------------------------------------
+
+
+def test_reference_date_injected_into_prompt():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_valid_response())
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider.extract("some event text", reference_date=datetime(2026, 8, 3))
+
+    prompt = client.chat.call_args.kwargs["messages"][0]["content"]
+    assert "2026-08-03" in prompt
+
+
+def test_no_reference_date_omits_date_context():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_valid_response())
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider.extract("some event text")
+
+    prompt = client.chat.call_args.kwargs["messages"][0]["content"]
+    assert "Today's date" not in prompt
 
 
 # ---------------------------------------------------------------------------

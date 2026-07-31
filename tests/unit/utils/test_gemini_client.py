@@ -171,6 +171,26 @@ def test_real_gemini_extraction():
 
 
 @pytest.mark.slow
+def test_real_gemini_resolves_relative_date():
+    """Gemini resolves 'this Saturday' against an injected reference date."""
+    from datetime import date, datetime
+
+    from src.processing.extraction import OllamaExtractionProvider
+    from src.utils.gemini_client import GeminiClient
+
+    key, model = _require_gemini()
+    provider = OllamaExtractionProvider(client=GeminiClient(api_key=key), model=model, min_tags=5)
+
+    result = provider.extract(
+        "Live music this Saturday at 8pm at The Vault Lounge in Salem.",
+        reference_date=datetime(2026, 8, 3),  # a Monday
+    )
+
+    assert result.start_time is not None
+    assert result.start_time.date() == date(2026, 8, 8)
+
+
+@pytest.mark.slow
 def test_real_gemini_disambiguation():
     """Real Gemini classifies an obvious venue handle as 'venue'."""
     from src.ingestion.disambiguation import OllamaDisambiguationProvider

@@ -6,7 +6,8 @@ by extracting tags, summary, and filling missing fields via LLM.
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Callable
 
 from src.models.event import Event
 from src.processing.extraction import ExtractionError, ExtractionProvider
@@ -24,6 +25,8 @@ class ExtractionStage:
         provider: LLM extraction provider.
         image_fetcher: Fetcher for event images (None if multimodal not needed).
         logger: Structured logger instance.
+        get_now: Injectable clock; supplies the reference date the model uses to
+            resolve relative dates in event text.
     """
 
     def __init__(
@@ -31,10 +34,12 @@ class ExtractionStage:
         provider: ExtractionProvider,
         image_fetcher: ImageFetcher | None,
         logger: Any,
+        get_now: Callable[[], datetime] = datetime.now,
     ) -> None:
         self._provider = provider
         self._image_fetcher = image_fetcher
         self._logger = logger
+        self._get_now = get_now
 
     def process(self, events: list[Event]) -> list[Event]:
         """Run extraction on each event that needs it.
@@ -58,7 +63,9 @@ class ExtractionStage:
         text = "\n".join(filter(None, [event.title, event.description]))
 
         try:
-            result = self._provider.extract(text, image_bytes=image_bytes)
+            result = self._provider.extract(
+                text, image_bytes=image_bytes, reference_date=self._get_now()
+            )
         except ExtractionError as exc:
             self._logger.error(
                 f"LLM extraction failed for event {event.event_id}: {exc}",

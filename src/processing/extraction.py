@@ -44,12 +44,19 @@ class ExtractionProvider(ABC):
     """Extracts structured data from raw event text."""
 
     @abstractmethod
-    def extract(self, text: str, image_bytes: bytes | None = None) -> ExtractionResult:
+    def extract(
+        self,
+        text: str,
+        image_bytes: bytes | None = None,
+        reference_date: datetime | None = None,
+    ) -> ExtractionResult:
         """Extract structured event data from text.
 
         Args:
             text: Raw event text (title + description combined).
             image_bytes: Optional raw image bytes to pass to a multimodal model.
+            reference_date: Optional "today" anchor so the model can resolve
+                relative dates (e.g. "this Saturday") to absolute dates.
 
         Returns:
             ExtractionResult with extracted fields.
@@ -60,7 +67,7 @@ class ExtractionProvider(ABC):
 
 
 _EXTRACT_PROMPT = """\
-Extract structured event information from the text below and respond with ONLY valid JSON.
+{date_context}Extract structured event information from the text below and respond with ONLY valid JSON.
 
 Text:
 {text}
@@ -111,12 +118,18 @@ class OllamaExtractionProvider(ExtractionProvider):
         self._model = model
         self._min_tags = min_tags
 
-    def extract(self, text: str, image_bytes: bytes | None = None) -> ExtractionResult:
+    def extract(
+        self,
+        text: str,
+        image_bytes: bytes | None = None,
+        reference_date: datetime | None = None,
+    ) -> ExtractionResult:
         """Extract structured event data from text, with one retry on schema failure.
 
         Args:
             text: Raw event text.
             image_bytes: Optional raw image bytes for multimodal extraction.
+            reference_date: Optional "today" anchor for resolving relative dates.
 
         Returns:
             Validated ExtractionResult.
@@ -124,7 +137,16 @@ class OllamaExtractionProvider(ExtractionProvider):
         Raises:
             ExtractionError: If both attempts produce invalid output.
         """
-        prompt = _EXTRACT_PROMPT.format(text=text, min_tags=self._min_tags)
+        date_context = ""
+        if reference_date is not None:
+            date_context = (
+                f"Today's date is {reference_date.date().isoformat()}. "
+                "Resolve any relative dates (e.g. 'this Saturday', 'next Thursday') "
+                "to absolute ISO 8601 dates against it.\n\n"
+            )
+        prompt = _EXTRACT_PROMPT.format(
+            text=text, min_tags=self._min_tags, date_context=date_context
+        )
         messages = [{"role": "user", "content": prompt}]
         chat_kwargs: dict[str, Any] = {"model": self._model, "messages": messages}
         if image_bytes is not None:

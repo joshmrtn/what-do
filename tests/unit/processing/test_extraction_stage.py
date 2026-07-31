@@ -55,6 +55,22 @@ def _make_fetcher(content: bytes = b"fake image bytes"):
     return fetcher
 
 
+def test_reference_date_from_get_now_passed_to_provider():
+    from src.processing.extraction_stage import ExtractionStage
+
+    provider = _make_provider()
+    fixed = datetime(2026, 8, 3, 9, 0, 0, tzinfo=timezone.utc)
+    stage = ExtractionStage(
+        provider=provider,
+        image_fetcher=None,
+        logger=_make_logger(),
+        get_now=lambda: fixed,
+    )
+    stage.process([_make_event(tags=[])])
+
+    assert provider.extract.call_args.kwargs["reference_date"] == fixed
+
+
 # ---------------------------------------------------------------------------
 # Bypass
 # ---------------------------------------------------------------------------
