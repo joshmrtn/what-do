@@ -10,8 +10,9 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
-from src.utils.ollama_client import OllamaClient
+from src.utils.chat_client import ChatClient
 
 
 class ExtractionError(Exception):
@@ -100,12 +101,12 @@ class OllamaExtractionProvider(ExtractionProvider):
     """Extracts structured event data using a local Ollama LLM.
 
     Args:
-        client: Configured OllamaClient instance.
-        model: Ollama model name (default gemma4:e4b).
+        client: Any ChatClient (e.g. OllamaClient, GeminiClient).
+        model: Model name (default gemma4:e4b).
         min_tags: Minimum number of tags required in the output.
     """
 
-    def __init__(self, client: OllamaClient, model: str = "gemma4:e4b", min_tags: int = 5) -> None:
+    def __init__(self, client: ChatClient, model: str = "gemma4:e4b", min_tags: int = 5) -> None:
         self._client = client
         self._model = model
         self._min_tags = min_tags
@@ -125,7 +126,7 @@ class OllamaExtractionProvider(ExtractionProvider):
         """
         prompt = _EXTRACT_PROMPT.format(text=text, min_tags=self._min_tags)
         messages = [{"role": "user", "content": prompt}]
-        chat_kwargs: dict = {"model": self._model, "messages": messages}
+        chat_kwargs: dict[str, Any] = {"model": self._model, "messages": messages}
         if image_bytes is not None:
             chat_kwargs["images"] = [image_bytes]
 
@@ -138,7 +139,7 @@ class OllamaExtractionProvider(ExtractionProvider):
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": retry_prompt},
             ]
-            retry_kwargs: dict = {"model": self._model, "messages": retry_messages}
+            retry_kwargs: dict[str, Any] = {"model": self._model, "messages": retry_messages}
             if image_bytes is not None:
                 retry_kwargs["images"] = [image_bytes]
 

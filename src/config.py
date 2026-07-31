@@ -99,6 +99,8 @@ class AppConfig:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-flash-latest"
 
 
 def load_config(
@@ -235,4 +237,6 @@ def load_config(
         scoring=scoring,
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+        gemini_api_key=os.environ.get("GEMINI_API_KEY"),
+        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
     )

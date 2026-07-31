@@ -62,6 +62,35 @@ def test_ollama_host_reads_from_env(tmp_path, monkeypatch):
     assert cfg.ollama_host == "http://gpu-box:11434"
 
 
+def test_gemini_api_key_reads_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "secret-abc")
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.gemini_api_key == "secret-abc"
+
+
+def test_gemini_api_key_none_when_not_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    empty_env = tmp_path / ".env"
+    empty_env.write_text("")
+    cfg = load_config(
+        config_path=_write_config(tmp_path, _valid_location_data()),
+        env_path=empty_env,
+    )
+    assert cfg.gemini_api_key is None
+
+
+def test_gemini_model_defaults_to_flash(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.gemini_model == "gemini-flash-latest"
+
+
+def test_gemini_model_reads_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+    assert cfg.gemini_model == "gemini-2.5-flash"
+
+
 def test_dotenv_values_loaded(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("APIFY_API_KEY=test_key_abc\n")

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from src.utils.ollama_client import OllamaClient, OllamaError
+from src.utils.chat_client import ChatClient
 
 
 class DisambiguationError(Exception):
@@ -64,11 +64,11 @@ class OllamaDisambiguationProvider(DisambiguationProvider):
     """Classifies handles using a local Ollama model.
 
     Args:
-        client: Configured OllamaClient instance.
-        model: Ollama model name to use for classification.
+        client: Any ChatClient (e.g. OllamaClient, GeminiClient).
+        model: Model name to use for classification.
     """
 
-    def __init__(self, client: OllamaClient, model: str = "gemma4:e2b") -> None:
+    def __init__(self, client: ChatClient, model: str = "gemma4:e2b") -> None:
         self._client = client
         self._model = model
 
@@ -113,8 +113,10 @@ class OllamaDisambiguationProvider(DisambiguationProvider):
         try:
             data = json.loads(text.strip())
             value = data.get("classification", "")
-            if value in ("venue", "person"):
-                return value  # type: ignore[return-value]
+            if value == "venue":
+                return "venue"
+            if value == "person":
+                return "person"
             return None
         except (json.JSONDecodeError, AttributeError):
             return None

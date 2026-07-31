@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import requests
 
+from src.utils.chat_client import LLMError
 
-class OllamaError(Exception):
+
+class OllamaError(LLMError):
     """Raised when an Ollama API call fails."""
 
 
@@ -26,7 +29,7 @@ class OllamaClient:
     def chat(
         self,
         model: str,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         images: list[bytes] | None = None,
     ) -> str:
         """Send a chat request and return the assistant message content.
@@ -68,4 +71,4 @@ class OllamaClient:
         if resp.status_code != 200:
             raise OllamaError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
-        return resp.json()["message"]["content"]
+        return str(resp.json()["message"]["content"])
