@@ -87,3 +87,16 @@ def test_candidate_entities_has_depth_and_mention_sources(tmp_path):
 
     assert "depth" in columns
     assert "mention_sources" in columns
+
+
+def test_events_table_has_image_bytes_blob(tmp_path):
+    from src.storage.db import init_db
+
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    cursor = conn.execute("PRAGMA table_info(events)")
+    columns = {row[1]: row[2] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "image_bytes" in columns
+    assert columns["image_bytes"] == "BLOB"

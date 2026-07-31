@@ -29,6 +29,10 @@ what-do-run-batch = "src.scheduler:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: requires a running Ollama instance; skipped by default",
+]
 
 [tool.mypy]
 python_version = "3.11"

@@ -44,6 +44,7 @@ class HandleExtractor:
         if not handles:
             return
 
+        context = text[:300]
         conn = sqlite3.connect(self._db_path)
         try:
             now = datetime.now(timezone.utc).isoformat()
@@ -56,7 +57,7 @@ class HandleExtractor:
                         duration_ms=0,
                     )
                     continue
-                self._upsert(conn, handle, source_handle, candidate_depth, now)
+                self._upsert(conn, handle, source_handle, candidate_depth, now, context)
             conn.commit()
         finally:
             conn.close()
@@ -68,17 +69,18 @@ class HandleExtractor:
         source_handle: str,
         depth: int,
         now: str,
+        context: str,
     ) -> None:
         row = conn.execute(
-            "SELECT id, mention_count, mention_sources FROM candidate_entities WHERE handle = ?",
+            "SELECT id, mention_count, mention_sources, discovery_context FROM candidate_entities WHERE handle = ?",
             (handle,),
         ).fetchone()
 
         if row is None:
             conn.execute(
                 """INSERT INTO candidate_entities
-                   (id, handle, state, depth, mention_count, mention_sources, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, handle, state, depth, mention_count, mention_sources, discovery_context, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     str(uuid.uuid4()),
                     handle,
@@ -86,19 +88,21 @@ class HandleExtractor:
                     depth,
                     1,
                     json.dumps([source_handle]),
+                    context,
                     now,
                     now,
                 ),
             )
         else:
-            entity_id, count, sources_json = row
+            entity_id, count, sources_json, existing_context = row
             sources: list[str] = json.loads(sources_json) if sources_json else []
             if source_handle in sources:
                 return  # already counted this source
             sources.append(source_handle)
             conn.execute(
                 """UPDATE candidate_entities
-                   SET mention_count = ?, mention_sources = ?, updated_at = ?
+                   SET mention_count = ?, mention_sources = ?,
+                       discovery_context = COALESCE(discovery_context, ?), updated_at = ?
                    WHERE id = ?""",
-                (count + 1, json.dumps(sources), now, entity_id),
+                (count + 1, json.dumps(sources), context, now, entity_id),
             )

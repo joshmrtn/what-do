@@ -17,6 +17,7 @@ class Event:
     updated_at: datetime
     url: str | None = None
     image_url: str | None = None
+    image_bytes: bytes | None = None
     title: str | None = None
     venue: str | None = None
     description: str | None = None

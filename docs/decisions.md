@@ -299,6 +299,11 @@ edge case.
 
 ## Known gap: discovery_context not populated by HandleExtractor
 
+**RESOLVED (Phase 6):** All three fix steps below are implemented and tested.
+`HandleExtractor._upsert()` now stores `text[:300]` as `discovery_context` on insert and
+backfills it when previously NULL; `OllamaDisambiguationProvider` (gemma4:e2b) is implemented.
+Retained here for historical context.
+
 **Gap identified:** Phase 3 built `HandleExtractor` and `DisambiguationStep` but did not wire
 them together on the context field. `HandleExtractor` stores discovered handles in
 `candidate_entities` but does not populate the `discovery_context` column (the surrounding post

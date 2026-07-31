@@ -47,7 +47,7 @@ def _insert_candidate(conn, handle, state="probationary", depth=0, mention_count
 
 def _get_entity(conn, handle):
     row = conn.execute(
-        "SELECT state, depth, mention_count, mention_sources FROM candidate_entities WHERE handle = ?",
+        "SELECT state, depth, mention_count, mention_sources, discovery_context FROM candidate_entities WHERE handle = ?",
         (handle,),
     ).fetchone()
     if row is None:
@@ -57,6 +57,7 @@ def _get_entity(conn, handle):
         "depth": row[1],
         "mention_count": row[2],
         "mention_sources": json.loads(row[3]) if row[3] else [],
+        "discovery_context": row[4],
     }
 
 
@@ -171,3 +172,85 @@ def test_no_handles_in_text(db):
     conn.close()
 
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# discovery_context tests
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_context_populated_on_insert(db):
+    from src.ingestion.handle_extractor import HandleExtractor
+
+    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    caption = "Come see @jazzclub play live tonight at the waterfront!"
+    extractor.process(caption, source_handle="@seedvenue", source_depth=0)
+
+    conn = sqlite3.connect(db)
+    entity = _get_entity(conn, "@jazzclub")
+    conn.close()
+
+    assert entity is not None
+    assert entity["discovery_context"] == caption
+
+
+def test_discovery_context_truncated_to_300_chars(db):
+    from src.ingestion.handle_extractor import HandleExtractor
+
+    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    long_caption = "x" * 50 + " @newvenue " + "y" * 400
+    extractor.process(long_caption, source_handle="@seed", source_depth=0)
+
+    conn = sqlite3.connect(db)
+    entity = _get_entity(conn, "@newvenue")
+    conn.close()
+
+    assert entity is not None
+    assert len(entity["discovery_context"]) == 300
+
+
+def test_discovery_context_updated_when_previously_null(db):
+    from src.ingestion.handle_extractor import HandleExtractor
+
+    conn = sqlite3.connect(db)
+    _insert_candidate(conn, "@jazzclub", mention_count=1, mention_sources=["@other"])
+
+    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    caption = "Another mention of @jazzclub from a different source"
+    extractor.process(caption, source_handle="@seedvenue", source_depth=0)
+
+    entity = _get_entity(conn, "@jazzclub")
+    conn.close()
+
+    assert entity["discovery_context"] == caption
+
+
+def test_discovery_context_not_overwritten_when_already_set(db):
+    from src.ingestion.handle_extractor import HandleExtractor
+
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """INSERT INTO candidate_entities
+           (id, handle, state, depth, mention_count, mention_sources, discovery_context, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(uuid.uuid4()),
+            "@jazzclub",
+            "probationary",
+            1,
+            1,
+            json.dumps(["@other"]),
+            "original context from first discovery",
+            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+
+    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor.process("A new mention of @jazzclub here", source_handle="@seedvenue", source_depth=0)
+
+    entity = _get_entity(conn, "@jazzclub")
+    conn.close()
+
+    assert entity["discovery_context"] == "original context from first discovery"

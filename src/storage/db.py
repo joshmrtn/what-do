@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS events (
     source_type TEXT NOT NULL,
     url TEXT,
     image_url TEXT,
+    image_bytes BLOB,
     title TEXT,
     venue TEXT,
     description TEXT,

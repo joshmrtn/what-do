@@ -45,6 +45,7 @@ def test_event_optional_fields_default_none():
     )
     assert event.url is None
     assert event.image_url is None
+    assert event.image_bytes is None
     assert event.title is None
     assert event.venue is None
     assert event.description is None

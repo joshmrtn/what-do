@@ -222,7 +222,7 @@ OLLAMA_HOST=http://localhost:11434
 | 3 | Event ingestion | ✅ complete |
 | 4 | Normalization & deduplication | ✅ complete |
 | 5 | Environmental enrichment | ✅ complete |
-| 6 | LLM extraction pipeline | ⬜ not started |
+| 6 | LLM extraction pipeline | ✅ complete |
 | 7 | Semantic matching engine | ⬜ not started |
 | 8 | Deterministic ranking engine | ⬜ not started |
 | 9 | CLI interface | ⬜ not started |
