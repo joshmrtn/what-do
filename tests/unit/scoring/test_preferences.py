@@ -455,3 +455,25 @@ def test_domain_lookup_for_unknown_domain_returns_general_only(tmp_path):
 
     assert [p.text for p in result.likes_for("restaurants")] == ["karaoke"]
     assert [p.text for p in result.dislikes_for("restaurants")] == ["bars"]
+
+
+def test_emoji_stripped_from_preference_line():
+    from src.scoring.preferences import parse_preferences
+
+    prefs = parse_preferences("🍻 bars\nnightclubs 💃\n", preference_type="dislike")
+
+    assert [p.text for p in prefs] == ["bars", "nightclubs"]
+
+
+def test_emoji_only_preference_line_falls_back_to_its_name():
+    from src.scoring.preferences import parse_preferences
+
+    prefs = parse_preferences("🍺\n", preference_type="dislike")
+
+    assert [p.text for p in prefs] == ["beer mug"]
+
+
+def test_preference_line_of_only_invisible_characters_skipped():
+    from src.scoring.preferences import parse_preferences
+
+    assert parse_preferences("​﻿\n", preference_type="dislike") == []

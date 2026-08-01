@@ -18,6 +18,7 @@ from pathlib import Path
 
 from src.scoring.embeddings import EmbeddingError, EmbeddingProvider
 from src.utils.logging import StructuredLogger
+from src.utils.text import normalize_embedding_text
 from src.utils.vectors import decode_vector, encode_vector
 
 GENERAL_DOMAIN = "general"
@@ -29,10 +30,6 @@ _COMMENT_PREFIX = "#"
 #: line times out — which, with fatal embedding failures, would wedge every
 #: subsequent batch run until the file was fixed.
 MAX_PREFERENCE_LENGTH = 500
-
-#: Zero-width and BOM characters survive str.strip() but carry no meaning, so a
-#: line made of them would embed as a real preference matching pure noise.
-_INVISIBLE_CHARS = str.maketrans({c: None for c in "​‌‍﻿"})
 
 
 class PreferenceError(ValueError):
@@ -81,7 +78,8 @@ def parse_preferences(content: str, preference_type: str) -> list[UserPreference
     """Parse a preference file into domain-scoped preferences.
 
     Lines before the first `[section]` header belong to the general domain.
-    Blank lines, `#` comments, and lines of only invisible characters are skipped.
+    Blank lines and `#` comments are skipped, as are lines left empty once
+    zero-signal characters (emoji, zero-width marks) are stripped.
 
     Args:
         content: Raw file contents.
@@ -97,7 +95,7 @@ def parse_preferences(content: str, preference_type: str) -> list[UserPreference
     domain = GENERAL_DOMAIN
 
     for raw_line in content.splitlines():
-        line = raw_line.translate(_INVISIBLE_CHARS).strip()
+        line = normalize_embedding_text(raw_line)
         if not line or line.startswith(_COMMENT_PREFIX):
             continue
         if line.startswith("[") and line.endswith("]"):

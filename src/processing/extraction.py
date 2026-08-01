@@ -14,6 +14,7 @@ from typing import Any
 
 from src.models.tag import DEFAULT_WEIGHT, Tag, clamp_weight
 from src.utils.chat_client import ChatClient
+from src.utils.text import normalize_embedding_text
 
 
 class ExtractionError(Exception):
@@ -220,6 +221,9 @@ class OllamaExtractionProvider(ExtractionProvider):
         Accepts both {"tag": ..., "weight": ...} objects and bare strings.
         Entries with no usable text are dropped rather than failing the whole
         extraction; weights are clamped into range.
+
+        Tag text is normalised here rather than at embedding time so the stored
+        tag, its vector, and anything displayed to the user all agree.
         """
         tags: list[Tag] = []
         for entry in raw_tags:
@@ -231,8 +235,9 @@ class OllamaExtractionProvider(ExtractionProvider):
                 weight = clamp_weight(entry.get("weight"))
             else:
                 continue
-            if text.strip():
-                tags.append(Tag(text=text, weight=weight))
+            normalized = normalize_embedding_text(text)
+            if normalized:
+                tags.append(Tag(text=normalized, weight=weight))
         return tags
 
     @staticmethod

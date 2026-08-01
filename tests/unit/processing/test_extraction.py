@@ -354,3 +354,44 @@ def test_prompt_requests_centrality_weights():
     prompt = client.chat.call_args.kwargs["messages"][0]["content"]
     assert "weight" in prompt.lower()
     assert "central" in prompt.lower()
+
+
+def test_emoji_stripped_from_tag_text():
+    """Emoji embed to a constant vector and dilute the words beside them."""
+    from src.models.tag import Tag
+    from src.processing.extraction import OllamaExtractionProvider
+
+    pairs = [("🎤 karaoke", 1.0), ("live music 🎸", 0.9), ("punk rock", 0.7),
+             ("all ages", 0.5), ("bar", 0.1)]
+    client = _make_client(_weighted(pairs))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("punk show tonight")
+
+    assert result.tags[0] == Tag(text="karaoke", weight=1.0)
+    assert result.tags[1] == Tag(text="live music", weight=0.9)
+
+
+def test_emoji_only_tag_falls_back_to_its_name():
+    """Nothing to dilute, so the name carries more signal than a dropped tag."""
+    from src.models.tag import Tag
+    from src.processing.extraction import OllamaExtractionProvider
+
+    pairs = _FIVE_WEIGHTED + [("🎤", 0.4)]
+    client = _make_client(_weighted(pairs))
+    provider = OllamaExtractionProvider(client=client, min_tags=6)
+
+    result = provider.extract("punk show tonight")
+
+    assert result.tags[-1] == Tag(text="microphone", weight=0.4)
+
+
+def test_tag_of_only_invisible_characters_is_dropped():
+    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
+
+    pairs = _FIVE_WEIGHTED + [("​﻿", 0.4)]
+    client = _make_client(_weighted(pairs))
+    provider = OllamaExtractionProvider(client=client, min_tags=6)
+
+    with pytest.raises(ExtractionError, match="tag count 5"):
+        provider.extract("punk show tonight")
