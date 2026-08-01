@@ -538,3 +538,37 @@ on `karaoke ↔ karaoke = 1.000` beating `bar ↔ bars = 0.932`.
 The margin there is only **0.068**, so the threshold needs care — a default near 0.05 would be
 knife-edge. This rule is the mechanism that makes "specificity wins" hold at the classification
 layer as well as the scoring layer.
+
+---
+
+## Event persistence: what is stored, and what is deliberately not
+
+**Decision:** `src/storage/events.py` owns `save_events()` / `load_events()`, replacing the private
+row helper that lived in `NormalizationService`. Two fields are deliberately excluded:
+
+- **`image_bytes`** — fetched only to feed the multimodal extraction call, which a reloaded event
+  skips anyway. Storing photo blobs would bloat the database for no downstream reader.
+- **`similarity`** — derived, cheap to recompute (no model calls), and the `recommendations` table
+  is its real home once Phase 8 lands.
+
+**Rationale:** before this, `NormalizationService` was the only writer and it ran *before*
+enrichment, extraction, and embedding, so tags, summaries, and vectors were computed and discarded
+every run. At roughly three minutes per event for local LLM extraction, a 50-event batch threw away
+about two and a half hours of work. Nothing in `src/` read the events table at all.
+
+Persisting also activates skip-if-done branches that already existed but were unreachable:
+`ExtractionStage` (`if event.tags: continue`) and `EmbeddingStage`
+(`if event.tag_embeddings: return`). With a read path, a re-run only pays model time for new
+events. Closes issue #11.
+
+---
+
+## SimilarityStage receives preferences already loaded
+
+**Decision:** `SimilarityStage.__init__` takes a `PreferenceSet`, not a `PreferenceRepository` and
+file paths.
+
+**Rationale:** the stage stays pure and deterministic — no I/O, no clock — matching
+`NormalizationEngine` and `DeduplicationEngine`. It also makes "load preferences once per run" a
+structural guarantee rather than a convention: the batch orchestrator loads once and hands the same
+set to the stage, so the embedding cache cannot be consulted per event by accident.

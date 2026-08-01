@@ -246,7 +246,7 @@ OLLAMA_HOST=http://localhost:11434
 | 4 | Normalization & deduplication | ✅ complete |
 | 5 | Environmental enrichment | ✅ complete |
 | 6 | LLM extraction pipeline | ✅ complete |
-| 7 | Semantic matching engine | ⬜ not started |
+| 7 | Semantic matching engine | ✅ complete |
 | 8 | Deterministic ranking engine | ⬜ not started |
 | 9 | CLI interface | ⬜ not started |
 | 10 | Maintenance utilities | ⬜ not started |

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,11 +10,10 @@ from typing import Callable
 from src.config import AppConfig
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
-from src.models.tag import tags_to_json
 from src.normalization.deduplicator import DeduplicationEngine
 from src.normalization.normalizer import NormalizationEngine
+from src.storage.events import save_events
 from src.utils.logging import StructuredLogger
-from src.utils.vectors import pack_vectors
 
 
 @dataclass
@@ -25,53 +22,6 @@ class NormalizationResult:
 
     persisted: int
     discarded: int
-
-
-def _persist_events(events: list[Event], db_path: Path) -> None:
-    """Insert normalized events into the events table."""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO events (
-                id, source_event_candidates, source_type,
-                url, image_url, title, venue, description, location,
-                start_time, end_time, tags, summary,
-                tag_embeddings, summary_embedding,
-                weather, astronomical_data, metadata,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [_event_to_row(e) for e in events],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _event_to_row(e: Event) -> tuple:
-    return (
-        e.event_id,
-        json.dumps(e.source_event_candidates),
-        e.source_type,
-        e.url,
-        e.image_url,
-        e.title,
-        e.venue,
-        e.description,
-        e.location,
-        e.start_time.isoformat() if e.start_time else None,
-        e.end_time.isoformat() if e.end_time else None,
-        tags_to_json(e.tags),
-        e.summary,
-        pack_vectors(e.tag_embeddings) if e.tag_embeddings else None,
-        e.summary_embedding,
-        json.dumps(e.weather) if e.weather else None,
-        json.dumps(e.astronomical_data) if e.astronomical_data else None,
-        json.dumps(e.metadata),
-        e.created_at.isoformat(),
-        e.updated_at.isoformat(),
-    )
 
 
 class NormalizationService:
@@ -130,7 +80,7 @@ class NormalizationService:
         )
 
         if events:
-            _persist_events(events, self._db_path)
+            save_events(events, self._db_path)
 
         return NormalizationResult(
             persisted=len(events),

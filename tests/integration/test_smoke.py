@@ -406,3 +406,140 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
     ]
     assert syn.summary == "A pleasant evening walk"
     assert "evening_walk" in syn.event_id
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — semantic matching engine
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_semantic_matching_smoke(tmp_path: Path) -> None:
+    """Embedding -> semantic dedup -> similarity -> persist -> reload.
+
+    Uses real Ollama (nomic-embed-text) but no external network. Preference
+    fixtures are written to tmp_path rather than read from data/likes.txt:
+    those files are gitignored and personal, so a test reading them would fail
+    on a fresh clone and change behaviour whenever the user edits a preference.
+    """
+    import io
+    from datetime import datetime, timedelta, timezone
+
+    from src.config import DeduplicationConfig, ScoringConfig
+    from src.models.event import Event
+    from src.models.tag import Tag
+    from src.normalization.semantic_dedup import SemanticDeduplicationEngine
+    from src.scoring.embedding_stage import EmbeddingStage
+    from src.scoring.embeddings import OllamaEmbeddingProvider
+    from src.scoring.preferences import PreferenceRepository
+    from src.scoring.similarity_stage import SimilarityStage
+    from src.storage.db import init_db
+    from src.storage.events import load_events, save_events
+    from src.utils.logging import get_logger
+    from src.utils.ollama_client import OllamaClient
+    from src.utils.vectors import decode_vector
+
+    db_path = tmp_path / "smoke.db"
+    init_db(db_path)
+    logger = get_logger("smoke", stream=io.StringIO())
+
+    likes = tmp_path / "likes.txt"
+    likes.write_text("karaoke\npunk music\ncalm relaxed atmosphere\n\n[movies]\nhorror films\n")
+    dislikes = tmp_path / "dislikes.txt"
+    dislikes.write_text("bars\nnightclubs\ndancing\npop music\n")
+
+    class CountingProvider:
+        def __init__(self, inner):
+            self.inner, self.calls = inner, 0
+
+        def embed(self, text: str) -> list[float]:
+            self.calls += 1
+            return self.inner.embed(text)
+
+    provider = CountingProvider(
+        OllamaEmbeddingProvider(client=OllamaClient("http://localhost:11434", timeout=180))
+    )
+    repo = PreferenceRepository(provider, db_path, logger)
+
+    # Cold cache: every preference line is embedded.
+    prefs = repo.load(likes, dislikes)
+    assert provider.calls == 8, f"expected 8 embeddings, got {provider.calls}"
+    assert len(prefs.likes) == 4 and len(prefs.dislikes) == 4
+
+    # Warm cache: unchanged files must not reach Ollama at all.
+    provider.calls = 0
+    prefs = repo.load(likes, dislikes)
+    assert provider.calls == 0, "unchanged preference files must not be re-embedded"
+
+    # Domain scoping: the movies preference is invisible to a general event.
+    assert "horror films" not in [p.text for p in prefs.likes_for("general")]
+    assert "horror films" in [p.text for p in prefs.likes_for("movies")]
+
+    now = datetime(2026, 8, 6, 20, 0, tzinfo=timezone.utc)
+
+    def event(event_id, tags, summary, venue, start=now):
+        return Event(
+            event_id=event_id, source_event_candidates=[event_id], source_type="apify",
+            created_at=now, updated_at=now, venue=venue, start_time=start,
+            title=event_id, summary=summary,
+            tags=[Tag(text=t, weight=w) for t, w in tags],
+        )
+
+    events = [
+        event("karaoke-night", [("karaoke", 1.0), ("singing", 0.8), ("bar", 0.2)],
+              "a karaoke night with a full bar and food", "Koto"),
+        event("sports-trivia", [("trivia night", 0.9), ("sports bar", 0.7), ("draft beer", 0.5)],
+              "a pub trivia night with drink specials and sports on the screens", "O'Doul's"),
+        # Same venue and night as karaoke-night, worded differently by another source.
+        event("karaoke-dup", [("karaoke", 1.0), ("singing", 0.8), ("bar", 0.2)],
+              "a karaoke night with a full bar and food", "Koto"),
+        # Same event text a week later — a recurrence that must survive dedup.
+        event("karaoke-next-week", [("karaoke", 1.0), ("singing", 0.8), ("bar", 0.2)],
+              "a karaoke night with a full bar and food", "Koto", now + timedelta(days=7)),
+    ]
+
+    EmbeddingStage(provider, logger).process(events)
+
+    for e in events:
+        assert len(e.tag_embeddings) == len(e.tags)
+        assert all(isinstance(b, bytes) for b in e.tag_embeddings)
+        assert len(decode_vector(e.tag_embeddings[0])) == 768
+        assert e.summary_embedding is not None
+
+    deduped = SemanticDeduplicationEngine().deduplicate(events, DeduplicationConfig())
+    ids = {e.event_id for e in deduped}
+    assert "karaoke-next-week" in ids, "a weekly recurrence must not be merged away"
+    assert len(deduped) >= 3
+
+    SimilarityStage(preferences=prefs, config=ScoringConfig()).process(deduped)
+
+    scores = {e.event_id: e.similarity.base_score for e in deduped}
+    karaoke = next(e for e in deduped if e.event_id.startswith("karaoke"))
+    trivia = next(e for e in deduped if e.event_id == "sports-trivia")
+
+    assert karaoke.similarity.base_score > trivia.similarity.base_score, scores
+    assert karaoke.similarity.base_score > 0, "karaoke is a stated like"
+    assert trivia.similarity.base_score < 0, "a sports bar hits two dislikes"
+    assert trivia.similarity.match == "no"
+    assert karaoke.similarity.match != "no", "a strong like must survive an incidental bar tag"
+
+    top = max(karaoke.similarity.reasons, key=lambda r: abs(r.contribution))
+    assert top.factor == "like_similarity"
+    assert top.matched_preference == "karaoke"
+
+    # Persist and reload: the expensive work must survive the process.
+    save_events(deduped, db_path)
+    reloaded = {e.event_id: e for e in load_events(db_path)}
+    assert set(reloaded) == ids
+
+    original = karaoke
+    restored = reloaded[original.event_id]
+    assert restored.tags == original.tags
+    assert restored.tag_embeddings == original.tag_embeddings
+    assert restored.summary_embedding == original.summary_embedding
+    assert restored.start_time == original.start_time
+
+    # Reloaded events are already embedded, so a second pass costs nothing.
+    provider.calls = 0
+    EmbeddingStage(provider, logger).process(list(reloaded.values()))
+    assert provider.calls == 0, "reloaded events must not be re-embedded"
