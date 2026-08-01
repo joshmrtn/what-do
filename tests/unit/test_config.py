@@ -23,6 +23,13 @@ def _valid_location_data():
     }
 
 
+def _load(tmp_path, extra):
+    """Load a config built from a valid location block plus `extra` sections."""
+    data = _valid_location_data()
+    data.update(extra)
+    return load_config(config_path=_write_config(tmp_path, data))
+
+
 def test_valid_config_loads(tmp_path):
     cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
     assert cfg.location.latitude == 42.52
@@ -329,3 +336,63 @@ def test_multiple_synthetic_activity_rules(tmp_path):
     assert len(cfg.synthetic_activities) == 2
     assert cfg.synthetic_activities[0].name == "Walk"
     assert cfg.synthetic_activities[1].name == "Picnic"
+
+
+# ---------------------------------------------------------------------------
+# Scoring: gate, aggregator, match thresholds, domain map
+# ---------------------------------------------------------------------------
+
+
+def test_scoring_gate_defaults(tmp_path):
+    cfg = _load(tmp_path, {})
+
+    assert cfg.scoring.gate_midpoint == 0.60
+    assert cfg.scoring.gate_temperature == 0.04
+
+
+def test_scoring_gate_overridable(tmp_path):
+    cfg = _load(tmp_path, {"scoring": {"gate_midpoint": 0.55, "gate_temperature": 0.10}})
+
+    assert cfg.scoring.gate_midpoint == 0.55
+    assert cfg.scoring.gate_temperature == 0.10
+
+
+def test_aggregator_defaults_to_balanced_mean(tmp_path):
+    assert _load(tmp_path, {}).scoring.aggregator == "balanced_mean"
+
+
+def test_aggregator_overridable(tmp_path):
+    cfg = _load(tmp_path, {"scoring": {"aggregator": "specificity_sum"}})
+
+    assert cfg.scoring.aggregator == "specificity_sum"
+
+
+def test_unknown_aggregator_rejected(tmp_path):
+    from src.config import ConfigError
+
+    with pytest.raises(ConfigError, match="aggregator"):
+        _load(tmp_path, {"scoring": {"aggregator": "vibes"}})
+
+
+def test_match_thresholds_default(tmp_path):
+    cfg = _load(tmp_path, {})
+
+    assert cfg.scoring.match_yes_min == 0.30
+    assert cfg.scoring.match_no_margin == 0.15
+
+
+def test_match_thresholds_overridable(tmp_path):
+    cfg = _load(tmp_path, {"scoring": {"match": {"yes_min": 0.5, "no_margin": 0.25}}})
+
+    assert cfg.scoring.match_yes_min == 0.5
+    assert cfg.scoring.match_no_margin == 0.25
+
+
+def test_domain_map_defaults_empty(tmp_path):
+    assert _load(tmp_path, {}).scoring.domain_map == {}
+
+
+def test_domain_map_loaded_from_config(tmp_path):
+    cfg = _load(tmp_path, {"scoring": {"domain_map": {"cinema_veezi": "movies", "amc": "movies"}}})
+
+    assert cfg.scoring.domain_map == {"cinema_veezi": "movies", "amc": "movies"}

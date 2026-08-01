@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from typing import TYPE_CHECKING
+
 from src.models.tag import Tag
+
+if TYPE_CHECKING:
+    from src.scoring.similarity import SimilarityResult
 
 
 @dataclass
@@ -33,3 +38,4 @@ class Event:
     weather: dict | None = None
     astronomical_data: dict | None = None
     metadata: dict = field(default_factory=dict)
+    similarity: "SimilarityResult | None" = None

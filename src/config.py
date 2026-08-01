@@ -56,9 +56,17 @@ class WeatherConfig:
     provider: str = "open-meteo"
 
 
+#: Contribution aggregation strategies. See docs/decisions.md — "Scoring formula
+#: replaced after measurement" for why balanced_mean is the default.
+AGGREGATORS = ("balanced_mean", "specificity_sum")
+
+#: Domain applied to any source_type absent from scoring.domain_map.
+GENERAL_DOMAIN_DEFAULT = "general"
+
+
 @dataclass
 class ScoringConfig:
-    """Scoring thresholds and multipliers."""
+    """Scoring thresholds, multipliers, and similarity shaping."""
 
     top_picks_min: float = 0.5
     worth_considering_min: float = 0.1
@@ -67,6 +75,17 @@ class ScoringConfig:
     match_multiplier_maybe: float = 1.0
     match_multiplier_no: float = 0.5
     min_tags_per_event: int = 5
+    # Logistic gate. Measured with nomic-embed-text: unrelated pairs sit at
+    # 0.33-0.48 and related pairs at 0.77-0.86, so 0.60 falls between them.
+    gate_midpoint: float = 0.60
+    gate_temperature: float = 0.04
+    aggregator: str = "balanced_mean"
+    # Relative-margin classification: an absolute dislike cutoff force-rejects
+    # a karaoke bar, where 'bar' scores 0.932 against the dislike 'bars'.
+    match_yes_min: float = 0.30
+    match_no_margin: float = 0.15
+    #: source_type -> preference domain. Unmapped types get [general] only.
+    domain_map: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -200,6 +219,14 @@ def load_config(
     scoring_data = data.get("scoring", {})
     tiers_data = scoring_data.get("tiers", {})
     multipliers_data = scoring_data.get("match_multipliers", {})
+    match_data = scoring_data.get("match", {})
+
+    aggregator = str(scoring_data.get("aggregator", "balanced_mean"))
+    if aggregator not in AGGREGATORS:
+        raise ConfigError(
+            f"Invalid scoring aggregator {aggregator!r}: must be one of {AGGREGATORS}"
+        )
+
     scoring = ScoringConfig(
         top_picks_min=float(tiers_data.get("top_picks_min", 0.5)),
         worth_considering_min=float(tiers_data.get("worth_considering_min", 0.1)),
@@ -208,6 +235,12 @@ def load_config(
         match_multiplier_maybe=float(multipliers_data.get("maybe", 1.0)),
         match_multiplier_no=float(multipliers_data.get("no", 0.5)),
         min_tags_per_event=int(scoring_data.get("min_tags_per_event", 5)),
+        gate_midpoint=float(scoring_data.get("gate_midpoint", 0.60)),
+        gate_temperature=float(scoring_data.get("gate_temperature", 0.04)),
+        aggregator=aggregator,
+        match_yes_min=float(match_data.get("yes_min", 0.30)),
+        match_no_margin=float(match_data.get("no_margin", 0.15)),
+        domain_map={str(k): str(v) for k, v in scoring_data.get("domain_map", {}).items()},
     )
 
     synthetic_activities: list[SyntheticActivityRule] = []

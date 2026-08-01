@@ -26,6 +26,34 @@ scoring:
     no: 0.5
   min_tags_per_event: 5
 
+  # Logistic gate applied to every similarity before it can contribute.
+  # Measured with nomic-embed-text: unrelated pairs land at 0.33-0.48 and
+  # related pairs at 0.77-0.86, so 0.60 sits between the two distributions.
+  # Without this, a coin-flip between two noise values contributes almost its
+  # full magnitude — "sushi" scored -0.433 against a dislike list with no food in it.
+  gate_midpoint: 0.60
+  gate_temperature: 0.04
+
+  # balanced_mean: mean(positives) - mean(|negatives|). Stops several weak
+  #   incidental negatives outvoting one strong positive.
+  # specificity_sum: sum(contributions) / count — the originally specified
+  #   formula, retained for comparison. See docs/decisions.md.
+  aggregator: balanced_mean
+
+  match:
+    # Advisory yes/maybe/no. `no` is relative, never an absolute dislike cutoff:
+    # a karaoke bar scores 0.932 on "bar" against the dislike "bars", so an
+    # absolute rule would reject a venue you like. The strongest dislike must
+    # beat the strongest like by no_margin.
+    yes_min: 0.30
+    no_margin: 0.15
+
+  # source_type -> preference domain. Any source_type not listed here gets
+  # [general] preferences only, so a [movies] entry never scores a concert.
+  domain_map:
+    cinema_veezi: movies
+    amc: movies
+
 deduplication:
   fuzzy_title_threshold: 0.85
   time_window_hours: 2
