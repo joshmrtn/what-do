@@ -12,6 +12,7 @@ from typing import Callable
 from src.config import AppConfig
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
+from src.models.tag import tags_to_json
 from src.normalization.deduplicator import DeduplicationEngine
 from src.normalization.normalizer import NormalizationEngine
 from src.utils.logging import StructuredLogger
@@ -60,7 +61,7 @@ def _event_to_row(e: Event) -> tuple:
         e.location,
         e.start_time.isoformat() if e.start_time else None,
         e.end_time.isoformat() if e.end_time else None,
-        json.dumps(e.tags),
+        tags_to_json(e.tags),
         e.summary,
         None,  # tag_embeddings — populated in Phase 7
         e.summary_embedding,

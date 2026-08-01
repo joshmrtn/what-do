@@ -542,6 +542,8 @@ Tag generation:
 
 The LLM shall be prompted to generate a minimum of 5 tags per event. This ensures the embedding layer has enough signal to compute a meaningful score. The minimum tag count shall be configurable.
 
+Each tag carries a **centrality weight** in `[0.0, 1.0]`: how central the tag is to what the event actually is (1.0 = defining feature, 0.5 = secondary attribute, 0.1 = incidental context such as venue type or day of week). The scoring layer multiplies each tag's contribution by this weight so a venue's ambient character does not outvote the activity itself. Tag output is therefore `[{"tag": ..., "weight": ...}]`, not a bare string list. The parse boundary tolerates bare strings (weight 1.0) so model drift degrades rather than fails.
+
 LLM Pass 1 bypass:
 
 If an event already has `tags` populated when it reaches Stage 1, the LLM extraction step shall be skipped for that event. The existing tags and summary are used as-is.
@@ -617,6 +619,15 @@ base_score    = tag_score + (summary_weight × summary_score)
 ```
 
 `summary_weight` is configurable (default 0.3). The summary is a supporting signal, not the primary driver.
+
+> **Addendum (2026-07-31) — this formula was measured and replaced.** Against real
+> `nomic-embed-text` vectors and real preference files it scored every candidate venue negative and
+> ranked them backwards from the user's stated preference. Two defects: unrelated pairs sit at
+> cosine ~0.42 (not ~0), and the winner-takes-full-cosine rule converts a noise-level gap into a
+> near-full-magnitude penalty. The shipped formula gates each similarity through a logistic ramp,
+> multiplies by the tag's centrality weight, and aggregates as
+> `mean(positive) - mean(|negative|)`. See `docs/decisions.md` — "Scoring formula replaced after
+> measurement" — for the measurements and the rejected alternatives.
 
 Final score after multipliers (applied in scoring layer):
 

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.models.event import Event
+from src.models.tag import Tag
 
 
 def _now() -> datetime:
@@ -127,7 +128,7 @@ def test_event_tags_not_shared_across_instances():
         created_at=_now(),
         updated_at=_now(),
     )
-    a.tags.append("music")
+    a.tags.append(Tag(text="music"))
     assert b.tags == []
 
 
@@ -147,7 +148,7 @@ def test_event_full_construction():
         location="Salem, MA",
         start_time=start,
         end_time=end,
-        tags=["jazz", "live music"],
+        tags=[Tag(text="jazz", weight=1.0), Tag(text="live music", weight=0.6)],
         summary="An evening of jazz at The Vault.",
         tag_embeddings=[b"fake-bytes"],
         summary_embedding=b"more-fake-bytes",
@@ -159,6 +160,6 @@ def test_event_full_construction():
     )
     assert event.title == "Jazz Night"
     assert event.venue == "The Vault"
-    assert event.tags == ["jazz", "live music"]
+    assert event.tags == [Tag(text="jazz", weight=1.0), Tag(text="live music", weight=0.6)]
     assert event.start_time == start
     assert len(event.source_event_candidates) == 2

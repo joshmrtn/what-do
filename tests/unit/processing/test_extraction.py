@@ -229,3 +229,128 @@ def test_no_image_bytes_no_images_kwarg():
 
     call_kwargs = client.chat.call_args[1]
     assert "images" not in call_kwargs or call_kwargs.get("images") is None
+
+
+# ---------------------------------------------------------------------------
+# Weighted tags (centrality)
+# ---------------------------------------------------------------------------
+
+
+def _weighted(pairs: list[tuple[str, float]]) -> str:
+    """Build a response whose tags carry centrality weights."""
+    payload = {
+        "title": "Punk Rock Night",
+        "venue": "The Dive",
+        "start_time": "2026-06-22T21:00:00",
+        "end_time": None,
+        "tags": [{"tag": t, "weight": w} for t, w in pairs],
+        "summary": "Three local punk bands play a $5 show.",
+    }
+    return json.dumps(payload)
+
+
+_FIVE_WEIGHTED = [
+    ("punk rock", 1.0), ("live music", 0.9), ("local bands", 0.7),
+    ("all ages", 0.5), ("bar", 0.1),
+]
+
+
+def test_weighted_tags_preserve_weights():
+    from src.models.tag import Tag
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_weighted(_FIVE_WEIGHTED))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("punk show tonight")
+
+    assert result.tags == [Tag(text=t, weight=w) for t, w in _FIVE_WEIGHTED]
+
+
+def test_bare_string_tags_default_to_full_weight():
+    """Models drift; a plain string list must not fail extraction."""
+    from src.models.tag import Tag
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_valid_response(tags=["jazz", "live music", "venue", "evening", "lounge"]))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("jazz tonight")
+
+    assert result.tags[0] == Tag(text="jazz", weight=1.0)
+    assert all(t.weight == 1.0 for t in result.tags)
+
+
+def test_missing_weight_defaults_to_full_weight():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    payload = json.loads(_weighted(_FIVE_WEIGHTED))
+    del payload["tags"][2]["weight"]
+    client = _make_client(json.dumps(payload))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("punk show tonight")
+
+    assert result.tags[2].weight == 1.0
+
+
+def test_non_numeric_weight_defaults_to_full_weight():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    payload = json.loads(_weighted(_FIVE_WEIGHTED))
+    payload["tags"][1]["weight"] = "very important"
+    client = _make_client(json.dumps(payload))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("punk show tonight")
+
+    assert result.tags[1].weight == 1.0
+
+
+@pytest.mark.parametrize("raw_weight,expected", [(1.7, 1.0), (-0.4, 0.0)])
+def test_out_of_range_weight_is_clamped(raw_weight, expected):
+    from src.processing.extraction import OllamaExtractionProvider
+
+    payload = json.loads(_weighted(_FIVE_WEIGHTED))
+    payload["tags"][0]["weight"] = raw_weight
+    client = _make_client(json.dumps(payload))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("punk show tonight")
+
+    assert result.tags[0].weight == expected
+
+
+def test_min_tag_count_enforced_on_weighted_tags():
+    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
+
+    client = _make_client(_weighted(_FIVE_WEIGHTED[:3]))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    with pytest.raises(ExtractionError, match="tag"):
+        provider.extract("punk show tonight")
+
+
+def test_tag_entry_without_text_is_skipped():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    payload = json.loads(_weighted(_FIVE_WEIGHTED + [("", 0.5)]))
+    client = _make_client(json.dumps(payload))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("punk show tonight")
+
+    assert len(result.tags) == 5
+    assert all(t.text for t in result.tags)
+
+
+def test_prompt_requests_centrality_weights():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_weighted(_FIVE_WEIGHTED))
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider.extract("punk show tonight")
+
+    prompt = client.chat.call_args.kwargs["messages"][0]["content"]
+    assert "weight" in prompt.lower()
+    assert "central" in prompt.lower()

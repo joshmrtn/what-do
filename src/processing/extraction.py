@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from src.models.tag import DEFAULT_WEIGHT, Tag, clamp_weight
 from src.utils.chat_client import ChatClient
 
 
@@ -28,7 +29,7 @@ class ExtractionResult:
         venue: Extracted venue name (None if not determinable).
         start_time: Parsed start datetime (None if not determinable).
         end_time: Parsed end datetime (None if not determinable).
-        tags: Descriptive tags for the event (minimum min_tags).
+        tags: Weighted descriptive tags for the event (minimum min_tags).
         summary: One-sentence event summary.
     """
 
@@ -36,7 +37,7 @@ class ExtractionResult:
     venue: str | None
     start_time: datetime | None
     end_time: datetime | None
-    tags: list[str]
+    tags: list[Tag]
     summary: str
 
 
@@ -78,12 +79,18 @@ Required JSON format:
   "venue": "venue name or null",
   "start_time": "ISO 8601 datetime or null (e.g. 2026-06-22T20:00:00)",
   "end_time": "ISO 8601 datetime or null",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "tags": [{{"tag": "short lowercase phrase", "weight": 0.0-1.0}}],
   "summary": "One sentence describing the event."
 }}
 
 Rules:
 - tags must contain at least {min_tags} descriptive labels (genre, activity type, atmosphere, etc.)
+- "weight" is how CENTRAL the tag is to what the event actually IS:
+  1.0 = the main activity or defining feature; the reason someone attends
+  0.5 = a real but secondary attribute
+  0.1 = incidental context (the kind of venue, the day of week, decor)
+- Weights must discriminate. Do not give every tag a similar weight.
+- Judge centrality from the event text, not from what is typical of the venue type.
 - summary must be exactly one sentence
 - Use null (not empty string) for unknown fields
 - Output ONLY the JSON object — no explanation, no markdown"""
@@ -97,11 +104,13 @@ You must respond with ONLY valid JSON matching this exact format:
   "venue": "venue name or null",
   "start_time": "ISO 8601 datetime or null",
   "end_time": "ISO 8601 datetime or null",
-  "tags": ["tag1", "tag2", ...],
+  "tags": [{{"tag": "short phrase", "weight": 0.0-1.0}}, ...],
   "summary": "One sentence."
 }}
 
-Remember: at least {min_tags} tags required. Output ONLY the JSON."""
+Remember: at least {min_tags} tags required, each with a centrality weight where
+1.0 is the event's defining feature and 0.1 is incidental context.
+Output ONLY the JSON."""
 
 
 class OllamaExtractionProvider(ExtractionProvider):
@@ -180,10 +189,13 @@ class OllamaExtractionProvider(ExtractionProvider):
         except json.JSONDecodeError:
             return None, "JSON parse error — response was not valid JSON"
 
-        tags = data.get("tags")
-        if not isinstance(tags, list) or len(tags) < self._min_tags:
-            count = len(tags) if isinstance(tags, list) else 0
-            return None, f"tag count {count} is below minimum {self._min_tags}"
+        raw_tags = data.get("tags")
+        if not isinstance(raw_tags, list):
+            return None, f"tag count 0 is below minimum {self._min_tags}"
+
+        tags = self._parse_tags(raw_tags)
+        if len(tags) < self._min_tags:
+            return None, f"tag count {len(tags)} is below minimum {self._min_tags}"
 
         summary = data.get("summary")
         if not summary or not isinstance(summary, str):
@@ -200,6 +212,28 @@ class OllamaExtractionProvider(ExtractionProvider):
             tags=tags,
             summary=summary,
         ), ""
+
+    @staticmethod
+    def _parse_tags(raw_tags: list[Any]) -> list[Tag]:
+        """Build weighted tags from model output, tolerating schema drift.
+
+        Accepts both {"tag": ..., "weight": ...} objects and bare strings.
+        Entries with no usable text are dropped rather than failing the whole
+        extraction; weights are clamped into range.
+        """
+        tags: list[Tag] = []
+        for entry in raw_tags:
+            if isinstance(entry, str):
+                text, weight = entry, DEFAULT_WEIGHT
+            elif isinstance(entry, dict):
+                raw_text = entry.get("tag", entry.get("text", ""))
+                text = raw_text if isinstance(raw_text, str) else ""
+                weight = clamp_weight(entry.get("weight"))
+            else:
+                continue
+            if text.strip():
+                tags.append(Tag(text=text, weight=weight))
+        return tags
 
     @staticmethod
     def _parse_dt(value: object) -> datetime | None:

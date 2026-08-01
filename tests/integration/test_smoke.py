@@ -324,6 +324,7 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
     from src.enrichment.service import EnrichmentService
     from src.enrichment.weather import WeatherProvider
     from src.models.event import Event
+    from src.models.tag import Tag
     from src.storage.db import init_db
 
     run_date = date(2025, 6, 21)
@@ -398,6 +399,10 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
     assert len(synthetic) == 1, f"expected 1 synthetic event, got {len(synthetic)}"
     syn = synthetic[0]
     assert syn.source_type == "synthetic"
-    assert syn.tags == ["outdoor", "walking", "low_key"]
+    assert syn.tags == [
+        Tag(text="outdoor"),
+        Tag(text="walking"),
+        Tag(text="low_key"),
+    ]
     assert syn.summary == "A pleasant evening walk"
     assert "evening_walk" in syn.event_id

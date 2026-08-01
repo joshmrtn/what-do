@@ -43,6 +43,13 @@ Adding a new source or stage = implement the interface and register it. No other
 
 **Specificity wins in scoring.** For each event tag, compute max cosine similarity against
 all likes and all dislikes. Whichever is higher (more specific match) determines direction.
+This holds at the classification layer too: an event is `no` only when the best dislike beats
+the best like *by a margin*, never on an absolute dislike threshold — measured, an absolute
+cutoff force-rejects a karaoke bar the user likes (`bar ↔ bars` = 0.932).
+
+**Tags are weighted by centrality.** LLM Pass 1 assigns each tag a 0.0–1.0 weight for how central
+it is to what the event *is*, so incidental venue attributes ("bar", "thursday") recede against
+the main activity. Local `gemma4:e4b` judges this better than Gemini flash.
 
 **Domain-scoped preferences.** `likes.txt` and `dislikes.txt` support section headers:
 `[general]`, `[movies]`, `[restaurants]`. Domain preferences only apply to events with a
@@ -56,16 +63,29 @@ matching `source_type`. Lines before the first header are `[general]`.
 ## Scoring formula
 
 ```
-for each event tag t:
+gate(s) = 1 / (1 + exp(-(s - gate_midpoint) / gate_temperature))   # defaults 0.60, 0.04
+
+for each weighted tag (t, w):
     like_sim    = max(cosine(t, l) for l in like_embeddings)
     dislike_sim = max(cosine(t, d) for d in dislike_embeddings)
-    contribution = +like_sim if like_sim > dislike_sim else -dislike_sim
+    contribution = w × (+like_sim × gate(like_sim)  if like_sim > dislike_sim
+                        else -dislike_sim × gate(dislike_sim))
 
-tag_score     = sum(contributions) / len(tags)          # normalized
+tag_score     = mean(positive contributions) - mean(|negative contributions|)
 summary_score = same formula on the 1-sentence summary
 base_score    = tag_score + (summary_weight × summary_score)
 final_score   = base_score × match_multiplier + weather_bonus
 ```
+
+Three parts are load-bearing and were each measured against real embeddings — dropping any one
+breaks real cases. See `docs/decisions.md`:
+
+- **The logistic gate** kills the ~0.42 cosine noise floor. Without it, noise decides a tag's sign
+  *and* contributes near-full magnitude ("sushi" scored -0.433 against a dislike list containing
+  no food terms).
+- **Weights multiply the contribution.** Never use them as averaging weights — that normalises
+  them away and the suppression silently does nothing.
+- **The balanced mean** stops several weak incidental negatives outvoting one strong positive.
 
 Scores are unbounded floats (higher = better, negatives valid). Never normalize relative to
 current batch — events must stay comparable across runs.
@@ -175,6 +195,9 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Blocklist source of truth | `data/blocklist.json` is authoritative. DB table overwritten from file at each batch start |
 | LLM Pass 2 | Deferred to post-v1. Slot reserved between steps 11 and 13. Do not implement in v1 |
 | Async in v1 | v1 is deliberately single-threaded. No asyncio. Parallelism is post-v1 only |
+| Tag weights used as averaging weights | Normalises the weight away — suppression silently does nothing. Weight must multiply the contribution: `c = w × similarity` |
+| Assuming unrelated concepts score ~0 | `nomic-embed-text` puts unrelated pairs at ~0.30–0.47. Every absolute threshold must account for the floor; the logistic gate exists for this |
+| Raw cosine magnitude on a near-tie | A 0.03 noise gap becomes a ~0.43 penalty. Always gate before comparing |
 
 ---
 

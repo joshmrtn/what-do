@@ -9,6 +9,7 @@ from src.config import SyntheticActivityRule, SyntheticConditions
 from src.enrichment.astronomical import AstronomicalData
 from src.enrichment.synthetic import SyntheticActivityGenerator, parse_time_window
 from src.models.event import Event
+from src.models.tag import Tag
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -163,7 +164,11 @@ def test_event_source_type_is_synthetic():
 def test_event_tags_match_rule():
     rule = _rule(tags=["outdoor", "walking", "low_key"])
     events = GEN.generate([rule], RUN_DATE, CLEAR_WEATHER, ASTRO)
-    assert events[0].tags == ["outdoor", "walking", "low_key"]
+    assert events[0].tags == [
+        Tag(text="outdoor", weight=1.0),
+        Tag(text="walking", weight=1.0),
+        Tag(text="low_key", weight=1.0),
+    ]
 
 
 def test_event_summary_matches_rule():

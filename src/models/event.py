@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from src.models.tag import Tag
+
 
 @dataclass
 class Event:
@@ -24,7 +26,7 @@ class Event:
     location: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
-    tags: list[str] = field(default_factory=list)
+    tags: list[Tag] = field(default_factory=list)
     summary: str | None = None
     tag_embeddings: list[bytes] = field(default_factory=list)
     summary_embedding: bytes | None = None

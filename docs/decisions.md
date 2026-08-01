@@ -394,3 +394,147 @@ captures it for some sources.
 "today" fixes the common case: most sources have no reliable post date, and a daily scrape makes
 seen-date ≈ posted-date in practice. Propagating `raw_published_at` onto the `Event` model (more
 accurate for backdated posts) was out of scope — tracked as issue #5.
+
+---
+
+## Tags carry a centrality weight
+
+**Decision:** `Event.tags` and `ExtractionResult.tags` are `list[Tag]`, where `Tag` has `text` and
+a `weight` in `[0.0, 1.0]` describing how central the tag is to what the event *is*. LLM Pass 1
+assigns the weight (1.0 = defining feature, 0.5 = secondary, 0.1 = incidental context).
+
+**Rationale:** the scoring problem that motivated this is "karaoke at a bar". A venue that is a bar
+and hosts karaoke produces tags like `karaoke`, `bar`, `nightlife`, `cocktails`. With unweighted
+tags, incidental venue attributes outnumber the one tag describing the activity the user actually
+cares about, and a dislike on "bars" sinks an event the user likes. Weights let the activity
+dominate the venue's ambient character.
+
+Measured (2026-07-31, six events, both `gemma4:e4b` and `gemini-flash-latest`): weighting is the
+difference between 4/5 and 5/5 directional accuracy on the local model, and it consistently widens
+the score gap on the designed test case — two events with near-identical tag vocabulary but
+inverted prominence (a punk band show at a bar vs a punk-themed dance party).
+
+**Local models do this well.** `gemma4:e4b` produced a wider, better-judged weight spread than
+Gemini flash — it ranked karaoke *third* at a pub advertising drinks and sports first, where Gemini
+marked karaoke 1.0 at every venue that mentioned it. Production stays 100% local.
+
+---
+
+## Weights multiply the contribution; they are never averaging weights
+
+**Decision:** a tag's contribution is `w × similarity`. The weight scales the magnitude *before*
+aggregation. It must not be used as the weight in a weighted mean.
+
+**Rationale:** this is subtle and got implemented wrong once during the spike, producing plausible
+but wrong numbers. Using `w` as an averaging weight normalises it away: an event whose only negative
+tags are incidental — `bar` at weight 0.20, cosine 0.932 — still yields a negative mean of ≈0.81,
+because a weighted mean over one low-weight item is just that item. Down-weighting only re-blends a
+tag against others on the same side; it never shrinks that side. With `c = w × s`, `bar` contributes
+0.186 and genuinely recedes.
+
+Measured effect: `gate` + multiplier semantics is the only combination scoring correctly on both
+tagging models (6/6 Gemini, 5/5 gemma); the same rule with averaging semantics gets 4/5 on gemma.
+
+---
+
+## Scoring formula replaced after measurement: logistic gate + balanced mean
+
+**Decision:** the formula specified in `high-level-design.md` §4.5 Stage 3 — `sum(contributions) /
+len(tags)` over raw cosines — is replaced by:
+
+```
+gate(s)      = 1 / (1 + exp(-(s - gate_midpoint) / gate_temperature))   # default 0.60, 0.04
+contribution = w × (+like_sim × gate(like_sim)  if like_sim > dislike_sim
+                    else -dislike_sim × gate(dislike_sim))
+tag_score    = mean(positive contributions) - mean(|negative contributions|)
+```
+
+**Rationale:** the original formula was measured against real `nomic-embed-text` vectors and the
+user's real preference files, and it scored *every* candidate venue negative while ranking them
+exactly backwards from the user's stated preference. Two independent defects:
+
+1. **The cosine floor is ~0.42, not ~0.** Unrelated pairs measured `min 0.302, median 0.417,
+   p75 0.472` across 198 tag×preference pairs. The specification's assumption that unrelated
+   concepts score near zero is false for this embedding model.
+
+2. **Noise decided both the sign and the magnitude.** `sushi` scored `like 0.407 (karaoke)` vs
+   `dislike 0.433 (dancing)` — neither is a match — and the winner-takes-full-cosine rule turned a
+   0.027 noise gap into a **-0.433** penalty. The user was penalised for the venue serving sushi.
+   With ~6 tags per event, a few neutral tags swamp one genuine match.
+
+Worse, the noise is **biased, not random**: over 11 neutral probe tags, mean best-dislike (0.461)
+exceeded mean best-like (0.420) and the dislike side won **10 of 11**. Cause: this user's dislikes
+are broad category words ("bars", "nightclubs"), the likes are narrow genre terms ("emo music").
+Broad terms sit closer to all vocabulary. **The raw rule is biased toward whichever preference list
+is written in more generic language** — not the longer one, the more generic one.
+
+The logistic gate maps the entire 0.30–0.47 noise band to ≈0.01, so noise contributes nothing while
+a near-miss at 0.59 still counts faintly. It neutralises the asymmetry as a side effect, with no
+separate per-side calibration. The balanced mean stops a count of weak incidental negatives from
+outvoting one strong positive.
+
+**Rejected alternatives, both measured:** a hard similarity floor (0.50) performed *worse than doing
+nothing* (4/6 vs 6/6); a margin rule (`like_sim - dislike_sim`) was worst of all, because the
+vocabulary asymmetry **is** a margin offset and a margin-based rule inherits it wholesale.
+
+**Caveat:** n=6 invented events plus three real venues, single runs per event. This justifies the
+design; it is not a calibration. `gate_midpoint`, `gate_temperature`, and the aggregator are all
+config keys precisely so they can be tuned against real batch output.
+
+### How this was measured
+
+Recorded so the numbers above can be checked and the experiment repeated when recalibrating.
+
+**Embedding model:** `nomic-embed-text` via Ollama `/api/embed`, 768 dimensions, cosine similarity,
+no task prefix on either side (tags and preferences are embedded identically so the comparison stays
+symmetric).
+
+**Preference input:** the local `data/likes.txt` and `data/dislikes.txt`. These are gitignored, so
+their shape matters more than their content for reproduction: **5 general likes** (one activity, three
+narrow music-genre terms, one atmosphere phrase), **1 movies-domain like**, and **4 general dislikes**,
+all broad venue/scene category words. The vocabulary-asymmetry finding is a direct consequence of that
+shape — narrow likes against broad dislikes — and would weaken or invert with differently-worded files.
+
+**Corpus.** Two groups, both scored against expected directions derived from the preference files:
+
+| group | items | provenance | what it tests |
+|---|---|---|---|
+| venues | Koto, The Castle, O'Neill's | Koto is a verbatim listing from the venue's website; the other two texts were **invented** | three karaoke-hosting bar-restaurants the user ranks Koto > Castle > O'Neill's — near-identical tags, subtle preference differences |
+| events | A–F | all **invented** | A/B are the designed pair: near-identical tag vocabulary, inverted prominence (punk band show *at* a bar vs punk-themed *dance party*). C–F are controls at the extremes |
+
+The A/B pair is the reusable idea: hold vocabulary constant and invert which tag is central. It is
+the only construction that isolates centrality weighting from ordinary tag matching.
+
+**Procedure.** For each event: tag it with an LLM (both `gemma4:e4b` and `gemini-flash-latest`, to
+separate model-specific artifacts from real effects); embed each tag; take `max` cosine against the
+like list and against the dislike list, restricted to the event's applicable domains; apply the
+contribution rule; aggregate; compare the sign of the result to the expected direction. Directional
+accuracy is the count of matching signs; separation is the smallest absolute score among correct
+answers, which is what tier thresholds have to clear.
+
+**Parameters swept:** contribution rules `raw`, `hard floor`, `logistic gate`, `margin`,
+`margin×gate`; floors `0.00–0.65`; gate midpoint `0.60`, temperature `0.04`; aggregators
+`sum/len(tags)` and `mean(pos) − mean(|neg|)`; weight modes none / averaging-weight /
+magnitude-multiplier.
+
+**Known limits.** Single run per event — LLM tagging is stochastic and that variance was never
+measured. Two of the three venue texts and all six events were invented, so only Koto's text is real.
+Domain scoping was initially omitted for the movie event, which invalidated its first result until
+corrected. The scripts that produced this were session scratch files and are **not** in the repo, so
+none of it is currently re-runnable — see the open question in the Phase 7 plan.
+
+---
+
+## Match classification uses a relative margin, not an absolute dislike threshold
+
+**Decision:** an event is classified `no` when the strongest dislike similarity exceeds the
+strongest like similarity by a configured margin — not when any dislike crosses a fixed threshold.
+
+**Rationale:** the absolute rule was measured to force-reject the user's *favourite* venue. `bar`
+against the dislike `bars` scores **0.932**, comfortably above any sensible absolute cutoff, at a
+restaurant the user likes specifically because it hosts karaoke. Under the relative rule it survives
+on `karaoke ↔ karaoke = 1.000` beating `bar ↔ bars = 0.932`.
+
+The margin there is only **0.068**, so the threshold needs care — a default near 0.05 would be
+knife-edge. This rule is the mechanism that makes "specificity wins" hold at the classification
+layer as well as the scoring layer.

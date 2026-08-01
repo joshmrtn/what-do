@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, call
 import pytest
 
 from src.models.event import Event
+from src.models.tag import Tag
 from src.utils.logging import get_logger
 
 
@@ -43,7 +44,8 @@ def _make_provider(tags=None, summary="A great event."):
         venue="Extracted Venue",
         start_time=datetime(2026, 6, 22, 20, 0, 0),
         end_time=None,
-        tags=tags or ["jazz", "live music", "evening", "venue", "weekend"],
+        tags=tags or [Tag(text=t) for t in
+                      ["jazz", "live music", "evening", "venue", "weekend"]],
         summary=summary,
     )
     return provider
@@ -79,14 +81,16 @@ def test_reference_date_from_get_now_passed_to_provider():
 def test_bypass_when_tags_already_populated():
     from src.processing.extraction_stage import ExtractionStage
 
-    event = _make_event(tags=["jazz", "live", "music", "fun", "night"])
+    event = _make_event(tags=[Tag(text=t) for t in
+                              ["jazz", "live", "music", "fun", "night"]])
     provider = _make_provider()
     stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
 
     results = stage.process([event])
 
     provider.extract.assert_not_called()
-    assert results[0].tags == ["jazz", "live", "music", "fun", "night"]
+    assert results[0].tags == [Tag(text=t) for t in
+                               ["jazz", "live", "music", "fun", "night"]]
 
 
 def test_extraction_called_when_tags_empty():
@@ -110,12 +114,12 @@ def test_tags_and_summary_always_written():
     from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event()
-    provider = _make_provider(tags=["a", "b", "c", "d", "e"], summary="Excellent event.")
+    provider = _make_provider(tags=[Tag(text=c) for c in "abcde"], summary="Excellent event.")
     stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
 
     results = stage.process([event])
 
-    assert results[0].tags == ["a", "b", "c", "d", "e"]
+    assert results[0].tags == [Tag(text=c) for c in "abcde"]
     assert results[0].summary == "Excellent event."
 
 
@@ -281,7 +285,7 @@ def test_one_failed_event_does_not_stop_others():
     ]
 
     good_result_mock = MagicMock()
-    good_result_mock.tags = ["a", "b", "c", "d", "e"]
+    good_result_mock.tags = [Tag(text=c) for c in "abcde"]
     good_result_mock.summary = "Good event."
     good_result_mock.title = None
     good_result_mock.venue = None
@@ -295,7 +299,7 @@ def test_one_failed_event_does_not_stop_others():
         ExtractionError("bad"),
         ExtractionResult(
             title=None, venue=None, start_time=None, end_time=None,
-            tags=["a", "b", "c", "d", "e"], summary="Good."
+            tags=[Tag(text=c) for c in "abcde"], summary="Good."
         ),
     ]
 
@@ -307,7 +311,7 @@ def test_one_failed_event_does_not_stop_others():
 
     assert len(results) == 2
     assert results[0].metadata.get("llm_extraction_failed") is True
-    assert results[1].tags == ["a", "b", "c", "d", "e"]
+    assert results[1].tags == [Tag(text=c) for c in "abcde"]
 
 
 # ---------------------------------------------------------------------------

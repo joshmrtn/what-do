@@ -7,6 +7,7 @@ from typing import Callable
 from src.config import SyntheticActivityRule, SyntheticConditions
 from src.enrichment.astronomical import AstronomicalData
 from src.models.event import Event
+from src.models.tag import Tag
 
 # ---------------------------------------------------------------------------
 # Time-window DSL
@@ -148,7 +149,7 @@ class SyntheticActivityGenerator:
                     created_at=now,
                     updated_at=now,
                     title=rule.name,
-                    tags=list(rule.tags),
+                    tags=[Tag(text=t) for t in rule.tags],
                     summary=rule.summary,
                     start_time=start_time,
                     end_time=end_time,

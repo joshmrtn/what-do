@@ -1,6 +1,7 @@
 """Unit tests for the ChatClient structural protocol."""
 
 from __future__ import annotations
+from src.models.tag import Tag
 
 
 def test_ollama_client_satisfies_chat_client_protocol():
@@ -39,7 +40,7 @@ def test_extraction_provider_accepts_any_chat_client():
 
     provider = OllamaExtractionProvider(client=Stub(), min_tags=5)
     result = provider.extract("some event text")
-    assert result.tags == ["a", "b", "c", "d", "e"]
+    assert result.tags == [Tag(text=c) for c in "abcde"]
 
 
 def test_disambiguation_provider_accepts_any_chat_client():
