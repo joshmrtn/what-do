@@ -632,8 +632,16 @@ base_score    = tag_score + (summary_weight × summary_score)
 Final score after multipliers (applied in scoring layer):
 
 ```
-final_score = base_score × match_multiplier + weather_bonus
+final_score = base_score × match_multiplier + weather_bonus     if base_score >= 0
+final_score = base_score ÷ match_multiplier + weather_bonus     if base_score < 0
 ```
+
+> **Addendum (2026-08-01):** the multiplier is applied direction-aware. Base scores are unbounded
+> and negative values are valid, so a plain product inverts the label's intent: at `no = 0.5`, a
+> base of −0.40 becomes −0.20, ranking the events we are most confident the user dislikes *above*
+> ones we are merely neutral about. Dividing when the base is negative makes the multiplier act on
+> magnitude with the sign preserved. Multipliers must therefore be strictly positive, which
+> `load_config` enforces. See `docs/decisions.md` — "Match multiplier is applied direction-aware".
 
 ---
 

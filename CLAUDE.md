@@ -74,7 +74,10 @@ for each weighted tag (t, w):
 tag_score     = mean(positive contributions) - mean(|negative contributions|)
 summary_score = same formula on the 1-sentence summary
 base_score    = tag_score + (summary_weight × summary_score)
-final_score   = base_score × match_multiplier + weather_bonus
+
+# Direction-aware: the multiplier acts on magnitude, sign preserved.
+final_score   = base_score × match_multiplier + weather_bonus   if base_score >= 0
+final_score   = base_score ÷ match_multiplier + weather_bonus   if base_score < 0
 ```
 
 Three parts are load-bearing and were each measured against real embeddings — dropping any one
@@ -195,6 +198,7 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Blocklist source of truth | `data/blocklist.json` is authoritative. DB table overwritten from file at each batch start |
 | LLM Pass 2 | Deferred to post-v1. Slot reserved between steps 11 and 13. Do not implement in v1 |
 | Async in v1 | v1 is deliberately single-threaded. No asyncio. Parallelism is post-v1 only |
+| `base × match_multiplier` on a negative score | Inverts intent — `no` at 0.5 turns -0.40 into -0.20, *rewarding* the clearest rejections. Divide instead when the base is negative |
 | Tag weights used as averaging weights | Normalises the weight away — suppression silently does nothing. Weight must multiply the contribution: `c = w × similarity` |
 | Assuming unrelated concepts score ~0 | `nomic-embed-text` puts unrelated pairs at ~0.30–0.47. Every absolute threshold must account for the floor; the logistic gate exists for this |
 | Raw cosine magnitude on a near-tie | A 0.03 noise gap becomes a ~0.43 penalty. Always gate before comparing |

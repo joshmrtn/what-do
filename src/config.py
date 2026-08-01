@@ -227,13 +227,27 @@ def load_config(
             f"Invalid scoring aggregator {aggregator!r}: must be one of {AGGREGATORS}"
         )
 
+    # The ranking engine divides by the multiplier when the base score is
+    # negative, so that a `no` deepens a bad score instead of improving it.
+    # Zero would raise, and a negative multiplier would flip the sign.
+    multipliers = {
+        "yes": float(multipliers_data.get("yes", 1.5)),
+        "maybe": float(multipliers_data.get("maybe", 1.0)),
+        "no": float(multipliers_data.get("no", 0.5)),
+    }
+    for label, value in multipliers.items():
+        if value <= 0:
+            raise ConfigError(
+                f"Invalid match multiplier for {label!r}: {value} — must be positive"
+            )
+
     scoring = ScoringConfig(
         top_picks_min=float(tiers_data.get("top_picks_min", 0.5)),
         worth_considering_min=float(tiers_data.get("worth_considering_min", 0.1)),
         summary_weight=float(scoring_data.get("summary_weight", 0.3)),
-        match_multiplier_yes=float(multipliers_data.get("yes", 1.5)),
-        match_multiplier_maybe=float(multipliers_data.get("maybe", 1.0)),
-        match_multiplier_no=float(multipliers_data.get("no", 0.5)),
+        match_multiplier_yes=multipliers["yes"],
+        match_multiplier_maybe=multipliers["maybe"],
+        match_multiplier_no=multipliers["no"],
         min_tags_per_event=int(scoring_data.get("min_tags_per_event", 5)),
         gate_midpoint=float(scoring_data.get("gate_midpoint", 0.60)),
         gate_temperature=float(scoring_data.get("gate_temperature", 0.04)),

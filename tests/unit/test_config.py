@@ -396,3 +396,27 @@ def test_domain_map_loaded_from_config(tmp_path):
     cfg = _load(tmp_path, {"scoring": {"domain_map": {"cinema_veezi": "movies", "amc": "movies"}}})
 
     assert cfg.scoring.domain_map == {"cinema_veezi": "movies", "amc": "movies"}
+
+
+@pytest.mark.parametrize("label", ["yes", "maybe", "no"])
+def test_zero_match_multiplier_rejected(tmp_path, label):
+    """A negative base score divides by the multiplier, so zero would crash."""
+    from src.config import ConfigError
+
+    with pytest.raises(ConfigError, match="multiplier"):
+        _load(tmp_path, {"scoring": {"match_multipliers": {label: 0}}})
+
+
+@pytest.mark.parametrize("label", ["yes", "maybe", "no"])
+def test_negative_match_multiplier_rejected(tmp_path, label):
+    from src.config import ConfigError
+
+    with pytest.raises(ConfigError, match="multiplier"):
+        _load(tmp_path, {"scoring": {"match_multipliers": {label: -1.5}}})
+
+
+def test_positive_match_multipliers_accepted(tmp_path):
+    cfg = _load(tmp_path, {"scoring": {"match_multipliers": {"yes": 2.0, "maybe": 1.0, "no": 0.25}}})
+
+    assert cfg.scoring.match_multiplier_yes == 2.0
+    assert cfg.scoring.match_multiplier_no == 0.25

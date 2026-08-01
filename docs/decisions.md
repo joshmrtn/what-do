@@ -572,3 +572,49 @@ file paths.
 `NormalizationEngine` and `DeduplicationEngine`. It also makes "load preferences once per run" a
 structural guarantee rather than a convention: the batch orchestrator loads once and hands the same
 set to the stage, so the embedding cache cannot be consulted per event by accident.
+
+---
+
+## Match multiplier is applied direction-aware, not as a plain product
+
+**Decision:** the ranking engine (Phase 8) applies the match multiplier as:
+
+```
+final_score = base_score × m + weather_bonus     if base_score >= 0
+final_score = base_score ÷ m + weather_bonus     if base_score < 0
+```
+
+rather than the plain `base_score × match_multiplier` written in the original design.
+
+**Rationale:** base scores are unbounded and negative values are valid, so a plain product inverts
+the label's intent on exactly one combination — `no` on a negative base. At `no = 0.5`, a base of
+−0.40 becomes −0.20, i.e. the events we are most confident the user dislikes are *rewarded*. This
+reorders results rather than merely rescaling them:
+
+```
+A: base −0.60, match no    → −0.30      A ranks above B
+B: base −0.40, match maybe → −0.40
+```
+
+Dividing instead of multiplying makes the multiplier act on *magnitude* with the sign preserved, so
+`no` doubles the badness of −0.40 to −0.80 and the intent is symmetric in both directions.
+
+**Scope of the defect, measured against the Phase 7 classifier:** `yes` is only assigned when
+`base_score >= match_yes_min` (default 0.30), so `yes` cannot co-occur with a negative base, and
+`maybe` is a 1.0 no-op. `no` on a negative base is therefore the only broken case. The fix is
+written to be safe regardless, since `match_yes_min` is configurable and could be set negative.
+
+**Consequence:** multipliers must be strictly positive, or a negative base divides by zero.
+`load_config` now rejects non-positive multipliers rather than letting Phase 8 crash mid-batch.
+
+**Rejected:** an additive offset (`base + offset(match)`) avoids sign issues entirely and composes
+more predictably with absolute tier thresholds, but changes the config schema and needs calibrating
+in score units not yet observed. Clamping the base at zero before multiplying was rejected outright
+— it destroys ordering among disliked events, which the user explicitly wants visible in order to
+confirm there is genuinely nothing on.
+
+**Note for Phase 8:** the `yes` multiplier cannot reorder anything. Since `yes` is assigned by a
+threshold on `base_score` itself, scaling that group by a constant is a monotone stretch; its only
+real effect is pushing events across `top_picks_min`. The `no` multiplier is the one doing genuine
+work, because `no` derives from the relative like/dislike margin — information the base score does
+not contain. An event can score positively overall and still be a `no`.
