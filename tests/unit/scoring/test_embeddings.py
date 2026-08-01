@@ -129,3 +129,35 @@ def test_no_network_call_made_by_provider_itself():
     provider.embed("karaoke")
 
     client.embed.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Case folding — nomic-embed-text has an uncased vocabulary
+# ---------------------------------------------------------------------------
+
+
+def test_text_is_lowercased_before_embedding():
+    """Capitalised words hit [UNK]: 'Karaoke', 'Trivia' and 'Death' all embed identically."""
+    from src.scoring.embeddings import OllamaEmbeddingProvider
+
+    client = _FakeClient()
+    OllamaEmbeddingProvider(client=client).embed("Karaoke Night at Koto")
+
+    assert client.calls == [("nomic-embed-text", "karaoke night at koto")]
+
+
+def test_case_differences_produce_one_cache_hit():
+    """Both sides of a comparison must be folded identically."""
+    from src.scoring.embeddings import OllamaEmbeddingProvider
+
+    client = _FakeClient()
+    provider = OllamaEmbeddingProvider(client=client)
+
+    assert provider.embed("KARAOKE") == provider.embed("karaoke")
+
+
+def test_blank_after_folding_still_raises():
+    from src.scoring.embeddings import EmbeddingError, OllamaEmbeddingProvider
+
+    with pytest.raises(EmbeddingError, match="empty"):
+        OllamaEmbeddingProvider(client=_FakeClient()).embed("   ")

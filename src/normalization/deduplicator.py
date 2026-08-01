@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+from typing import Callable
 
 from rapidfuzz import fuzz
 
@@ -20,8 +21,11 @@ def _title_match(a: str | None, b: str | None, threshold: float) -> bool:
     return fuzz.token_sort_ratio(a, b) / 100.0 >= threshold
 
 
-def _venue_match(a: str | None, b: str | None) -> bool:
-    """True when venues are considered the same (exact canonical match)."""
+def venues_match(a: str | None, b: str | None) -> bool:
+    """True when venues are considered the same (exact canonical match).
+
+    Shared with Pass 2, which applies the same structural guard.
+    """
     if a is None and b is None:
         return True
     if a is None or b is None:
@@ -29,8 +33,11 @@ def _venue_match(a: str | None, b: str | None) -> bool:
     return a == b
 
 
-def _time_match(a_time, b_time, window_hours: float) -> bool:
-    """True when start times are within the configured window."""
+def times_match(a_time, b_time, window_hours: float) -> bool:
+    """True when start times are within the configured window.
+
+    Shared with Pass 2, which applies the same structural guard.
+    """
     if a_time is None and b_time is None:
         return True
     if a_time is None or b_time is None:
@@ -41,8 +48,8 @@ def _time_match(a_time, b_time, window_hours: float) -> bool:
 def _are_duplicates(a: Event, b: Event, cfg: DeduplicationConfig) -> bool:
     return (
         _title_match(a.title, b.title, cfg.fuzzy_title_threshold)
-        and _venue_match(a.venue, b.venue)
-        and _time_match(a.start_time, b.start_time, cfg.time_window_hours)
+        and venues_match(a.venue, b.venue)
+        and times_match(a.start_time, b.start_time, cfg.time_window_hours)
     )
 
 
@@ -56,7 +63,7 @@ def _null_count(event: Event) -> int:
     return sum(1 for f in fields if f is None)
 
 
-def _merge(events: list[Event]) -> Event:
+def merge_cluster(events: list[Event]) -> Event:
     """Merge a cluster of duplicate events into one canonical record.
 
     Most-complete record (fewest None fields) is the base. Tiebreak: earliest
@@ -129,6 +136,51 @@ def _merge(events: list[Event]) -> Event:
     )
 
 
+def cluster_and_merge(
+    events: list[Event], is_duplicate: Callable[[Event, Event], bool]
+) -> list[Event]:
+    """Group events into clusters by a pairwise predicate and merge each cluster.
+
+    Greedy union-find: duplicates are transitive, so if A matches B and B
+    matches C, all three collapse into one record. Shared by both dedup passes,
+    which differ only in their predicate.
+
+    Args:
+        events: Events to cluster.
+        is_duplicate: Pairwise test for whether two events are the same event.
+
+    Returns:
+        One merged Event per cluster (order not guaranteed).
+    """
+    if not events:
+        return []
+
+    n = len(events)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        px, py = find(x), find(y)
+        if px != py:
+            parent[py] = px
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if is_duplicate(events[i], events[j]):
+                union(i, j)
+
+    clusters: dict[int, list[Event]] = {}
+    for i, event in enumerate(events):
+        clusters.setdefault(find(i), []).append(event)
+
+    return [merge_cluster(cluster) for cluster in clusters.values()]
+
+
 class DeduplicationEngine:
     """Deduplicate a list of Events using fuzzy matching (Pass 1).
 
@@ -146,31 +198,6 @@ class DeduplicationEngine:
         Returns:
             Deduplicated list of Events (order not guaranteed).
         """
-        if not events:
-            return []
-
-        n = len(events)
-        parent = list(range(n))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        def union(x: int, y: int) -> None:
-            px, py = find(x), find(y)
-            if px != py:
-                parent[py] = px
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                if _are_duplicates(events[i], events[j], config):
-                    union(i, j)
-
-        clusters: dict[int, list[Event]] = {}
-        for i, event in enumerate(events):
-            root = find(i)
-            clusters.setdefault(root, []).append(event)
-
-        return [_merge(cluster) for cluster in clusters.values()]
+        return cluster_and_merge(
+            events, lambda a, b: _are_duplicates(a, b, config)
+        )

@@ -55,6 +55,13 @@ class OllamaEmbeddingProvider:
     def embed(self, text: str) -> list[float]:
         """Embed a single piece of text.
 
+        Text is lowercased first. `nomic-embed-text` has an uncased vocabulary,
+        so capitalised words fall through to a single unknown token: measured,
+        "Karaoke", "Trivia", "Bingo", "Death" and "Music" all return the *same*
+        vector, while their lowercase forms are properly distinct (0.40–0.64
+        apart). Folding here — the one point every embedding passes through —
+        guarantees both sides of every comparison are treated alike.
+
         Args:
             text: Text to embed. Must be non-blank — a blank string carries no
                 signal and would silently pollute similarity scores.
@@ -70,7 +77,7 @@ class OllamaEmbeddingProvider:
             raise EmbeddingError("Cannot embed empty text")
 
         try:
-            vector = self._client.embed(model=self._model, text=text)
+            vector = self._client.embed(model=self._model, text=text.lower())
         except LLMError as exc:
             raise EmbeddingError(
                 f"Embedding failed for model {self._model!r}: {exc}"
