@@ -97,3 +97,63 @@ def test_cosine_known_value():
 
     # 45 degrees between (1,0) and (1,1) -> cos = 1/sqrt(2)
     assert cosine([1.0, 0.0], [1.0, 1.0]) == pytest.approx(0.7071067811865475)
+
+
+# ---------------------------------------------------------------------------
+# pack_vectors / unpack_vectors — many vectors in one BLOB column
+# ---------------------------------------------------------------------------
+
+
+def test_pack_concatenates_encoded_vectors():
+    from src.utils.vectors import encode_vector, pack_vectors
+
+    a, b = encode_vector([1.0, 2.0]), encode_vector([3.0, 4.0])
+
+    assert pack_vectors([a, b]) == a + b
+
+
+def test_pack_empty_list_is_empty_bytes():
+    from src.utils.vectors import pack_vectors
+
+    assert pack_vectors([]) == b""
+
+
+def test_unpack_round_trips():
+    from src.utils.vectors import encode_vector, pack_vectors, unpack_vectors
+
+    vectors = [encode_vector([float(i), float(i + 1), float(i + 2)]) for i in range(4)]
+
+    assert unpack_vectors(pack_vectors(vectors), count=4) == vectors
+
+
+def test_unpack_round_trip_preserves_values_at_768_dims():
+    from src.utils.vectors import decode_vector, encode_vector, pack_vectors, unpack_vectors
+
+    originals = [[i * 0.001 for i in range(768)], [i * 0.002 for i in range(768)]]
+    packed = pack_vectors([encode_vector(v) for v in originals])
+
+    restored = [decode_vector(b) for b in unpack_vectors(packed, count=2)]
+
+    assert restored[0] == pytest.approx(originals[0])
+    assert restored[1] == pytest.approx(originals[1])
+
+
+def test_unpack_zero_count_returns_empty():
+    from src.utils.vectors import unpack_vectors
+
+    assert unpack_vectors(b"", count=0) == []
+
+
+def test_unpack_uneven_split_raises():
+    from src.utils.vectors import unpack_vectors
+
+    with pytest.raises(ValueError, match="evenly"):
+        unpack_vectors(b"\x00" * 10, count=3)
+
+
+def test_pack_rejects_ragged_vectors():
+    """Unpacking splits evenly, so unequal lengths could not be recovered."""
+    from src.utils.vectors import encode_vector, pack_vectors
+
+    with pytest.raises(ValueError, match="same length"):
+        pack_vectors([encode_vector([1.0, 2.0]), encode_vector([3.0])])

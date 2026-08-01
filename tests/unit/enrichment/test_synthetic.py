@@ -279,3 +279,10 @@ def test_parse_bounded_window_used_in_generated_event():
     e = events[0]
     assert e.start_time == ASTRO.sunset - timedelta(hours=1)
     assert e.end_time == ASTRO.sunset + timedelta(hours=2)
+
+
+def test_synthetic_tags_are_normalised():
+    """Config tags bypass the extraction parser, so they normalise here instead."""
+    rule = _rule(tags=["🌅 outdoor", "walking"])
+    events = GEN.generate([rule], RUN_DATE, CLEAR_WEATHER, ASTRO)
+    assert events[0].tags == [Tag(text="outdoor"), Tag(text="walking")]

@@ -34,6 +34,58 @@ def decode_vector(b: bytes) -> list[float]:
     return list(struct.unpack(f"{count}f", b))
 
 
+def pack_vectors(vectors: list[bytes]) -> bytes:
+    """Concatenate encoded vectors into one BLOB.
+
+    An event's tag embeddings share a single column, so they are stored
+    end to end and split apart by count on the way out.
+
+    Args:
+        vectors: Encoded vectors, all of the same length.
+
+    Returns:
+        The concatenation, or empty bytes for an empty list.
+
+    Raises:
+        ValueError: If the vectors are not all the same length, which would
+            make the stored BLOB impossible to split back apart.
+    """
+    if not vectors:
+        return b""
+
+    sizes = {len(v) for v in vectors}
+    if len(sizes) > 1:
+        raise ValueError(
+            f"All vectors must be the same length to pack; got sizes {sorted(sizes)}"
+        )
+
+    return b"".join(vectors)
+
+
+def unpack_vectors(blob: bytes, count: int) -> list[bytes]:
+    """Split a packed BLOB back into individual encoded vectors.
+
+    Args:
+        blob: Bytes produced by pack_vectors.
+        count: How many vectors it holds — typically the event's tag count.
+
+    Returns:
+        The individual encoded vectors.
+
+    Raises:
+        ValueError: If the blob does not divide evenly into count vectors.
+    """
+    if count <= 0:
+        return []
+    if len(blob) % count != 0:
+        raise ValueError(
+            f"Packed vectors ({len(blob)} bytes) do not divide evenly into {count}"
+        )
+
+    size = len(blob) // count
+    return [blob[i * size : (i + 1) * size] for i in range(count)]
+
+
 def cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two equal-length vectors.
 

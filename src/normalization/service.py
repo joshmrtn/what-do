@@ -16,6 +16,7 @@ from src.models.tag import tags_to_json
 from src.normalization.deduplicator import DeduplicationEngine
 from src.normalization.normalizer import NormalizationEngine
 from src.utils.logging import StructuredLogger
+from src.utils.vectors import pack_vectors
 
 
 @dataclass
@@ -63,7 +64,7 @@ def _event_to_row(e: Event) -> tuple:
         e.end_time.isoformat() if e.end_time else None,
         tags_to_json(e.tags),
         e.summary,
-        None,  # tag_embeddings — populated in Phase 7
+        pack_vectors(e.tag_embeddings) if e.tag_embeddings else None,
         e.summary_embedding,
         json.dumps(e.weather) if e.weather else None,
         json.dumps(e.astronomical_data) if e.astronomical_data else None,

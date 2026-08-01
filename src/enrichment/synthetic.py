@@ -8,6 +8,7 @@ from src.config import SyntheticActivityRule, SyntheticConditions
 from src.enrichment.astronomical import AstronomicalData
 from src.models.event import Event
 from src.models.tag import Tag
+from src.utils.text import normalize_embedding_text
 
 # ---------------------------------------------------------------------------
 # Time-window DSL
@@ -102,6 +103,16 @@ def _conditions_met(conditions: SyntheticConditions, weather: dict | None) -> bo
 # ---------------------------------------------------------------------------
 
 
+def _normalized_tags(texts: list[str]) -> list[Tag]:
+    """Build tags from config strings, dropping any that normalise to nothing.
+
+    Config tags never pass through the LLM extraction parser, so this is the
+    only place they get normalised.
+    """
+    normalized = (normalize_embedding_text(t) for t in texts)
+    return [Tag(text=t) for t in normalized if t]
+
+
 class SyntheticActivityGenerator:
     """Generates synthetic Event objects from config rules and environmental conditions."""
 
@@ -149,7 +160,7 @@ class SyntheticActivityGenerator:
                     created_at=now,
                     updated_at=now,
                     title=rule.name,
-                    tags=[Tag(text=t) for t in rule.tags],
+                    tags=_normalized_tags(rule.tags),
                     summary=rule.summary,
                     start_time=start_time,
                     end_time=end_time,

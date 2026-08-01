@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.config import AppConfig, DeduplicationConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
+from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.normalization.service import NormalizationService
 from src.storage.db import init_db
@@ -135,3 +136,41 @@ def test_discard_logged_with_source_and_reason(tmp_path):
         "@bad_source" in e.get("message", "") and "start_time" in e.get("message", "")
         for e in entries
     ), f"Expected discard log with source and reason, got: {entries}"
+
+
+def test_tag_embeddings_persisted_and_recoverable(tmp_path):
+    """Many vectors share one column, so they must split back apart by tag count."""
+    from src.models.tag import Tag
+    from src.normalization.service import _event_to_row
+    from src.utils.vectors import decode_vector, encode_vector, unpack_vectors
+
+    vectors = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
+    event = Event(
+        event_id="e1",
+        source_event_candidates=[],
+        source_type="apify",
+        created_at=_now(),
+        updated_at=_now(),
+        tags=[Tag(text="karaoke"), Tag(text="bar", weight=0.2)],
+        tag_embeddings=vectors,
+    )
+
+    row = _event_to_row(event)
+    packed = row[13]
+
+    restored = unpack_vectors(packed, count=len(event.tags))
+    assert [decode_vector(v) for v in restored] == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+
+
+def test_event_without_embeddings_persists_null(tmp_path):
+    from src.normalization.service import _event_to_row
+
+    event = Event(
+        event_id="e1",
+        source_event_candidates=[],
+        source_type="apify",
+        created_at=_now(),
+        updated_at=_now(),
+    )
+
+    assert _event_to_row(event)[13] is None
