@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,11 +50,52 @@ class DeduplicationConfig:
     semantic_threshold: float = 0.92
 
 
+@dataclass(frozen=True)
+class ComfortCurve:
+    """An asymmetric trapezoid mapping a weather reading to comfort in -1.0..+1.0.
+
+    Comfort is +1.0 across the whole `ideal` band, ramps linearly to 0.0 at the
+    `zero` bounds and on to -1.0 at the `floor` bounds, then clamps. A plateau
+    rather than a peak, because a comfortable range has no single optimum; linear
+    rather than logistic because a physical reading has no noise floor to crush.
+
+    A side whose three bounds coincide is unbounded — readings past it stay ideal.
+
+    Args:
+        ideal: (low, high) bounds of the band scoring +1.0.
+        zero: (low, high) readings scoring 0.0.
+        floor: (low, high) readings scoring -1.0.
+        weight: Share of the weighted mean. Ignored when `supersedes` is set.
+        fallback_for: Another factor this one stands in for. Scored only when
+            that factor has no reading, so correlated pairs cannot double-count.
+        supersedes: Conditions whose categorical penalty this curve replaces.
+            A curve with this set is a capping factor: it is excluded from the
+            weighted mean and applied as an upper bound on total comfort, so
+            intensity decides instead of a coarse condition label.
+    """
+
+    ideal: tuple[float, float]
+    zero: tuple[float, float]
+    floor: tuple[float, float]
+    weight: float = 1.0
+    fallback_for: str | None = None
+    supersedes: tuple[str, ...] = ()
+
+
 @dataclass
 class WeatherConfig:
-    """Weather provider configuration."""
+    """Weather provider and comfort scoring configuration."""
 
     provider: str = "open-meteo"
+    #: Hour of the local day sampled for events with no known start time.
+    default_hour: int = 20
+    max_positive_adjustment: float = 0.15
+    max_negative_adjustment: float = 0.25
+    air_quality_enabled: bool = True
+    #: Reading name -> curve. Names must match keys in the weather dict.
+    comfort: dict[str, ComfortCurve] = field(default_factory=dict)
+    #: Condition -> comfort ceiling. Only negative values cap.
+    condition_penalty: dict[str, float] = field(default_factory=dict)
 
 
 #: Contribution aggregation strategies. See docs/decisions.md — "Scoring formula
@@ -120,6 +162,90 @@ class AppConfig:
     ollama_host: str = "http://localhost:11434"
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-flash-latest"
+
+
+#: The only values `Event.setting` may take.
+SETTINGS = ("indoor", "outdoor", "unknown")
+
+
+def _bounds(raw: dict[str, Any], key: str, factor: str) -> tuple[float, float]:
+    """Read one (low, high) bound pair from a comfort curve block."""
+    if key not in raw:
+        raise ConfigError(f"Comfort curve '{factor}' missing required bound: '{key}'")
+    pair = raw[key]
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        raise ConfigError(f"Comfort curve '{factor}' bound '{key}' must be [low, high]")
+    low, high = float(pair[0]), float(pair[1])
+    if low > high:
+        raise ConfigError(f"Comfort curve '{factor}' bound '{key}' is inverted: {low} > {high}")
+    return low, high
+
+
+def _load_curve(factor: str, raw: dict[str, Any]) -> ComfortCurve:
+    """Build one comfort curve, rejecting bounds that do not nest outward.
+
+    A misordered bound silently inverts the curve's meaning, so it fails at load
+    rather than quietly scoring a heatwave as pleasant.
+    """
+    ideal = _bounds(raw, "ideal", factor)
+    zero = _bounds(raw, "zero", factor)
+    floor = _bounds(raw, "floor", factor)
+
+    if zero[0] > ideal[0] or zero[1] < ideal[1]:
+        raise ConfigError(f"Comfort curve '{factor}': 'zero' must lie outside 'ideal'")
+    if floor[0] > zero[0] or floor[1] < zero[1]:
+        raise ConfigError(f"Comfort curve '{factor}': 'floor' must lie outside 'zero'")
+
+    return ComfortCurve(
+        ideal=ideal,
+        zero=zero,
+        floor=floor,
+        weight=float(raw.get("weight", 1.0)),
+        fallback_for=raw.get("fallback_for"),
+        supersedes=tuple(raw.get("supersedes", ())),
+    )
+
+
+def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
+    """Build weather and comfort config, validating every tunable."""
+    comfort = {
+        factor: _load_curve(factor, curve_data)
+        for factor, curve_data in (raw.get("comfort") or {}).items()
+    }
+
+    for factor, curve in comfort.items():
+        if curve.fallback_for is not None and curve.fallback_for not in comfort:
+            raise ConfigError(
+                f"Comfort curve '{factor}' declares fallback_for "
+                f"'{curve.fallback_for}', which is not a configured factor"
+            )
+
+    for name in ("max_positive_adjustment", "max_negative_adjustment"):
+        if float(raw.get(name, 0.0)) < 0:
+            raise ConfigError(f"Invalid {name}: must be non-negative")
+
+    default_hour = int(raw.get("default_hour", 20))
+    if not 0 <= default_hour <= 23:
+        raise ConfigError(f"Invalid default_hour {default_hour}: must be between 0 and 23")
+
+    defaults = WeatherConfig()
+    return WeatherConfig(
+        provider=raw.get("provider", defaults.provider),
+        default_hour=default_hour,
+        max_positive_adjustment=float(
+            raw.get("max_positive_adjustment", defaults.max_positive_adjustment)
+        ),
+        max_negative_adjustment=float(
+            raw.get("max_negative_adjustment", defaults.max_negative_adjustment)
+        ),
+        air_quality_enabled=bool(
+            (raw.get("air_quality") or {}).get("enabled", defaults.air_quality_enabled)
+        ),
+        comfort=comfort,
+        condition_penalty={
+            str(k): float(v) for k, v in (raw.get("condition_penalty") or {}).items()
+        },
+    )
 
 
 def load_config(
@@ -211,10 +337,7 @@ def load_config(
         semantic_threshold=float(dedup_data.get("semantic_threshold", 0.92)),
     )
 
-    weather_data = data.get("weather", {})
-    weather = WeatherConfig(
-        provider=weather_data.get("provider", "open-meteo"),
-    )
+    weather = _load_weather(data.get("weather", {}))
 
     scoring_data = data.get("scoring", {})
     tiers_data = scoring_data.get("tiers", {})

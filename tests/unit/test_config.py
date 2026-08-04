@@ -420,3 +420,138 @@ def test_positive_match_multipliers_accepted(tmp_path):
 
     assert cfg.scoring.match_multiplier_yes == 2.0
     assert cfg.scoring.match_multiplier_no == 0.25
+
+
+# ---------------------------------------------------------------------------
+# Weather comfort configuration
+# ---------------------------------------------------------------------------
+
+
+_WEATHER_BLOCK = {
+    "provider": "open-meteo",
+    "default_hour": 19,
+    "max_positive_adjustment": 0.15,
+    "max_negative_adjustment": 0.25,
+    "air_quality": {"enabled": False},
+    "comfort": {
+        "temperature_f": {
+            "ideal": [20, 65],
+            "zero": [-15, 78],
+            "floor": [-40, 95],
+            "weight": 1.0,
+        },
+        "dew_point_f": {
+            "ideal": [-99, 55],
+            "zero": [-99, 65],
+            "floor": [-99, 75],
+        },
+        "relative_humidity": {
+            "ideal": [0, 45],
+            "zero": [0, 70],
+            "floor": [0, 90],
+            "fallback_for": "dew_point_f",
+        },
+        "precipitation_mm": {
+            "ideal": [0, 0.3],
+            "zero": [0, 2.5],
+            "floor": [0, 10],
+            "supersedes": ["rain", "snow"],
+        },
+    },
+    "condition_penalty": {"rain": -0.4, "thunderstorm": -1.0},
+}
+
+
+def _weather_config(tmp_path, **overrides):
+    block = {**_WEATHER_BLOCK, **overrides}
+    return _load(tmp_path, {"weather": block}).weather
+
+
+def test_weather_scalars_load(tmp_path):
+    weather = _weather_config(tmp_path)
+    assert weather.default_hour == 19
+    assert weather.max_positive_adjustment == 0.15
+    assert weather.max_negative_adjustment == 0.25
+    assert weather.air_quality_enabled is False
+
+
+def test_comfort_curve_bounds_load_as_tuples(tmp_path):
+    curve = _weather_config(tmp_path).comfort["temperature_f"]
+    assert curve.ideal == (20.0, 65.0)
+    assert curve.zero == (-15.0, 78.0)
+    assert curve.floor == (-40.0, 95.0)
+
+
+def test_curve_optional_fields_default(tmp_path):
+    curve = _weather_config(tmp_path).comfort["temperature_f"]
+    assert curve.weight == 1.0
+    assert curve.fallback_for is None
+    assert curve.supersedes == ()
+
+
+def test_curve_fallback_and_supersedes_load(tmp_path):
+    comfort = _weather_config(tmp_path).comfort
+    assert comfort["relative_humidity"].fallback_for == "dew_point_f"
+    assert comfort["precipitation_mm"].supersedes == ("rain", "snow")
+
+
+def test_condition_penalty_loads(tmp_path):
+    weather = _weather_config(tmp_path)
+    assert weather.condition_penalty["rain"] == -0.4
+    assert weather.condition_penalty["thunderstorm"] == -1.0
+
+
+def test_missing_weather_section_uses_defaults(tmp_path):
+    weather = _load(tmp_path, {}).weather
+    assert weather.default_hour == 20
+    assert weather.air_quality_enabled is True
+
+
+@pytest.mark.parametrize(
+    "bad_curve",
+    [
+        {"ideal": [20, 65], "zero": [30, 78], "floor": [-40, 95]},  # zero_lo inside ideal
+        {"ideal": [20, 65], "zero": [-15, 60], "floor": [-40, 95]},  # zero_hi inside ideal
+        {"ideal": [20, 65], "zero": [-15, 78], "floor": [-10, 95]},  # floor_lo inside zero
+        {"ideal": [20, 65], "zero": [-15, 78], "floor": [-40, 70]},  # floor_hi inside zero
+        {"ideal": [65, 20], "zero": [-15, 78], "floor": [-40, 95]},  # inverted band
+    ],
+)
+def test_inverted_curve_bounds_rejected(tmp_path, bad_curve):
+    with pytest.raises(ConfigError, match="temperature_f"):
+        _weather_config(tmp_path, comfort={"temperature_f": bad_curve})
+
+
+def test_curve_missing_a_required_bound_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="temperature_f"):
+        _weather_config(tmp_path, comfort={"temperature_f": {"ideal": [20, 65]}})
+
+
+@pytest.mark.parametrize("field_name", ["max_positive_adjustment", "max_negative_adjustment"])
+def test_negative_adjustment_cap_rejected(tmp_path, field_name):
+    with pytest.raises(ConfigError, match=field_name):
+        _weather_config(tmp_path, **{field_name: -0.1})
+
+
+def test_fallback_for_unknown_factor_rejected(tmp_path):
+    """A typo here silently disables a factor, so it must fail loudly."""
+    with pytest.raises(ConfigError, match="dewpoint_f"):
+        _weather_config(
+            tmp_path,
+            comfort={
+                "relative_humidity": {
+                    "ideal": [0, 45],
+                    "zero": [0, 70],
+                    "floor": [0, 90],
+                    "fallback_for": "dewpoint_f",
+                }
+            },
+        )
+
+
+@pytest.mark.parametrize("bad_hour", [-1, 24])
+def test_default_hour_outside_the_day_rejected(tmp_path, bad_hour):
+    with pytest.raises(ConfigError, match="default_hour"):
+        _weather_config(tmp_path, default_hour=bad_hour)
+
+

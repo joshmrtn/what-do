@@ -70,6 +70,82 @@ models:
 weather:
   provider: "open-meteo"
 
+  # Local hour sampled for anything with no start time of its own (synthetic
+  # activities, undated events). Judged on a typical evening rather than the
+  # daily extreme.
+  default_hour: 20
+
+  # How far weather can move a score. Bad weather vetoes harder than good
+  # weather promotes: a thunderstorm is close to disqualifying, while a perfect
+  # night is a nudge that should not overturn a strong preference match.
+  max_positive_adjustment: 0.15
+  max_negative_adjustment: 0.25
+
+  air_quality:
+    # Separate Open-Meteo endpoint with a much shorter forecast horizon than
+    # weather, so readings are often absent. A missing factor is dropped and the
+    # remaining weights renormalise — never scored as though the air were bad.
+    enabled: true
+
+  # Each factor maps its reading through an asymmetric trapezoid: comfort is
+  # +1.0 across the whole `ideal` band, ramps linearly to 0.0 at `zero` and on
+  # to -1.0 at `floor`, then clamps. A plateau rather than a peak, because a
+  # comfortable range has no single optimum. Every bound is independent, so the
+  # two sides can ramp at different rates.
+  comfort:
+    temperature_f:
+      ideal: [20, 65]
+      zero: [-15, 78]
+      floor: [-40, 95]
+      weight: 1.0
+    dew_point_f:
+      # Meteorological comfort scale: below 55 is dry, above 70 is oppressive.
+      ideal: [-99, 55]
+      zero: [-99, 65]
+      floor: [-99, 75]
+      weight: 1.0
+    relative_humidity:
+      # Correlates heavily with dew point, so it stands in rather than adding a
+      # second vote — scored only when dew point is unavailable.
+      ideal: [0, 45]
+      zero: [0, 70]
+      floor: [0, 90]
+      weight: 1.0
+      fallback_for: dew_point_f
+    wind_speed_mph:
+      ideal: [0, 10]
+      zero: [0, 20]
+      floor: [0, 35]
+      weight: 0.6
+    us_aqi:
+      ideal: [0, 50]      # "good"
+      zero: [0, 100]      # "moderate" ceiling
+      floor: [0, 150]     # "unhealthy for sensitive groups"
+      weight: 0.8
+    precipitation_mm:
+      # A capping factor: excluded from the weighted mean and applied as an
+      # upper bound instead, because averaging cannot express "this one factor
+      # disqualifies the rest" — a downpour among pleasant readings averages out
+      # to a pleasant evening. `weight` is therefore unused here.
+      # `supersedes` replaces the categorical rain/snow penalty whenever a
+      # reading exists, so intensity decides and rain is never penalised twice.
+      ideal: [0, 0.3]
+      zero: [0, 2.5]
+      floor: [0, 10.0]
+      supersedes: [rain, snow]
+
+  # Ceilings on total comfort. Only negative values cap; 0.0 means "no
+  # objection", not "no comfort". Thunderstorm is deliberately absolute and is
+  # never superseded by precipitation: the hazard is lightning, not millimetres,
+  # and a dry thunderstorm would otherwise read as a beautiful evening.
+  condition_penalty:
+    rain: -0.4
+    snow: -0.4
+    thunderstorm: -1.0
+    overcast: -0.2
+    partly_cloudy: 0.0
+    clear: 0.0
+
 scheduling:
   run_window_start: "02:00"
   run_window_end: "04:00"
