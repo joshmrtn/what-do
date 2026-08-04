@@ -554,3 +554,116 @@ def test_semantic_matching_smoke(tmp_path: Path) -> None:
     provider.calls = 0
     EmbeddingStage(provider, logger).process(list(reloaded.values()))
     assert provider.calls == 0, "reloaded events must not be re-embedded"
+
+
+def test_weather_comfort_smoke(tmp_path: Path) -> None:
+    """Weather comfort end to end: shipped config, real SQLite, real persistence.
+
+    Scores the same event under three conditions and checks the ordering the
+    ranking engine will depend on, using the curves in config.example.yaml
+    rather than test-local numbers.
+    """
+    import zoneinfo
+    from datetime import date, datetime, timezone
+    from unittest.mock import MagicMock
+
+    from src.config import (
+        AppConfig,
+        LocationConfig,
+        ScrapingConfig,
+        VenueDiscoveryConfig,
+        _load_weather,
+    )
+    from src.enrichment.astronomical import AstronomicalCalculator
+    from src.enrichment.comfort import compute_comfort
+    from src.enrichment.service import EnrichmentService
+    from src.enrichment.weather import WeatherProvider
+    from src.models.event import Event
+    from src.storage.db import init_db
+    from src.storage.events import load_events, save_events
+
+    example = yaml.safe_load(Path("config/config.example.yaml").read_text())
+    weather_cfg = _load_weather(example["weather"])
+
+    run_date = date(2025, 6, 21)
+    now = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
+    local_tz = zoneinfo.ZoneInfo("America/New_York")
+    start = datetime(2025, 6, 22, 20, 0, tzinfo=local_tz)
+
+    def day(temp_f: float, dew_f: float, wind: float, precip: float, condition: str) -> dict:
+        return {
+            "date": "2025-06-22",
+            "hours": [
+                {
+                    "hour": hour,
+                    "temperature_f": temp_f,
+                    "relative_humidity": 50.0,
+                    "dew_point_f": dew_f,
+                    "precipitation_mm": precip,
+                    "wind_speed_mph": wind,
+                    "condition": condition,
+                }
+                for hour in range(24)
+            ],
+        }
+
+    conditions = {
+        "crisp": day(45.0, 35.0, 4.0, 0.0, "clear"),
+        # 1.5mm sits between the ideal trace and the zero bound, so rain shows
+        # as gradation rather than the all-or-nothing the condition code gives.
+        "drizzle": day(58.0, 50.0, 6.0, 1.5, "rain"),
+        "muggy_storm": day(88.0, 74.0, 18.0, 9.0, "thunderstorm"),
+    }
+
+    cfg = AppConfig(
+        location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
+        scraping=ScrapingConfig(),
+        venue_discovery=VenueDiscoveryConfig(),
+        weather=weather_cfg,
+    )
+
+    scores: dict[str, float] = {}
+    for name, weather_day in conditions.items():
+        db_path = tmp_path / f"comfort_{name}.db"
+        init_db(db_path)
+
+        provider = MagicMock(spec=WeatherProvider)
+        provider.fetch.return_value = weather_day
+        svc = EnrichmentService(
+            weather_provider=provider,
+            movie_provider=None,
+            astronomical_calculator=AstronomicalCalculator(),
+            synthetic_rules=[],
+            config=cfg,
+            db_path=db_path,
+            get_now=lambda: now,
+        )
+
+        event = Event(
+            event_id=f"comfort-{name}",
+            source_event_candidates=[],
+            source_type="instagram",
+            created_at=now,
+            updated_at=now,
+            title="Rooftop Set",
+            setting="outdoor",
+            start_time=start,
+        )
+        enriched = svc.enrich([event], run_date)[0]
+
+        # Survives a real round trip through SQLite.
+        save_events([enriched], db_path)
+        reloaded = load_events(db_path)[0]
+        assert reloaded.setting == "outdoor"
+        assert reloaded.weather["sampled_hour"] == 20
+        assert len(reloaded.weather["forecast"]["day_series"]) == 24
+        assert reloaded.weather["observed"] is None
+
+        scores[name] = compute_comfort(
+            reloaded.weather["forecast"]["hour"], weather_cfg
+        ).adjustment
+
+    assert scores["crisp"] == pytest.approx(weather_cfg.max_positive_adjustment)
+    assert 0 < scores["drizzle"] < scores["crisp"], "a drizzle at 58F is still a fine night out"
+    assert scores["muggy_storm"] == pytest.approx(-weather_cfg.max_negative_adjustment)
+    assert scores["crisp"] > scores["drizzle"] > scores["muggy_storm"]

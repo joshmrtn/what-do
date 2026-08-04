@@ -251,9 +251,10 @@ OLLAMA_HOST=http://localhost:11434
 | 5 | Environmental enrichment | ✅ complete |
 | 6 | LLM extraction pipeline | ✅ complete |
 | 7 | Semantic matching engine | ✅ complete |
-| 8 | Deterministic ranking engine | ⬜ not started |
-| 9 | CLI interface | ⬜ not started |
-| 10 | Maintenance utilities | ⬜ not started |
-| 11 | Hardening & reliability | ⬜ not started |
+| 8 | Weather comfort enrichment | ✅ complete |
+| 9 | Deterministic ranking engine | ⬜ not started |
+| 10 | CLI interface | ⬜ not started |
+| 11 | Maintenance utilities | ⬜ not started |
+| 12 | Hardening & reliability | ⬜ not started |
 
 Update status here as phases complete.

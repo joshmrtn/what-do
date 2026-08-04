@@ -20,6 +20,7 @@ from src.config import (
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.movies import MovieMetadataProvider
 from src.enrichment.service import EnrichmentService
+from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.weather import WeatherProvider
 from src.models.event import Event
 from src.storage.db import init_db
@@ -110,12 +111,14 @@ def _make_service(
     cfg: AppConfig,
     *,
     weather: WeatherProvider | None = None,
+    air_quality: AirQualityProvider | None = None,
     movie: MovieMetadataProvider | None = None,
     rules: list[SyntheticActivityRule] | None = None,
     logger: StructuredLogger | None = None,
 ) -> EnrichmentService:
     return EnrichmentService(
         weather_provider=weather or _weather_provider(),
+        air_quality_provider=air_quality,
         movie_provider=movie,
         astronomical_calculator=AstronomicalCalculator(),
         synthetic_rules=rules or [],
@@ -392,3 +395,54 @@ def test_no_real_events_synthetic_still_generated(db_path, cfg):
     results = svc.enrich([], RUN_DATE)
     assert len(results) == 1
     assert results[0].source_type == "synthetic"
+
+
+# ---------------------------------------------------------------------------
+# Air quality
+# ---------------------------------------------------------------------------
+
+
+AQI_DAY = {"date": "2025-06-21", "hours": [{"hour": h, "us_aqi": 20.0 + h} for h in range(24)]}
+
+
+def _aqi_provider(return_value=AQI_DAY, side_effect=None):
+    p = MagicMock(spec=AirQualityProvider)
+    if side_effect is not None:
+        p.fetch.side_effect = side_effect
+    else:
+        p.fetch.return_value = return_value
+    return p
+
+
+def test_air_quality_merged_into_the_sampled_hour(db_path, cfg):
+    svc = _make_service(db_path, cfg, air_quality=_aqi_provider())
+    weather = svc.enrich([_make_event()], RUN_DATE)[0].weather
+    assert weather["forecast"]["hour"]["us_aqi"] == pytest.approx(40.0)
+
+
+def test_air_quality_skipped_when_disabled(db_path, cfg):
+    cfg.weather.air_quality_enabled = False
+    aqi = _aqi_provider()
+    svc = _make_service(db_path, cfg, air_quality=aqi)
+    weather = svc.enrich([_make_event()], RUN_DATE)[0].weather
+    assert aqi.fetch.call_count == 0
+    assert "us_aqi" not in weather["forecast"]["hour"]
+
+
+def test_missing_air_quality_leaves_the_rest_of_the_weather_intact(db_path, cfg):
+    """Beyond the ~7-day AQI horizon the reading is absent, not bad."""
+    svc = _make_service(db_path, cfg, air_quality=_aqi_provider(return_value=None))
+    hour = svc.enrich([_make_event()], RUN_DATE)[0].weather["forecast"]["hour"]
+    assert "us_aqi" not in hour
+    assert hour["temperature_f"] == pytest.approx(80.0)
+
+
+def test_air_quality_failure_does_not_break_enrichment(db_path, cfg):
+    svc = _make_service(db_path, cfg, air_quality=_aqi_provider(side_effect=RuntimeError("boom")))
+    results = svc.enrich([_make_event()], RUN_DATE)
+    assert results[0].weather is not None
+
+
+def test_no_air_quality_provider_configured_is_fine(db_path, cfg):
+    svc = _make_service(db_path, cfg)
+    assert svc.enrich([_make_event()], RUN_DATE)[0].weather is not None

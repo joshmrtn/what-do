@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.config import AppConfig, SyntheticActivityRule
+from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator, AstronomicalData
 from src.enrichment.movies import MovieMetadataProvider, enrich_movie_event
 from src.enrichment.synthetic import SyntheticActivityGenerator
@@ -27,10 +28,12 @@ class EnrichmentService:
         synthetic_rules: list[SyntheticActivityRule],
         config: AppConfig,
         db_path: Path,
+        air_quality_provider: AirQualityProvider | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._weather_provider = weather_provider
+        self._air_quality_provider = air_quality_provider
         self._movie_provider = movie_provider
         self._calculator = astronomical_calculator
         self._synthetic_rules = synthetic_rules
@@ -56,6 +59,7 @@ class EnrichmentService:
 
         # Per-run in-memory caches to avoid redundant DB reads within a single batch
         _weather_cache: dict[date, dict | None] = {}
+        _aqi_cache: dict[date, dict | None] = {}
         _astro_cache: dict[date, AstronomicalData] = {}
 
         for event in events:
@@ -78,7 +82,11 @@ class EnrichmentService:
             # --- Weather ---
             if event_date not in _weather_cache:
                 _weather_cache[event_date] = self._fetch_weather(event_date, lat, lng)
-            event.weather = self._weather_for(_weather_cache[event_date], event.start_time)
+            if event_date not in _aqi_cache:
+                _aqi_cache[event_date] = self._fetch_air_quality(event_date, lat, lng)
+            event.weather = self._weather_for(
+                _weather_cache[event_date], event.start_time, _aqi_cache[event_date]
+            )
 
         # --- Movie metadata ---
         if self._movie_provider is not None:
@@ -109,8 +117,30 @@ class EnrichmentService:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _fetch_air_quality(
+        self, event_date: date, lat: float, lng: float
+    ) -> dict[str, Any] | None:
+        """Return a day of air quality, or None if disabled, absent, or failing.
+
+        Air quality is advisory: its forecast horizon is far shorter than the
+        weather forecast, so a miss is the normal case and never an error.
+        """
+        if self._air_quality_provider is None or not self._config.weather.air_quality_enabled:
+            return None
+        try:
+            return self._air_quality_provider.fetch(event_date, lat, lng)
+        except Exception as exc:
+            self._logger.error(
+                f"Air quality fetch failed for {event_date}: {exc}",
+                component="enrichment",
+            )
+            return None
+
     def _weather_for(
-        self, day: dict[str, Any] | None, start_time: datetime | None
+        self,
+        day: dict[str, Any] | None,
+        start_time: datetime | None,
+        air_quality_day: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Build the event's persisted weather record from a fetched day.
 
@@ -128,6 +158,18 @@ class EnrichmentService:
         hour = sample_hour(day, start_time, self._config.weather.default_hour)
         if hour is None:
             return None
+
+        if air_quality_day is not None:
+            aqi_hour = sample_hour(air_quality_day, start_time, self._config.weather.default_hour)
+            if aqi_hour is not None:
+                # A missing reading is left absent rather than written as None,
+                # so comfort drops the factor and renormalises instead of
+                # scoring unknown air as mediocre air.
+                hour = {
+                    **hour,
+                    **{k: v for k, v in aqi_hour.items() if k != "hour" and v is not None},
+                }
+
         return {
             "sampled_hour": hour["hour"],
             "forecast": {
