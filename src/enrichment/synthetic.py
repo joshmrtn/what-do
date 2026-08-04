@@ -162,6 +162,7 @@ class SyntheticActivityGenerator:
                     title=rule.name,
                     tags=_normalized_tags(rule.tags),
                     summary=rule.summary,
+                    setting=rule.setting,
                     start_time=start_time,
                     end_time=end_time,
                 )

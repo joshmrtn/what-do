@@ -77,6 +77,7 @@ class ExtractionStage:
 
         event.tags = result.tags
         event.summary = result.summary
+        event.setting = result.setting
 
         if event.title is None:
             event.title = result.title

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.models.tag import Tag
 
@@ -33,9 +33,12 @@ class Event:
     end_time: datetime | None = None
     tags: list[Tag] = field(default_factory=list)
     summary: str | None = None
+    #: "indoor", "outdoor", or "unknown". Decides whether weather can adjust the
+    #: score at all; "unknown" earns no adjustment in either direction.
+    setting: str = "unknown"
     tag_embeddings: list[bytes] = field(default_factory=list)
     summary_embedding: bytes | None = None
-    weather: dict | None = None
-    astronomical_data: dict | None = None
-    metadata: dict = field(default_factory=dict)
+    weather: dict[str, Any] | None = None
+    astronomical_data: dict[str, Any] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     similarity: "SimilarityResult | None" = None

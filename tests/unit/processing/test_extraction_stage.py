@@ -10,6 +10,7 @@ import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
+from src.processing.extraction_stage import ExtractionStage
 from src.utils.logging import get_logger
 
 
@@ -35,7 +36,7 @@ def _make_logger():
     return get_logger("test_stage", stream=io.StringIO())
 
 
-def _make_provider(tags=None, summary="A great event."):
+def _make_provider(tags=None, summary="A great event.", setting="unknown"):
     from src.processing.extraction import ExtractionResult
 
     provider = MagicMock()
@@ -47,6 +48,7 @@ def _make_provider(tags=None, summary="A great event."):
         tags=tags or [Tag(text=t) for t in
                       ["jazz", "live music", "evening", "venue", "weekend"]],
         summary=summary,
+        setting=setting,
     )
     return provider
 
@@ -392,3 +394,28 @@ def test_bypass_not_called_with_prepopulated_tags():
     # If we got here, Ollama was not called
     assert results[0].tags == ["jazz", "live music", "evening", "venue", "weekend"]
     assert results[0].summary == "Pre-existing summary."
+
+
+# ---------------------------------------------------------------------------
+# setting
+# ---------------------------------------------------------------------------
+
+
+def test_extracted_setting_is_applied_to_the_event():
+    stage = ExtractionStage(
+        provider=_make_provider(setting="outdoor"),
+        image_fetcher=None,
+        logger=_make_logger(),
+    )
+    assert stage.process([_make_event()])[0].setting == "outdoor"
+
+
+def test_bypassed_event_keeps_its_own_setting():
+    """An event with tags already set skips extraction, so its setting must survive."""
+    stage = ExtractionStage(
+        provider=_make_provider(setting="outdoor"),
+        image_fetcher=None,
+        logger=_make_logger(),
+    )
+    preset = _make_event(tags=[Tag(text="synthetic")], setting="indoor")
+    assert stage.process([preset])[0].setting == "indoor"

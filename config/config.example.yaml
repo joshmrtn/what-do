@@ -154,6 +154,9 @@ scheduling:
 data_retention_days: 365
 
 # Synthetic activities are generated when all specified conditions are met.
+# `setting` must be indoor, outdoor, or unknown. These bypass LLM extraction, so
+# the rule is the only place indoor/outdoor can come from; it defaults to
+# "unknown", which earns no weather adjustment in either direction.
 # Omit time_window to allow the activity at any time of day.
 # time_window supports: "after sunset", "before sunrise", or "anchor_offset to anchor_offset"
 # Anchors: sunrise, sunset, dawn, dusk — with optional _plus_Nh or _minus_Nh suffix
@@ -165,6 +168,7 @@ synthetic_activities:
       weather: [clear, partly_cloudy]
       # no time_window — valid any time
     tags: [outdoor, walking, low_key]
+    setting: outdoor
     summary: "A pleasant walk around town"
 
   - name: "Sunset picnic"
@@ -173,4 +177,5 @@ synthetic_activities:
       weather: [clear]
       time_window: "sunset_minus_2h to sunset_plus_30min"
     tags: [outdoor, picnic, social]
+    setting: outdoor
     summary: "A picnic at sunset"

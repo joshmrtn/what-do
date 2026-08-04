@@ -217,3 +217,13 @@ def test_reloaded_event_bypasses_embedding(db):
     EmbeddingStage(provider, MagicMock()).process(load_events(db))
 
     provider.embed.assert_not_called()
+
+
+def test_round_trip_preserves_setting(db):
+    save_events([_event(setting="outdoor")], db)
+    assert load_events(db)[0].setting == "outdoor"
+
+
+def test_setting_defaults_to_unknown(db):
+    save_events([_event()], db)
+    assert load_events(db)[0].setting == "unknown"

@@ -286,3 +286,21 @@ def test_synthetic_tags_are_normalised():
     rule = _rule(tags=["🌅 outdoor", "walking"])
     events = GEN.generate([rule], RUN_DATE, CLEAR_WEATHER, ASTRO)
     assert events[0].tags == [Tag(text="outdoor"), Tag(text="walking")]
+
+
+# ---------------------------------------------------------------------------
+# setting on synthetic rules
+# ---------------------------------------------------------------------------
+
+
+def test_rule_setting_is_applied_to_the_generated_event():
+    """Synthetic activities bypass LLM extraction, so the rule is the only source."""
+    rule = _rule(tags=["outdoor", "walking"])
+    rule.setting = "outdoor"
+    events = GEN.generate([rule], RUN_DATE, CLEAR_WEATHER, ASTRO)
+    assert events[0].setting == "outdoor"
+
+
+def test_rule_without_a_setting_produces_unknown():
+    events = GEN.generate([_rule()], RUN_DATE, CLEAR_WEATHER, ASTRO)
+    assert events[0].setting == "unknown"

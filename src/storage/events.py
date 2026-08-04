@@ -26,7 +26,7 @@ _COLUMNS = (
     "id, source_event_candidates, source_type, url, image_url, title, venue, "
     "description, location, start_time, end_time, tags, summary, "
     "tag_embeddings, summary_embedding, weather, astronomical_data, metadata, "
-    "created_at, updated_at"
+    "created_at, updated_at, setting"
 )
 
 
@@ -58,6 +58,7 @@ def event_to_row(event: Event) -> tuple[Any, ...]:
         json.dumps(event.metadata),
         event.created_at.isoformat(),
         event.updated_at.isoformat(),
+        event.setting,
     )
 
 
@@ -87,6 +88,7 @@ def row_to_event(row: tuple[Any, ...]) -> Event:
         metadata=json.loads(row[17]) if row[17] else {},
         created_at=_require_dt(row[18]),
         updated_at=_require_dt(row[19]),
+        setting=row[20] or "unknown",
     )
 
 

@@ -148,6 +148,9 @@ class SyntheticActivityRule:
     conditions: SyntheticConditions
     tags: list[str]
     summary: str
+    #: Synthetic activities bypass LLM extraction, so the rule author is the only
+    #: source of indoor/outdoor. Only they know if a new rule happens indoors.
+    setting: str = "unknown"
 
 
 @dataclass
@@ -389,12 +392,20 @@ def load_config(
             weather=list(cond_data.get("weather", [])),
             time_window=cond_data.get("time_window"),
         )
+        name = str(rule_data["name"])
+        setting = str(rule_data.get("setting", "unknown"))
+        if setting not in SETTINGS:
+            raise ConfigError(
+                f"Synthetic activity '{name}' has setting '{setting}', "
+                f"outside the allowed values {SETTINGS}"
+            )
         synthetic_activities.append(
             SyntheticActivityRule(
-                name=str(rule_data["name"]),
+                name=name,
                 conditions=conditions,
                 tags=list(rule_data.get("tags", [])),
                 summary=str(rule_data.get("summary", "")),
+                setting=setting,
             )
         )
 

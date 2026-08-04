@@ -555,3 +555,32 @@ def test_default_hour_outside_the_day_rejected(tmp_path, bad_hour):
         _weather_config(tmp_path, default_hour=bad_hour)
 
 
+
+
+def test_synthetic_rule_setting_loads(tmp_path):
+    cfg = _load(tmp_path, {
+        "synthetic_activities": [
+            {"name": "Walk", "conditions": {}, "tags": ["walking"],
+             "summary": "A walk", "setting": "outdoor"},
+        ]
+    })
+    assert cfg.synthetic_activities[0].setting == "outdoor"
+
+
+def test_synthetic_rule_without_setting_defaults_to_unknown(tmp_path):
+    cfg = _load(tmp_path, {
+        "synthetic_activities": [
+            {"name": "Walk", "conditions": {}, "tags": ["walking"], "summary": "A walk"},
+        ]
+    })
+    assert cfg.synthetic_activities[0].setting == "unknown"
+
+
+def test_synthetic_rule_setting_outside_the_enum_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="Walk"):
+        _load(tmp_path, {
+            "synthetic_activities": [
+                {"name": "Walk", "conditions": {}, "tags": ["walking"],
+                 "summary": "A walk", "setting": "outside"},
+            ]
+        })

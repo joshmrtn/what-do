@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from src.config import SETTINGS
 from src.models.tag import DEFAULT_WEIGHT, Tag, clamp_weight
 from src.utils.chat_client import ChatClient
 from src.utils.text import normalize_embedding_text
@@ -32,6 +33,7 @@ class ExtractionResult:
         end_time: Parsed end datetime (None if not determinable).
         tags: Weighted descriptive tags for the event (minimum min_tags).
         summary: One-sentence event summary.
+        setting: "indoor", "outdoor", or "unknown".
     """
 
     title: str | None
@@ -40,6 +42,19 @@ class ExtractionResult:
     end_time: datetime | None
     tags: list[Tag]
     summary: str
+    setting: str = "unknown"
+
+
+def _parse_setting(raw: Any) -> str:
+    """Coerce the model's `setting` to the allowed enum.
+
+    Anything unrecognised becomes "unknown" rather than failing the extraction —
+    a bad enum value is not worth a retry costing minutes of local LLM time, and
+    "unknown" is a safe verdict that simply earns no weather adjustment.
+    """
+    if isinstance(raw, str) and raw.strip().lower() in SETTINGS:
+        return raw.strip().lower()
+    return "unknown"
 
 
 class ExtractionProvider(ABC):
@@ -81,7 +96,8 @@ Required JSON format:
   "start_time": "ISO 8601 datetime or null (e.g. 2026-06-22T20:00:00)",
   "end_time": "ISO 8601 datetime or null",
   "tags": [{{"tag": "short lowercase phrase", "weight": 0.0-1.0}}],
-  "summary": "One sentence describing the event."
+  "summary": "One sentence describing the event.",
+  "setting": "indoor" | "outdoor" | "unknown"
 }}
 
 Rules:
@@ -92,6 +108,9 @@ Rules:
   0.1 = incidental context (the kind of venue, the day of week, decor)
 - Weights must discriminate. Do not give every tag a similar weight.
 - Judge centrality from the event text, not from what is typical of the venue type.
+- "setting" is where the event is physically held: "outdoor" only if it takes
+  place outside. A venue that merely has a patio is "indoor". If the text does
+  not make it clear, use "unknown" rather than guessing.
 - summary must be exactly one sentence
 - Use null (not empty string) for unknown fields
 - Output ONLY the JSON object — no explanation, no markdown"""
@@ -106,7 +125,8 @@ You must respond with ONLY valid JSON matching this exact format:
   "start_time": "ISO 8601 datetime or null",
   "end_time": "ISO 8601 datetime or null",
   "tags": [{{"tag": "short phrase", "weight": 0.0-1.0}}, ...],
-  "summary": "One sentence."
+  "summary": "One sentence.",
+  "setting": "indoor" | "outdoor" | "unknown"
 }}
 
 Remember: at least {min_tags} tags required, each with a centrality weight where
@@ -212,6 +232,7 @@ class OllamaExtractionProvider(ExtractionProvider):
             end_time=end_time,
             tags=tags,
             summary=summary,
+            setting=_parse_setting(data.get("setting")),
         ), ""
 
     @staticmethod

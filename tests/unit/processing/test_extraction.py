@@ -395,3 +395,62 @@ def test_tag_of_only_invisible_characters_is_dropped():
 
     with pytest.raises(ExtractionError, match="tag count 5"):
         provider.extract("punk show tonight")
+
+
+# ---------------------------------------------------------------------------
+# setting: indoor / outdoor / unknown
+# ---------------------------------------------------------------------------
+
+
+_OMIT = object()
+
+
+def _response_with_setting(setting=_OMIT) -> str:
+    payload = json.loads(_valid_response())
+    if setting is not _OMIT:
+        payload["setting"] = setting
+    return json.dumps(payload)
+
+
+def _extract_setting(setting=_OMIT) -> str:
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_response_with_setting(setting))
+    return OllamaExtractionProvider(client=client, min_tags=5).extract("text").setting
+
+
+@pytest.mark.parametrize("value", ["indoor", "outdoor", "unknown"])
+def test_setting_parsed_from_each_allowed_value(value):
+    assert _extract_setting(value) == value
+
+
+def test_setting_is_case_and_space_insensitive():
+    assert _extract_setting("  Outdoor ") == "outdoor"
+
+
+@pytest.mark.parametrize("value", ["outside", "", None, 7, ["outdoor"]])
+def test_off_enum_setting_coerces_to_unknown(value):
+    """A bad enum is not worth a 3-minute local LLM retry — degrade, do not fail."""
+    assert _extract_setting(value) == "unknown"
+
+
+def test_missing_setting_key_coerces_to_unknown():
+    assert _extract_setting() == "unknown"
+
+
+def test_off_enum_setting_does_not_trigger_a_retry():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_response_with_setting("outside"))
+    OllamaExtractionProvider(client=client, min_tags=5).extract("text")
+    assert client.chat.call_count == 1
+
+
+def test_prompt_requests_the_setting_field():
+    from src.processing.extraction import OllamaExtractionProvider
+
+    client = _make_client(_valid_response())
+    OllamaExtractionProvider(client=client, min_tags=5).extract("text")
+    prompt = client.chat.call_args.kwargs["messages"][0]["content"]
+    assert "setting" in prompt
+    assert "outdoor" in prompt
