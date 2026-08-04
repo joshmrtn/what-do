@@ -343,15 +343,24 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
         start_time=tomorrow,
     )
 
-    # Mock weather provider returning clear 70°F
-    clear_weather = {
-        "temperature_f": 70.0,
-        "condition": "clear",
-        "precipitation_mm": 0.0,
-        "wind_speed_mph": 5.0,
+    # Mock weather provider returning a clear 70°F day, hour by hour
+    clear_day = {
+        "date": "2025-06-22",
+        "hours": [
+            {
+                "hour": hour,
+                "temperature_f": 70.0,
+                "relative_humidity": 45.0,
+                "dew_point_f": 48.0,
+                "precipitation_mm": 0.0,
+                "wind_speed_mph": 5.0,
+                "condition": "clear",
+            }
+            for hour in range(24)
+        ],
     }
     mock_weather = MagicMock(spec=WeatherProvider)
-    mock_weather.fetch.return_value = clear_weather
+    mock_weather.fetch.return_value = clear_day
 
     # Synthetic rule that matches clear weather at ≥60°F
     walk_rule = SyntheticActivityRule(
@@ -387,7 +396,9 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
 
     # Real event assertions
     assert results[0].weather is not None, "weather should be attached"
-    assert results[0].weather["temperature_f"] == 70.0
+    assert results[0].weather["sampled_hour"] == 19, "sampled at the event's own hour"
+    assert results[0].weather["forecast"]["hour"]["temperature_f"] == 70.0
+    assert len(results[0].weather["forecast"]["day_series"]) == 24
     assert results[0].astronomical_data is not None, "astronomical_data should be attached"
     assert "sunrise" in results[0].astronomical_data
     assert "sunset" in results[0].astronomical_data

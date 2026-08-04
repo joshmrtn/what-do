@@ -5,13 +5,13 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from src.config import AppConfig, SyntheticActivityRule
 from src.enrichment.astronomical import AstronomicalCalculator, AstronomicalData
 from src.enrichment.movies import MovieMetadataProvider, enrich_movie_event
 from src.enrichment.synthetic import SyntheticActivityGenerator
-from src.enrichment.weather import WeatherProvider
+from src.enrichment.weather import WeatherProvider, sample_hour
 from src.models.event import Event
 from src.utils.logging import StructuredLogger, get_logger
 
@@ -78,7 +78,7 @@ class EnrichmentService:
             # --- Weather ---
             if event_date not in _weather_cache:
                 _weather_cache[event_date] = self._fetch_weather(event_date, lat, lng)
-            event.weather = _weather_cache[event_date]
+            event.weather = self._weather_for(_weather_cache[event_date], event.start_time)
 
         # --- Movie metadata ---
         if self._movie_provider is not None:
@@ -87,11 +87,18 @@ class EnrichmentService:
 
         # --- Synthetic activities ---
         run_astro = self._calculator.calculate(run_date, lat, lng, tzname)
-        run_weather = self._fetch_weather(run_date, lat, lng)
+        run_day = self._fetch_weather(run_date, lat, lng)
+        # Synthetic rules have no start time of their own, so they are judged at
+        # the configured default hour rather than the daily extreme.
+        run_hour = (
+            None
+            if run_day is None
+            else sample_hour(run_day, None, self._config.weather.default_hour)
+        )
         synthetic = self._generator.generate(
             self._synthetic_rules,
             run_date,
-            run_weather,
+            run_hour,
             run_astro,
             self._get_now,
         )
@@ -101,6 +108,35 @@ class EnrichmentService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _weather_for(
+        self, day: dict[str, Any] | None, start_time: datetime | None
+    ) -> dict[str, Any] | None:
+        """Build the event's persisted weather record from a fetched day.
+
+        Keeps the raw readings and the full day series rather than a derived
+        score, so retuned comfort curves can rescore history without a refetch,
+        and a future cache purge cannot orphan an event from its conditions.
+        The `observed` slot is reserved for a later backfill of what actually
+        happened — a forecast issued days out is not what the user experienced.
+
+        Returns:
+            The persisted weather dict, or None if the day or hour is unavailable.
+        """
+        if day is None:
+            return None
+        hour = sample_hour(day, start_time, self._config.weather.default_hour)
+        if hour is None:
+            return None
+        return {
+            "sampled_hour": hour["hour"],
+            "forecast": {
+                "issued_at": self._get_now().isoformat(),
+                "hour": hour,
+                "day_series": day.get("hours", []),
+            },
+            "observed": None,
+        }
 
     def _fetch_weather(self, event_date: date, lat: float, lng: float) -> dict | None:
         """Return weather for (date, lat, lng), using DB cache; on miss, fetch and cache."""

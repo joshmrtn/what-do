@@ -1,7 +1,8 @@
-"""Weather provider ABC, OpenMeteo implementation, and WMO code mapper."""
+"""Weather provider ABC, OpenMeteo implementation, WMO code mapper, and hour sampling."""
 
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
+from typing import Any
 
 import requests
 
@@ -47,17 +48,52 @@ def map_wmo_code(code: int) -> str:
     return WMO_TO_CONDITION.get(code, "overcast")
 
 
+#: Open-Meteo hourly variable -> the reading name used everywhere downstream.
+#: Names match the comfort curve keys in config, so scoring needs no translation.
+HOURLY_VARIABLES: dict[str, str] = {
+    "temperature_2m": "temperature_f",
+    "relative_humidity_2m": "relative_humidity",
+    "dew_point_2m": "dew_point_f",
+    "precipitation": "precipitation_mm",
+    "wind_speed_10m": "wind_speed_mph",
+}
+
+
 class WeatherProvider(ABC):
     """Abstract base for weather data providers."""
 
     @abstractmethod
-    def fetch(self, date: date, lat: float, lng: float) -> dict | None:
-        """Fetch weather for a date and location.
+    def fetch(self, date: date, lat: float, lng: float) -> dict[str, Any] | None:
+        """Fetch a full day of hourly weather for a location.
 
         Returns:
-            Dict with keys temperature_f, condition, precipitation_mm, wind_speed_mph,
-            or None if the data is unavailable.
+            Dict with keys `date` and `hours` — a list of per-hour records, each
+            holding `hour` plus every reading in HOURLY_VARIABLES and `condition`.
+            None if the data is unavailable.
         """
+
+
+def sample_hour(
+    day: dict[str, Any], when: datetime | None, default_hour: int
+) -> dict[str, Any] | None:
+    """Select the hourly record covering `when`.
+
+    Args:
+        day: A day as returned by `WeatherProvider.fetch`.
+        when: The event's start time. None falls back to `default_hour`, so an
+            unknown-time event is judged on a typical evening rather than the
+            daily peak.
+        default_hour: Local hour to use when `when` is None.
+
+    Returns:
+        The matching hourly record, or None if that hour is absent.
+    """
+    wanted = default_hour if when is None else when.hour
+    hours: list[dict[str, Any]] = day.get("hours", [])
+    for record in hours:
+        if record.get("hour") == wanted:
+            return record
+    return None
 
 
 class OpenMeteoProvider(WeatherProvider):
@@ -68,18 +104,22 @@ class OpenMeteoProvider(WeatherProvider):
     def __init__(self, session: requests.Session | None = None) -> None:
         self._session = session or requests.Session()
 
-    def fetch(self, date: date, lat: float, lng: float) -> dict | None:
-        """Fetch daily weather summary from Open-Meteo.
+    def fetch(self, date: date, lat: float, lng: float) -> dict[str, Any] | None:
+        """Fetch one local day of hourly weather from Open-Meteo.
 
-        Returns temperatures in Fahrenheit and wind speed in mph.
-        Returns None on any network, HTTP, or parse error.
+        Imperial units are requested natively rather than converted, so no
+        arithmetic can drift. Humidity and dew point exist only at hourly
+        granularity, which is why the daily summary is not enough.
+
+        Returns None on any network, HTTP, or parse error, and on an empty series.
         """
-        params = {
+        params: dict[str, str | float] = {
             "latitude": lat,
             "longitude": lng,
-            "daily": "weathercode,temperature_2m_max,precipitation_sum,windspeed_10m_max",
-            "temperature_unit": "celsius",
-            "windspeed_unit": "kmh",
+            "hourly": ",".join([*HOURLY_VARIABLES, "weather_code"]),
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "precipitation_unit": "mm",
             "timezone": "auto",
             "start_date": date.isoformat(),
             "end_date": date.isoformat(),
@@ -87,16 +127,33 @@ class OpenMeteoProvider(WeatherProvider):
         try:
             resp = self._session.get(self._BASE_URL, params=params, timeout=10)
             resp.raise_for_status()
-            daily = resp.json()["daily"]
-            temp_c: float = daily["temperature_2m_max"][0]
-            precip_mm: float = daily["precipitation_sum"][0]
-            wind_kmh: float = daily["windspeed_10m_max"][0]
-            wmo_code: int = daily["weathercode"][0]
+            hourly = resp.json()["hourly"]
+            times = hourly["time"]
+            if not times:
+                return None
             return {
-                "temperature_f": (temp_c * 9 / 5) + 32,
-                "condition": map_wmo_code(wmo_code),
-                "precipitation_mm": float(precip_mm),
-                "wind_speed_mph": wind_kmh * 0.621371,
+                "date": date.isoformat(),
+                "hours": [self._hour_record(hourly, i) for i in range(len(times))],
             }
         except Exception:
             return None
+
+    @staticmethod
+    def _hour_record(hourly: dict[str, Any], index: int) -> dict[str, Any]:
+        """Build one hour's readings. A variable the API omitted becomes None."""
+
+        def value(variable: str) -> float | None:
+            series = hourly.get(variable)
+            if series is None or index >= len(series) or series[index] is None:
+                return None
+            return float(series[index])
+
+        record: dict[str, Any] = {
+            "hour": datetime.fromisoformat(hourly["time"][index]).hour
+        }
+        for variable, reading in HOURLY_VARIABLES.items():
+            record[reading] = value(variable)
+
+        code = value("weather_code")
+        record["condition"] = None if code is None else map_wmo_code(int(code))
+        return record

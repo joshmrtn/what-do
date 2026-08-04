@@ -36,12 +36,20 @@ RUN_DATE = date(2025, 6, 21)
 NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
 LOCAL_TZ = zoneinfo.ZoneInfo(TZ)
 
-CLEAR_WEATHER = {
-    "temperature_f": 70.0,
-    "condition": "clear",
-    "precipitation_mm": 0.0,
-    "wind_speed_mph": 5.0,
-}
+def _hour_record(hour: int, condition: str = "clear") -> dict:
+    """One hour of readings. Temperature varies by hour so tests can prove which was sampled."""
+    return {
+        "hour": hour,
+        "temperature_f": 60.0 + hour,
+        "relative_humidity": 40.0,
+        "dew_point_f": 50.0,
+        "precipitation_mm": 0.0,
+        "wind_speed_mph": 5.0,
+        "condition": condition,
+    }
+
+
+CLEAR_DAY = {"date": "2025-06-21", "hours": [_hour_record(h) for h in range(24)]}
 
 
 @pytest.fixture
@@ -60,7 +68,7 @@ def cfg() -> AppConfig:
     )
 
 
-def _weather_provider(return_value=CLEAR_WEATHER, side_effect=None) -> WeatherProvider:
+def _weather_provider(return_value=CLEAR_DAY, side_effect=None) -> WeatherProvider:
     p = MagicMock(spec=WeatherProvider)
     if side_effect is not None:
         p.fetch.side_effect = side_effect
@@ -123,11 +131,68 @@ def _make_service(
 # ---------------------------------------------------------------------------
 
 
+def _enriched_weather(db_path, cfg, *, start_time=..., day=CLEAR_DAY) -> dict:
+    svc = _make_service(db_path, cfg, weather=_weather_provider(day))
+    event = _make_event(start_time=start_time)
+    return svc.enrich([event], RUN_DATE)[0].weather
+
+
 def test_event_with_start_time_gets_weather(db_path, cfg):
-    svc = _make_service(db_path, cfg, weather=_weather_provider(CLEAR_WEATHER))
-    event = _make_event()
-    results = svc.enrich([event], RUN_DATE)
-    assert results[0].weather == CLEAR_WEATHER
+    weather = _enriched_weather(db_path, cfg)
+    assert weather is not None
+    assert set(weather) == {"sampled_hour", "forecast", "observed"}
+
+
+def test_weather_is_sampled_at_the_events_own_hour(db_path, cfg):
+    """The daily high says nothing about a 9pm show; hour 20 must score as hour 20."""
+    weather = _enriched_weather(db_path, cfg)
+    assert weather["sampled_hour"] == 20
+    assert weather["forecast"]["hour"]["temperature_f"] == pytest.approx(80.0)
+
+
+@pytest.mark.parametrize(
+    "default_hour,expect_synthetic",
+    [(20, 1), (18, 0)],  # CLEAR_DAY runs 60F + hour, so 20 is 80F and 18 is 78F
+)
+def test_synthetic_activities_judged_at_the_default_hour(
+    db_path, cfg, default_hour, expect_synthetic
+):
+    """Synthetic rules have no start time of their own, so they take the default hour."""
+    cfg.weather.default_hour = default_hour
+    svc = _make_service(
+        db_path, cfg, weather=_weather_provider(CLEAR_DAY), rules=[_walk_rule(min_temp_f=79)]
+    )
+    results = svc.enrich([], RUN_DATE)
+    assert len([e for e in results if e.source_type == "synthetic"]) == expect_synthetic
+
+
+def test_full_day_series_is_denormalised_onto_the_event(db_path, cfg):
+    """A future cache purge must not orphan an event from its own conditions."""
+    weather = _enriched_weather(db_path, cfg)
+    assert len(weather["forecast"]["day_series"]) == 24
+
+
+def test_raw_readings_are_kept_not_just_a_derived_score(db_path, cfg):
+    """Curves will be retuned; history has to be rescorable without a refetch."""
+    hour = _enriched_weather(db_path, cfg)["forecast"]["hour"]
+    assert hour["dew_point_f"] == pytest.approx(50.0)
+    assert hour["relative_humidity"] == pytest.approx(40.0)
+    assert hour["wind_speed_mph"] == pytest.approx(5.0)
+
+
+def test_forecast_records_when_it_was_issued(db_path, cfg):
+    """A forecast's age is what separates it from what actually happened."""
+    assert _enriched_weather(db_path, cfg)["forecast"]["issued_at"] == NOW.isoformat()
+
+
+def test_observed_is_reserved_and_left_empty(db_path, cfg):
+    """No backfill job exists yet; the slot exists so adding one is not a migration."""
+    assert _enriched_weather(db_path, cfg)["observed"] is None
+
+
+def test_event_gets_no_weather_when_its_hour_is_missing(db_path, cfg):
+    sparse = {"date": "2025-06-21", "hours": [_hour_record(3)]}
+    assert _enriched_weather(db_path, cfg, day=sparse) is None
 
 
 def test_event_with_start_time_gets_astronomical_data(db_path, cfg):
@@ -184,7 +249,7 @@ def test_provider_returns_none_event_weather_is_none(db_path, cfg):
 
 
 def test_weather_cache_hit_provider_not_called_twice(db_path, cfg):
-    wp = _weather_provider(CLEAR_WEATHER)
+    wp = _weather_provider(CLEAR_DAY)
     svc = _make_service(db_path, cfg, weather=wp)
     e1 = _make_event(event_id="evt-1")
     e2 = _make_event(event_id="evt-2")  # same date as e1
@@ -194,7 +259,7 @@ def test_weather_cache_hit_provider_not_called_twice(db_path, cfg):
 
 def test_weather_cached_in_db_between_calls(db_path, cfg):
     """Second enrich() call re-uses DB cache, provider not called."""
-    wp = _weather_provider(CLEAR_WEATHER)
+    wp = _weather_provider(CLEAR_DAY)
     svc = _make_service(db_path, cfg, weather=wp)
     svc.enrich([_make_event()], RUN_DATE)
     first_call_count = wp.fetch.call_count
@@ -280,7 +345,7 @@ def _walk_rule(min_temp_f: float | None = None) -> SyntheticActivityRule:
 def test_synthetic_rule_conditions_met_event_appended(db_path, cfg):
     svc = _make_service(
         db_path, cfg,
-        weather=_weather_provider(CLEAR_WEATHER),
+        weather=_weather_provider(CLEAR_DAY),
         rules=[_walk_rule()],
     )
     results = svc.enrich([_make_event()], RUN_DATE)
@@ -289,7 +354,7 @@ def test_synthetic_rule_conditions_met_event_appended(db_path, cfg):
 
 
 def test_synthetic_rule_conditions_not_met_no_synthetic_event(db_path, cfg):
-    rainy = {**CLEAR_WEATHER, "condition": "rain"}
+    rainy = {"date": "2025-06-21", "hours": [_hour_record(h, "rain") for h in range(24)]}
     svc = _make_service(
         db_path, cfg,
         weather=_weather_provider(rainy),
@@ -308,7 +373,7 @@ def test_synthetic_rule_conditions_not_met_no_synthetic_event(db_path, cfg):
 def test_returned_list_order_real_first_synthetic_last(db_path, cfg):
     svc = _make_service(
         db_path, cfg,
-        weather=_weather_provider(CLEAR_WEATHER),
+        weather=_weather_provider(CLEAR_DAY),
         rules=[_walk_rule()],
     )
     real_event = _make_event()
@@ -321,7 +386,7 @@ def test_returned_list_order_real_first_synthetic_last(db_path, cfg):
 def test_no_real_events_synthetic_still_generated(db_path, cfg):
     svc = _make_service(
         db_path, cfg,
-        weather=_weather_provider(CLEAR_WEATHER),
+        weather=_weather_provider(CLEAR_DAY),
         rules=[_walk_rule()],
     )
     results = svc.enrich([], RUN_DATE)
