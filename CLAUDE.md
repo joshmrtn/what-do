@@ -76,8 +76,8 @@ summary_score = same formula on the 1-sentence summary
 base_score    = tag_score + (summary_weight × summary_score)
 
 # Direction-aware: the multiplier acts on magnitude, sign preserved.
-final_score   = base_score × match_multiplier + weather_bonus   if base_score >= 0
-final_score   = base_score ÷ match_multiplier + weather_bonus   if base_score < 0
+final_score   = base_score × match_multiplier + weather_adjustment   if base_score >= 0
+final_score   = base_score ÷ match_multiplier + weather_adjustment   if base_score < 0
 ```
 
 Three parts are load-bearing and were each measured against real embeddings — dropping any one

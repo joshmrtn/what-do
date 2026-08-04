@@ -632,8 +632,8 @@ base_score    = tag_score + (summary_weight × summary_score)
 Final score after multipliers (applied in scoring layer):
 
 ```
-final_score = base_score × match_multiplier + weather_bonus     if base_score >= 0
-final_score = base_score ÷ match_multiplier + weather_bonus     if base_score < 0
+final_score = base_score × match_multiplier + weather_adjustment     if base_score >= 0
+final_score = base_score ÷ match_multiplier + weather_adjustment     if base_score < 0
 ```
 
 > **Addendum (2026-08-01):** the multiplier is applied direction-aware. Base scores are unbounded
@@ -946,7 +946,7 @@ Reason schema:
 }
 ```
 
-Supported factor values: `like_similarity`, `dislike_similarity`, `match_classification`, `weather_bonus`, `domain_mismatch`.
+Supported factor values: `like_similarity`, `dislike_similarity`, `match_classification`, `weather_adjustment`, `domain_mismatch`.
 
 ---
 

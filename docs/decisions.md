@@ -580,8 +580,8 @@ set to the stage, so the embedding cache cannot be consulted per event by accide
 **Decision:** the ranking engine (Phase 8) applies the match multiplier as:
 
 ```
-final_score = base_score × m + weather_bonus     if base_score >= 0
-final_score = base_score ÷ m + weather_bonus     if base_score < 0
+final_score = base_score × m + weather_adjustment     if base_score >= 0
+final_score = base_score ÷ m + weather_adjustment     if base_score < 0
 ```
 
 rather than the plain `base_score × match_multiplier` written in the original design.
@@ -618,3 +618,224 @@ threshold on `base_score` itself, scaling that group by a constant is a monotone
 real effect is pushing events across `top_picks_min`. The `no` multiplier is the one doing genuine
 work, because `no` derives from the relative like/dislike margin — information the base score does
 not contain. An event can score positively overall and still be a `no`.
+
+---
+
+## Weather is sampled hourly at the event's own time, not from the daily summary
+
+**Decision:** `OpenMeteoProvider.fetch` requests Open-Meteo's *hourly* series for a local day and
+returns all 24 records; `sample_hour` then selects the hour containing the event's `start_time`.
+The fetch stays per-day, so one call still serves every event on that date and the existing
+`weather_cache` keying on `(date, lat, lng)` is unchanged.
+
+**Rationale:** two independent problems with the previous daily request.
+
+1. It asked for `temperature_2m_max`. A daily high describes mid-afternoon, not a 9pm show, and
+   the gap between them is the ordinary diurnal swing — the number was wrong for most events.
+2. **Humidity and dew point do not exist at daily granularity in Open-Meteo.** They are hourly-only
+   variables. Any comfort model using them forces the hourly switch regardless of point 1.
+
+**Consequence:** anything with no `start_time` takes `weather.default_hour` (default 20) instead of
+the daily extreme, so it is judged on a typical evening. This is what synthetic activities use —
+they have no start time of their own.
+
+**Also changed:** imperial units are requested natively (`temperature_unit=fahrenheit`,
+`wind_speed_unit=mph`) rather than converted from celsius and km/h in our code. Deletes the
+conversion arithmetic and the class of bug where it drifts.
+
+**Testing note:** switching the provider to the hourly contract left all 650 tests green, because
+every injected fake still returned the old flat dict. In production `event.weather` was receiving a
+whole *day* and the synthetic generator would have crashed on the first real run reading
+`weather["temperature_f"]`. Updating the fakes to the real shape turned 13 tests red at once. Fakes
+that drift from the contract they stand in for test nothing — worth remembering given the
+no-network-in-tests rule makes fakes ubiquitous here.
+
+---
+
+## Weather comfort is a signed adjustment with asymmetric caps
+
+**Decision:** the term in the scoring formula is `weather_adjustment`, not `weather_bonus`:
+
+```
+final_score = (base_score ×/÷ match_multiplier) + weather_adjustment
+adjustment  = comfort × (max_positive_adjustment if comfort >= 0 else max_negative_adjustment)
+```
+
+`comfort` spans −1.0..+1.0. Defaults: `max_positive_adjustment 0.15`, `max_negative_adjustment 0.25`.
+
+**Rationale:** a bonus-only term can promote an outdoor event on a perfect night but leaves a
+sweltering, muggy, windy evening scoring identically to a beautiful one. Bad weather is real
+information about whether the user wants to go, so it should be able to demote.
+
+The caps are asymmetric because the two directions are not symmetric in kind: a thunderstorm is
+close to disqualifying, whereas a perfect night is a nudge that should not overturn a strong
+preference match. Measured Phase 7 base scores span roughly −0.6..+0.9, so 0.15 lets good weather
+lift an outdoor event past a moderately better indoor one without dominating, while 0.25 lets bad
+weather sink one decisively.
+
+**Applicability, in order:** `setting != "outdoor"` → no adjustment and no `Reason`; `weather is
+None` (beyond the forecast horizon) → no adjustment, explicitly *not* a penalty, since not knowing
+is not the same as knowing it is bad; otherwise the signed adjustment plus a `Reason`.
+
+**Rejected:** scaling the adjustment by the centrality weight of an `outdoor` tag. `setting` is a
+hard property of the event, not a fuzzy tag match — an outdoor concert is outdoors regardless of
+how central "outdoor" was to its description. Phase 7's centrality argument does not transfer.
+
+---
+
+## Comfort curves are asymmetric trapezoids: a plateau, and linear
+
+**Decision:** each weather factor maps its reading through a piecewise-linear trapezoid declared
+entirely in config — `+1.0` across the whole `ideal` band, ramping linearly to `0.0` at the `zero`
+bounds and on to `-1.0` at the `floor` bounds, then clamped. All four bounds are independent.
+
+**Rationale, three separate choices:**
+
+**A plateau, not a peak.** A bell curve has a single optimum and scores everything else lower. With
+a comfortable temperature range of 20–65°F, a bell would call ~42°F perfect and rank 22°F and 63°F
+as mediocre. The user does not have an ideal temperature; they have a range they are happy in.
+Everything inside the band scores identically, and only leaving it costs anything.
+
+**Independent sides.** The cold and hot ramps are configured separately, so they can decay at
+completely different rates. For this user — comfortable to 20°F, walks below 0°F — temperature is
+configured to reach 0.0 at −15°F but 78°F, and −1.0 at −40°F but 95°F. A symmetric curve cannot
+express that at all.
+
+**Linear, not logistic.** The Phase 7 similarity gate is logistic for a specific reason: cosine
+similarity has a ~0.42 noise floor that must be crushed to zero (see "Scoring formula replaced
+after measurement"). There is no noise floor here — 63.4°F means exactly 63.4°F. Logistic shaping
+would only obscure the relationship between a config number and its effect, whereas "0.0 at 78°F"
+is a promise readable off the config file and verifiable in one test.
+
+**Consequence:** bounds must nest outward (`floor` outside `zero` outside `ideal`) or the curve
+silently inverts its meaning. `load_config` rejects misordered bounds rather than scoring a
+heatwave as pleasant.
+
+---
+
+## Dominant factors cap; they are not averaged
+
+**Decision:** a comfort curve with `supersedes` set is a **capping factor** — excluded from the
+weighted mean and applied as `min(comfort, its_value)`. Condition penalties (`rain`, `thunderstorm`,
+…) work the same way, and only negative penalties cap: `0.0` means "no objection", not "no comfort".
+
+**Rationale:** this was specified as a weighted factor first, and a red test caught it. With the
+default curves, 12mm of rain (curve value −1.0, weight 0.9) alongside a pleasant 58°F (+1.0) and
+dew point 50 (+1.0) averages to `(1.0 + 1.0 − 0.9) / 2.9 = +0.38` — a downpour rating as a fine
+evening. **A weighted mean cannot express "this one factor disqualifies the rest"**, which is
+exactly what precipitation and thunderstorms do. That is the same reasoning that made conditions a
+`min()` cap in the first place; the capping factor simply generalises it.
+
+**Consequence:** `weight` is unused on a capping factor. Documented on the `ComfortCurve` docstring
+and in `config.example.yaml`, since a silently ignored config key is otherwise a trap.
+
+---
+
+## Precipitation intensity supersedes the categorical rain penalty
+
+**Decision:** `precipitation_mm` declares `supersedes: [rain, snow]`. When a precipitation reading
+exists it replaces those condition penalties entirely and the curve alone decides; the `-0.4`
+categorical penalty survives only as the fallback for when the amount is missing. **Thunderstorm is
+deliberately exempt from supersession.**
+
+**Rationale:** the WMO condition code discards everything separating 0.2mm of drizzle from 12mm of
+downpour — both arrive as `rain`. Penalising via both the condition and the curve would hit a
+drizzle twice. Rain is genuinely not a simple no: a light drizzle at 58°F is a fine hike, which is
+why `rain` softened from `-1.0` to `-0.4` and gradation was worth adding at all.
+
+Thunderstorm stays absolute because its hazard is lightning, not millimetres. A *dry* thunderstorm
+reads 0mm and would otherwise supersede its way into scoring as a beautiful evening. This is the
+one case where the blunt categorical rule is the correct one.
+
+---
+
+## Correlated factors stand in for each other rather than both voting
+
+**Decision:** `relative_humidity` declares `fallback_for: dew_point_f` — it is scored only when dew
+point has no reading.
+
+**Rationale:** humidity and dew point measure nearly the same thing, so counting both double-weights
+moisture against temperature, wind, and air quality. Dew point is the better standalone comfort
+predictor, so it wins when present. A fallback beats simply setting humidity's weight to zero,
+because dew point is an hourly-only variable that may be absent — in that case humidity silently
+covers for it instead of moisture dropping out of the score entirely.
+
+**Consequence:** `fallback_for` naming an unconfigured factor is rejected at load. That typo would
+otherwise disable a factor silently — it was caught by the validator failing a fixture in this
+project's own test suite, which had `fallback_for: dew_point_f` with no `dew_point_f` curve defined.
+
+---
+
+## Missing weather readings renormalise; they are never scored as zero
+
+**Decision:** a factor with no reading is dropped from the weighted mean and the remaining weights
+renormalise. All factors missing yields an adjustment of 0.0.
+
+**Rationale:** air quality comes from a separate Open-Meteo endpoint whose forecast horizon is much
+shorter than the 16-day weather forecast, so AQI is absent for a large share of events. Scoring an
+absent reading as 0.0 comfort would make "we don't know the air quality" indistinguishable from
+"the air quality is mediocre", quietly penalising every event beyond the AQI horizon. The same
+holds for any variable the provider omits.
+
+---
+
+## Weather is persisted raw, denormalised, with a reserved `observed` slot
+
+**Decision:** `events.weather` stores `{sampled_hour, forecast: {issued_at, hour, day_series},
+observed}` — the raw readings for the sampled hour, the full 24-hour series, and when the forecast
+was issued. `observed` is written as `null`. Comfort scoring reads `observed` when present and falls
+back to `forecast`.
+
+**Rationale, three parts:**
+
+**Raw readings, not a derived score.** Comfort curves will be retuned. Storing the readings means
+every historical event can be rescored without refetching anything; storing only the verdict makes
+history unusable the moment a bound moves.
+
+**Denormalised onto the event.** The day series also lives in `weather_cache`, keyed
+`(date, lat, lng)` and shared by every event that day. There is currently **no retention or purge
+code anywhere in `src/`** — `data_retention_days` is configured but unread — so when Phase 10 adds
+one, a cache purge would orphan every historical event from its own conditions. ~2KB of JSON per
+event removes that coupling.
+
+**`forecast` vs `observed`.** A forecast issued 10 days out is frequently wrong, so a future
+"would I go" classifier trained on forecasts would learn what we *predicted*, not what the user
+*experienced*. Open-Meteo has a free historical archive endpoint, so a backfill can attach reality
+later. The slot exists now so adding that job fills a field rather than migrating every row.
+
+**No schema migration required:** `weather_cache.data` and `events.weather` are already JSON TEXT
+columns.
+
+**Note:** the blunt `condition_penalty` table is a first pass at what is genuinely a nuanced
+judgement — a drizzle at 58°F is a good hike, and severe conditions are not automatically a no for
+this user. Raw retention is what makes replacing it with a classifier trained on real yes/no
+history possible later.
+
+---
+
+## `setting` comes from LLM Pass 1; there is no source-type override map
+
+**Decision:** `indoor` / `outdoor` / `unknown` is assigned by LLM Pass 1 alongside tags and summary,
+with off-enum values coerced to `unknown` rather than triggering a retry. Synthetic activity rules
+declare their own `setting:` in config. **No `setting_by_source_type` config map exists.**
+
+**Rationale:** the plan originally specified exact matching on an `outdoor` *tag*, which HLD §4.5
+Stage 3 prohibits and which fails on any event tagged `patio`, `rooftop`, or `beer garden`. A
+structured field decided at extraction time avoids string matching entirely.
+
+It then proposed a `weather.setting_by_source_type` map to give cinema sources an `indoor` default,
+on the premise that movie events bypass Pass 1. **That premise was wrong.** `enrich_movie_event`
+writes only to `event.metadata` and never touches `event.tags`, and `ExtractionStage` bypasses
+solely on `if event.tags:` — its docstring says "this handles synthetic events". Movie events go
+through Pass 1 like everything else and the model assigns their `setting` itself.
+
+Independently of the factual error, config was the wrong home: a cinema is indoor as a matter of
+fact, not deployment preference. Making it configurable invites declaring AMC outdoors and adds
+config surface nobody will ever touch. A source-specific constant belongs in the adapter.
+
+**Synthetic activities are the exception, and genuinely are config.** They bypass Pass 1 (they
+arrive with tags pre-populated) and are entirely user-authored, so only the rule's author knows
+whether "Read a book at home" is indoors.
+
+**Consequence:** ambiguity resolves to `unknown`, which earns no weather adjustment in either
+direction — never a penalty for being unclassifiable.
