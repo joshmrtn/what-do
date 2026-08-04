@@ -839,3 +839,40 @@ whether "Read a book at home" is indoors.
 
 **Consequence:** ambiguity resolves to `unknown`, which earns no weather adjustment in either
 direction — never a penalty for being unclassifiable.
+
+---
+
+## Air quality is a separate endpoint with roughly half the forecast horizon
+
+**Decision:** US AQI is fetched from `air-quality-api.open-meteo.com/v1/air-quality` by a separate,
+optional, injected `AirQualityProvider`, gated behind `weather.air_quality.enabled`, and merged
+into the sampled weather hour. Any failure degrades to no reading rather than failing enrichment.
+
+**Measured against the live API on 2026-08-04**, rather than assumed:
+
+| | Weather forecast | Air quality |
+|---|---|---|
+| Horizon | 16 days | **5 days default, 7 with `forecast_days`** |
+| Out-of-range date | — | HTTP error with `{"error": true, "reason": "..."}` |
+
+Two consequences fall out of that:
+
+1. **AQI is absent for most events**, since the weather forecast reaches more than twice as far.
+   Absence is therefore the normal case, not an error, and is never logged as one.
+2. **An out-of-range date returns an error body, not null readings.** The provider checks
+   `body.get("error")` explicitly — parsing on would otherwise raise inside the `hourly` lookup and
+   be caught by the generic handler, which works by accident rather than by intent.
+
+**Consequence for scoring:** a missing reading is omitted from the hourly record entirely rather
+than written as `None`, so `compute_comfort` drops the factor and renormalises. Writing `None` and
+scoring it would make "we do not know the air quality" indistinguishable from "the air quality is
+mediocre", quietly penalising every event past the horizon. See "Missing weather readings
+renormalise".
+
+**Rejected:** making air quality a hard dependency of `EnrichmentService`. A second endpoint with a
+shorter horizon and no bearing on most events should not be able to take down weather enrichment,
+so the provider is optional and its absence is indistinguishable from a miss.
+
+**Known gap:** air quality is cached only in memory for the duration of a run, whereas weather is
+also cached in the `weather_cache` table. Deliberate for now — AQI is volatile and cheap — but it
+means the two follow different caching rules, which is worth knowing before adding a TTL to either.

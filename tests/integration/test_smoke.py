@@ -25,7 +25,6 @@ from src.config import (
     SyntheticActivityRule,
     SyntheticConditions,
     VenueDiscoveryConfig,
-    _load_weather,
     load_config,
 )
 from src.enrichment.astronomical import AstronomicalCalculator
@@ -541,8 +540,18 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
     """
 
 
+    # Load the shipped weather block through the real public entry point, so the
+    # smoke test exercises the same path production does.
     example = yaml.safe_load(Path("config/config.example.yaml").read_text())
-    weather_cfg = _load_weather(example["weather"])
+    example["location"] = {
+        "latitude": 42.52,
+        "longitude": -70.89,
+        "postal_code": "01970",
+        "search_radius_miles": 10,
+    }
+    config_file = tmp_path / "example_config.yaml"
+    config_file.write_text(yaml.dump(example))
+    weather_cfg = load_config(config_path=config_file).weather
 
     run_date = date(2025, 6, 21)
     now = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
