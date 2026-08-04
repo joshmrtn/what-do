@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import MagicMock
 import io
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
+from src.ingestion.disambiguation import DisambiguationProvider, DisambiguationStep
 from src.storage.db import init_db
 from src.utils.logging import get_logger
 
@@ -57,7 +58,6 @@ def _get_state(conn, handle):
 
 
 def _make_provider(classification: str):
-    from src.ingestion.disambiguation import DisambiguationProvider
 
     p = MagicMock(spec=DisambiguationProvider)
     p.classify.return_value = classification
@@ -70,14 +70,12 @@ def _make_provider(classification: str):
 
 
 def test_disambiguation_provider_is_abstract():
-    from src.ingestion.disambiguation import DisambiguationProvider
 
     with pytest.raises(TypeError):
         DisambiguationProvider()  # type: ignore[abstract]
 
 
 def test_disambiguation_provider_requires_classify():
-    from src.ingestion.disambiguation import DisambiguationProvider
 
     class Incomplete(DisambiguationProvider):
         pass
@@ -92,7 +90,6 @@ def test_disambiguation_provider_requires_classify():
 
 
 def test_person_handle_gets_discarded(db):
-    from src.ingestion.disambiguation import DisambiguationStep
 
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@johndoe")
@@ -112,7 +109,6 @@ def test_person_handle_gets_discarded(db):
 
 
 def test_venue_handle_stays_probationary(db):
-    from src.ingestion.disambiguation import DisambiguationStep
 
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@jazzclub")
@@ -132,7 +128,6 @@ def test_venue_handle_stays_probationary(db):
 
 
 def test_already_classified_handle_skipped(db):
-    from src.ingestion.disambiguation import DisambiguationStep
 
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@alreadydone", state="active", llm_classification="venue")
@@ -149,7 +144,6 @@ def test_already_classified_handle_skipped(db):
 
 
 def test_discarded_handle_not_reclassified(db):
-    from src.ingestion.disambiguation import DisambiguationStep
 
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@oldspam", state="discarded", llm_classification="person")
@@ -165,7 +159,6 @@ def test_discarded_handle_not_reclassified(db):
 
 
 def test_provider_failure_leaves_handle_probationary(db):
-    from src.ingestion.disambiguation import DisambiguationStep, DisambiguationProvider
 
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@flaky")
@@ -182,7 +175,6 @@ def test_provider_failure_leaves_handle_probationary(db):
 
 
 def test_multiple_handles_processed(db):
-    from src.ingestion.disambiguation import DisambiguationStep, DisambiguationProvider
 
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@venue1")

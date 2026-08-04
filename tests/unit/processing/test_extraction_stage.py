@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, call
+import io
 
 import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
+from src.processing.extraction import ExtractionError, ExtractionResult, OllamaExtractionProvider
 from src.processing.extraction_stage import ExtractionStage
+from src.processing.image_fetcher import ImageFetchError
 from src.utils.logging import get_logger
+from src.utils.ollama_client import OllamaClient
 
 
 def _now() -> datetime:
@@ -37,7 +40,6 @@ def _make_logger():
 
 
 def _make_provider(tags=None, summary="A great event.", setting="unknown"):
-    from src.processing.extraction import ExtractionResult
 
     provider = MagicMock()
     provider.extract.return_value = ExtractionResult(
@@ -60,7 +62,6 @@ def _make_fetcher(content: bytes = b"fake image bytes"):
 
 
 def test_reference_date_from_get_now_passed_to_provider():
-    from src.processing.extraction_stage import ExtractionStage
 
     provider = _make_provider()
     fixed = datetime(2026, 8, 3, 9, 0, 0, tzinfo=timezone.utc)
@@ -81,7 +82,6 @@ def test_reference_date_from_get_now_passed_to_provider():
 
 
 def test_bypass_when_tags_already_populated():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(tags=[Tag(text=t) for t in
                               ["jazz", "live", "music", "fun", "night"]])
@@ -96,7 +96,6 @@ def test_bypass_when_tags_already_populated():
 
 
 def test_extraction_called_when_tags_empty():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(tags=[])
     provider = _make_provider()
@@ -113,7 +112,6 @@ def test_extraction_called_when_tags_empty():
 
 
 def test_tags_and_summary_always_written():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event()
     provider = _make_provider(tags=[Tag(text=c) for c in "abcde"], summary="Excellent event.")
@@ -126,7 +124,6 @@ def test_tags_and_summary_always_written():
 
 
 def test_llm_fills_null_title():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(title=None)
     provider = _make_provider()
@@ -138,7 +135,6 @@ def test_llm_fills_null_title():
 
 
 def test_llm_does_not_overwrite_existing_title():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(title="Existing Title From Normalization")
     provider = _make_provider()
@@ -150,7 +146,6 @@ def test_llm_does_not_overwrite_existing_title():
 
 
 def test_llm_fills_null_venue():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(venue=None)
     provider = _make_provider()
@@ -162,7 +157,6 @@ def test_llm_fills_null_venue():
 
 
 def test_llm_does_not_overwrite_existing_venue():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(venue="The Vault Lounge")
     provider = _make_provider()
@@ -174,7 +168,6 @@ def test_llm_does_not_overwrite_existing_venue():
 
 
 def test_llm_fills_null_start_time():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(start_time=None)
     provider = _make_provider()
@@ -186,7 +179,6 @@ def test_llm_fills_null_start_time():
 
 
 def test_llm_does_not_overwrite_existing_start_time():
-    from src.processing.extraction_stage import ExtractionStage
 
     existing = datetime(2026, 6, 22, 19, 30, 0, tzinfo=timezone.utc)
     event = _make_event(start_time=existing)
@@ -204,7 +196,6 @@ def test_llm_does_not_overwrite_existing_start_time():
 
 
 def test_image_url_triggers_fetch_and_sets_image_bytes():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(image_url="http://example.com/photo.jpg")
     fetcher = _make_fetcher(b"real image bytes")
@@ -222,7 +213,6 @@ def test_image_url_triggers_fetch_and_sets_image_bytes():
 
 
 def test_no_image_url_no_fetch():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(image_url=None)
     fetcher = _make_fetcher()
@@ -237,8 +227,6 @@ def test_no_image_url_no_fetch():
 
 
 def test_image_fetch_error_logs_warning_and_continues():
-    from src.processing.extraction_stage import ExtractionStage
-    from src.processing.image_fetcher import ImageFetchError
 
     event = _make_event(image_url="http://example.com/broken.jpg")
     fetcher = MagicMock()
@@ -262,8 +250,6 @@ def test_image_fetch_error_logs_warning_and_continues():
 
 
 def test_extraction_error_sets_flag_and_continues():
-    from src.processing.extraction import ExtractionError
-    from src.processing.extraction_stage import ExtractionStage
 
     provider = MagicMock()
     provider.extract.side_effect = ExtractionError("LLM confused")
@@ -277,8 +263,6 @@ def test_extraction_error_sets_flag_and_continues():
 
 
 def test_one_failed_event_does_not_stop_others():
-    from src.processing.extraction import ExtractionError
-    from src.processing.extraction_stage import ExtractionStage
 
     provider = MagicMock()
     provider.extract.side_effect = [
@@ -294,7 +278,6 @@ def test_one_failed_event_does_not_stop_others():
     good_result_mock.start_time = None
     good_result_mock.end_time = None
 
-    from src.processing.extraction import ExtractionError, ExtractionResult
 
     provider2 = MagicMock()
     provider2.extract.side_effect = [
@@ -322,7 +305,6 @@ def test_one_failed_event_does_not_stop_others():
 
 
 def test_input_text_combines_title_and_description():
-    from src.processing.extraction_stage import ExtractionStage
 
     event = _make_event(title="Jazz Night", description="Live jazz at the waterfront.")
     provider = _make_provider()
@@ -343,9 +325,6 @@ def test_input_text_combines_title_and_description():
 @pytest.mark.slow
 def test_real_extraction_produces_valid_result():
     """Confirm real Ollama extraction works end-to-end with gemma4:e4b."""
-    from src.utils.ollama_client import OllamaClient
-    from src.processing.extraction import OllamaExtractionProvider
-    from src.processing.extraction_stage import ExtractionStage
 
     client = OllamaClient(host="http://localhost:11434", timeout=3600)
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
@@ -374,9 +353,6 @@ def test_real_extraction_produces_valid_result():
 @pytest.mark.slow
 def test_bypass_not_called_with_prepopulated_tags():
     """Confirm Ollama is not called when event already has tags."""
-    from src.utils.ollama_client import OllamaClient
-    from src.processing.extraction import OllamaExtractionProvider
-    from src.processing.extraction_stage import ExtractionStage
 
     # Use a mock client that will raise if called
     client = MagicMock()

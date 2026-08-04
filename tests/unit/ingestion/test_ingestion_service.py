@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import MagicMock
 import io
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
 from src.config import AppConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
+from src.ingestion.ingestion_service import IngestionService
+from src.ingestion.source import IngestionSource
+from src.models.event_candidate import EventCandidate
 from src.storage.db import init_db
 from src.utils.logging import get_logger
 
@@ -66,7 +69,6 @@ def _make_candidate(
     raw_published_at: datetime | None = None,
     days_ago: int | None = None,
 ):
-    from src.models.event_candidate import EventCandidate
 
     pub = None
     if days_ago is not None:
@@ -86,7 +88,6 @@ def _make_candidate(
 
 
 def _mock_social_source(candidates):
-    from src.ingestion.source import IngestionSource
 
     src = MagicMock(spec=IngestionSource)
     src.fetch.return_value = candidates
@@ -112,7 +113,6 @@ def _get_candidate_entities(conn):
 
 
 def test_seed_handles_loaded_as_active(db, seeds_yaml, tmp_path):
-    from src.ingestion.ingestion_service import IngestionService
 
     svc = IngestionService(
         config=_make_config(),
@@ -134,7 +134,6 @@ def test_seed_handles_loaded_as_active(db, seeds_yaml, tmp_path):
 
 
 def test_seed_load_is_idempotent(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
 
     svc = IngestionService(
         config=_make_config(),
@@ -158,7 +157,6 @@ def test_seed_load_is_idempotent(db, seeds_yaml):
 
 def test_probationary_handle_in_seeds_promoted_to_active(db, seeds_yaml):
     """Handle already in candidate_entities as probationary gets promoted to active if in seeds."""
-    from src.ingestion.ingestion_service import IngestionService
 
     conn = sqlite3.connect(db)
     conn.execute(
@@ -202,7 +200,6 @@ def test_probationary_handle_in_seeds_promoted_to_active(db, seeds_yaml):
 
 
 def test_recent_post_retained(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
 
     recent = _make_candidate(days_ago=10)
     svc = IngestionService(
@@ -223,7 +220,6 @@ def test_recent_post_retained(db, seeds_yaml):
 
 
 def test_old_post_discarded(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
 
     old = _make_candidate(days_ago=40)
     svc = IngestionService(
@@ -245,7 +241,6 @@ def test_old_post_discarded(db, seeds_yaml):
 
 def test_none_published_at_bypasses_lookback(db, seeds_yaml):
     """Movie schedules (raw_published_at=None) always pass the lookback filter."""
-    from src.ingestion.ingestion_service import IngestionService
 
     movie = _make_candidate(source_type="cinema_veezi", raw_published_at=None)
     svc = IngestionService(
@@ -267,7 +262,6 @@ def test_none_published_at_bypasses_lookback(db, seeds_yaml):
 
 def test_lookback_reads_from_config(db, seeds_yaml):
     """A post 20 days old: passes with lookback=30, discarded with lookback=10."""
-    from src.ingestion.ingestion_service import IngestionService
 
     ec = _make_candidate(days_ago=20)
 
@@ -312,8 +306,6 @@ def test_lookback_reads_from_config(db, seeds_yaml):
 
 
 def test_malformed_record_all_key_fields_absent_discarded(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
-    from src.models.event_candidate import EventCandidate
 
     malformed = EventCandidate(
         id=str(uuid.uuid4()),
@@ -341,8 +333,6 @@ def test_malformed_record_all_key_fields_absent_discarded(db, seeds_yaml):
 
 
 def test_record_missing_only_title_retained(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
-    from src.models.event_candidate import EventCandidate
 
     ec = EventCandidate(
         id=str(uuid.uuid4()),
@@ -370,8 +360,6 @@ def test_record_missing_only_title_retained(db, seeds_yaml):
 
 
 def test_one_malformed_does_not_stop_ingestion(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
-    from src.models.event_candidate import EventCandidate
 
     malformed = EventCandidate(
         id=str(uuid.uuid4()),
@@ -406,7 +394,6 @@ def test_one_malformed_does_not_stop_ingestion(db, seeds_yaml):
 
 
 def test_event_candidates_persisted_to_db(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
 
     ec = _make_candidate(title="Jazz Night", days_ago=5)
     svc = IngestionService(
@@ -435,7 +422,6 @@ def test_event_candidates_persisted_to_db(db, seeds_yaml):
 
 
 def test_handle_promoted_when_threshold_met_with_seed_source(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
 
     # Insert a probationary handle that has been mentioned by a seed source enough times
     conn = sqlite3.connect(db)
@@ -477,7 +463,6 @@ def test_handle_promoted_when_threshold_met_with_seed_source(db, seeds_yaml):
 
 
 def test_handle_not_promoted_without_seed_source(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
 
     conn = sqlite3.connect(db)
     conn.execute(
@@ -523,8 +508,6 @@ def test_handle_not_promoted_without_seed_source(db, seeds_yaml):
 
 
 def test_social_source_failure_pipeline_continues(db, seeds_yaml):
-    from src.ingestion.ingestion_service import IngestionService
-    from src.ingestion.source import IngestionSource
 
     failing = MagicMock(spec=IngestionSource)
     failing.fetch.side_effect = RuntimeError("network error")

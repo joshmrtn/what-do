@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import io
+import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 
-from src.config import AppConfig, DeduplicationConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
+from src.config import (
+    AppConfig,
+    DeduplicationConfig,
+    LocationConfig,
+    ScrapingConfig,
+    VenueDiscoveryConfig,
+)
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.normalization.service import NormalizationService
@@ -91,7 +98,6 @@ def test_duplicate_candidates_merged_to_one_event(tmp_path):
 
 
 def test_source_event_candidates_stored_as_json(tmp_path):
-    import json
     svc, db_path = _make_service(tmp_path)
     cand = _candidate(id="cand-abc")
     svc.run([cand], get_now=_now)
@@ -120,7 +126,6 @@ def test_empty_candidates_returns_zero_counts(tmp_path):
 
 def test_discard_logged_with_source_and_reason(tmp_path):
     """Discarded candidates log both the source handle and the reason."""
-    import json
     log_stream = io.StringIO()
     db_path = tmp_path / "test.db"
     init_db(db_path)

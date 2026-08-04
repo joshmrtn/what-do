@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime, timezone
+import io
 
 import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
+from src.scoring.embedding_stage import EmbeddingStage
+from src.scoring.embeddings import EmbeddingError
 from src.utils.logging import get_logger
 from src.utils.vectors import decode_vector
 
@@ -22,7 +24,6 @@ class _FakeProvider:
         self._dim = dim
 
     def embed(self, text: str) -> list[float]:
-        from src.scoring.embeddings import EmbeddingError
 
         self.calls.append(text)
         if text == self._fail_on:
@@ -48,7 +49,6 @@ def _event(event_id="e1", tags=None, summary="A live music night.") -> Event:
 
 
 def _stage(provider, stream=None):
-    from src.scoring.embedding_stage import EmbeddingStage
 
     return EmbeddingStage(
         provider=provider,

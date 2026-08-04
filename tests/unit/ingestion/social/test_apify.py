@@ -7,6 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.ingestion.social.apify import ApifyAdapter
+from src.models.event_candidate import EventCandidate
+
 FIXED_NOW = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 PUBLISHED_AT = datetime(2025, 6, 10, 18, 0, 0, tzinfo=timezone.utc)
 
@@ -24,7 +27,6 @@ _APIFY_RESPONSE = [
 
 
 def _make_adapter(response=None):
-    from src.ingestion.social.apify import ApifyAdapter
 
     mock_session = MagicMock()
     mock_session.get.return_value.json.return_value = response or _APIFY_RESPONSE
@@ -39,7 +41,6 @@ def _make_adapter(response=None):
 
 
 def test_returns_event_candidates():
-    from src.models.event_candidate import EventCandidate
 
     adapter = _make_adapter()
     results = adapter.fetch()
@@ -80,7 +81,6 @@ def test_image_url_populated():
 
 
 def test_raises_on_http_error():
-    from src.ingestion.social.apify import ApifyAdapter
 
     mock_session = MagicMock()
     mock_session.get.return_value.raise_for_status.side_effect = Exception("HTTP 429")

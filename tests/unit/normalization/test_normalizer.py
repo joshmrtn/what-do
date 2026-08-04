@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import unicodedata
 import uuid
-from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
 
 import pytest
 

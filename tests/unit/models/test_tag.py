@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from src.models.tag import Tag
+from src.models.tag import Tag, tags_from_json, tags_to_json
 
 
 def test_tag_holds_text_and_weight():
@@ -45,7 +47,6 @@ def test_tags_compare_by_value():
 
 
 def test_tags_round_trip_through_json():
-    from src.models.tag import tags_from_json, tags_to_json
 
     tags = [Tag(text="karaoke", weight=1.0), Tag(text="bar", weight=0.2)]
 
@@ -53,9 +54,7 @@ def test_tags_round_trip_through_json():
 
 
 def test_serialised_form_carries_text_and_weight():
-    import json
 
-    from src.models.tag import tags_to_json
 
     payload = json.loads(tags_to_json([Tag(text="karaoke", weight=0.8)]))
 
@@ -63,14 +62,12 @@ def test_serialised_form_carries_text_and_weight():
 
 
 def test_empty_tag_list_round_trips():
-    from src.models.tag import tags_from_json, tags_to_json
 
     assert tags_from_json(tags_to_json([])) == []
 
 
 def test_legacy_bare_string_json_decodes_to_full_weight():
     """Rows written before weights existed must still load."""
-    from src.models.tag import tags_from_json
 
     assert tags_from_json('["jazz", "live music"]') == [
         Tag(text="jazz", weight=1.0),

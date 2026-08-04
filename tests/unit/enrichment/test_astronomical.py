@@ -1,6 +1,7 @@
 """Unit tests for AstronomicalCalculator."""
 
 from datetime import date, timedelta, timezone
+import zoneinfo
 
 import pytest
 
@@ -62,8 +63,6 @@ def test_determinism(calc):
 
 def test_known_sunrise_salem_solstice(calc):
     # Sunrise on 2025-06-21 in Salem MA is ~5:08 AM EDT; assert within ±10 min
-    import zoneinfo
-
     result = calc.calculate(SOLSTICE, SALEM_LAT, SALEM_LNG, SALEM_TZ)
     edt = zoneinfo.ZoneInfo("America/New_York")
     expected_hour, expected_minute = 5, 8
@@ -76,8 +75,6 @@ def test_known_sunrise_salem_solstice(calc):
 
 def test_known_sunset_salem_solstice(calc):
     # Sunset on 2025-06-21 in Salem MA is ~8:24 PM EDT; assert within ±10 min
-    import zoneinfo
-
     result = calc.calculate(SOLSTICE, SALEM_LAT, SALEM_LNG, SALEM_TZ)
     edt = zoneinfo.ZoneInfo("America/New_York")
     expected_hour, expected_minute = 20, 24

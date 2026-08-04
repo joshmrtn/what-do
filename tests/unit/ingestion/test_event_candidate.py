@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from src.models.event_candidate import EventCandidate
+
 
 def test_event_candidate_instantiates_with_required_fields():
-    from src.models.event_candidate import EventCandidate
 
     now = datetime.now(timezone.utc)
     ec = EventCandidate(
@@ -22,7 +23,6 @@ def test_event_candidate_instantiates_with_required_fields():
 
 
 def test_event_candidate_optional_fields_default_none():
-    from src.models.event_candidate import EventCandidate
 
     ec = EventCandidate(
         id="x",
@@ -42,7 +42,6 @@ def test_event_candidate_optional_fields_default_none():
 
 
 def test_event_candidate_accepts_all_fields():
-    from src.models.event_candidate import EventCandidate
 
     now = datetime.now(timezone.utc)
     ec = EventCandidate(

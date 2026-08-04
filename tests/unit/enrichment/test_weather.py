@@ -5,12 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.enrichment.weather import (
-    OpenMeteoProvider,
-    WeatherProvider,
-    map_wmo_code,
-    sample_hour,
-)
+from src.enrichment.weather import OpenMeteoProvider, WeatherProvider, map_wmo_code, sample_hour
 
 
 # ---------------------------------------------------------------------------

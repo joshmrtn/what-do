@@ -1,11 +1,11 @@
 """Unit tests for EnrichmentService."""
 
-import json
-import sqlite3
-import zoneinfo
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
+import json
+import sqlite3
+import zoneinfo
 
 import pytest
 
@@ -17,10 +17,10 @@ from src.config import (
     SyntheticConditions,
     VenueDiscoveryConfig,
 )
+from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.movies import MovieMetadataProvider
 from src.enrichment.service import EnrichmentService
-from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.weather import WeatherProvider
 from src.models.event import Event
 from src.storage.db import init_db

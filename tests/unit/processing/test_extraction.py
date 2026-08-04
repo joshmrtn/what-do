@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from unittest.mock import MagicMock
+import json
 
 import pytest
+
+from src.models.tag import Tag
+from src.processing.extraction import (
+    ExtractionError,
+    ExtractionProvider,
+    ExtractionResult,
+    OllamaExtractionProvider,
+)
 
 
 def _make_client(response_text: str):
@@ -35,7 +43,6 @@ def _valid_response(tags: list[str] | None = None, include_summary: bool = True)
 
 
 def test_reference_date_injected_into_prompt():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     provider = OllamaExtractionProvider(client=client, min_tags=5)
@@ -46,7 +53,6 @@ def test_reference_date_injected_into_prompt():
 
 
 def test_no_reference_date_omits_date_context():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     provider = OllamaExtractionProvider(client=client, min_tags=5)
@@ -62,7 +68,6 @@ def test_no_reference_date_omits_date_context():
 
 
 def test_mock_provider_satisfies_abc():
-    from src.processing.extraction import ExtractionProvider, ExtractionResult
 
     class MockProvider(ExtractionProvider):
         def extract(self, text: str, image_bytes: bytes | None = None) -> ExtractionResult:
@@ -86,7 +91,6 @@ def test_mock_provider_satisfies_abc():
 
 
 def test_valid_response_parsed_correctly():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
@@ -101,7 +105,6 @@ def test_valid_response_parsed_correctly():
 
 
 def test_null_optional_fields_are_none():
-    from src.processing.extraction import OllamaExtractionProvider
 
     payload = {
         "title": None,
@@ -121,13 +124,11 @@ def test_null_optional_fields_are_none():
 
 
 def test_start_time_parsed_as_datetime():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("Jazz night at 8pm")
-    from datetime import datetime
     assert isinstance(result.start_time, datetime)
 
 
@@ -137,7 +138,6 @@ def test_start_time_parsed_as_datetime():
 
 
 def test_fewer_than_min_tags_raises_after_retry():
-    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
 
     # Both calls return only 3 tags
     client = _make_client(_valid_response(tags=["a", "b", "c"]))
@@ -150,7 +150,6 @@ def test_fewer_than_min_tags_raises_after_retry():
 
 
 def test_missing_summary_raises_after_retry():
-    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
 
     client = _make_client(_valid_response(include_summary=False))
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
@@ -162,7 +161,6 @@ def test_missing_summary_raises_after_retry():
 
 
 def test_invalid_json_raises_after_retry():
-    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
 
     client = _make_client("Here is the event info: Jazz night tonight, it should be fun!")
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
@@ -174,7 +172,6 @@ def test_invalid_json_raises_after_retry():
 
 
 def test_retry_succeeds_on_second_attempt():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = MagicMock()
     client.chat.side_effect = [
@@ -190,7 +187,6 @@ def test_retry_succeeds_on_second_attempt():
 
 
 def test_min_tags_configurable():
-    from src.processing.extraction import OllamaExtractionProvider
 
     # With min_tags=3, a 3-tag response should succeed
     client = _make_client(_valid_response(tags=["a", "b", "c"]))
@@ -206,7 +202,6 @@ def test_min_tags_configurable():
 
 
 def test_image_bytes_passed_to_client():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
@@ -220,7 +215,6 @@ def test_image_bytes_passed_to_client():
 
 
 def test_no_image_bytes_no_images_kwarg():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
@@ -256,8 +250,6 @@ _FIVE_WEIGHTED = [
 
 
 def test_weighted_tags_preserve_weights():
-    from src.models.tag import Tag
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_weighted(_FIVE_WEIGHTED))
     provider = OllamaExtractionProvider(client=client, min_tags=5)
@@ -269,8 +261,6 @@ def test_weighted_tags_preserve_weights():
 
 def test_bare_string_tags_default_to_full_weight():
     """Models drift; a plain string list must not fail extraction."""
-    from src.models.tag import Tag
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response(tags=["jazz", "live music", "venue", "evening", "lounge"]))
     provider = OllamaExtractionProvider(client=client, min_tags=5)
@@ -282,7 +272,6 @@ def test_bare_string_tags_default_to_full_weight():
 
 
 def test_missing_weight_defaults_to_full_weight():
-    from src.processing.extraction import OllamaExtractionProvider
 
     payload = json.loads(_weighted(_FIVE_WEIGHTED))
     del payload["tags"][2]["weight"]
@@ -295,7 +284,6 @@ def test_missing_weight_defaults_to_full_weight():
 
 
 def test_non_numeric_weight_defaults_to_full_weight():
-    from src.processing.extraction import OllamaExtractionProvider
 
     payload = json.loads(_weighted(_FIVE_WEIGHTED))
     payload["tags"][1]["weight"] = "very important"
@@ -309,7 +297,6 @@ def test_non_numeric_weight_defaults_to_full_weight():
 
 @pytest.mark.parametrize("raw_weight,expected", [(1.7, 1.0), (-0.4, 0.0)])
 def test_out_of_range_weight_is_clamped(raw_weight, expected):
-    from src.processing.extraction import OllamaExtractionProvider
 
     payload = json.loads(_weighted(_FIVE_WEIGHTED))
     payload["tags"][0]["weight"] = raw_weight
@@ -322,7 +309,6 @@ def test_out_of_range_weight_is_clamped(raw_weight, expected):
 
 
 def test_min_tag_count_enforced_on_weighted_tags():
-    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
 
     client = _make_client(_weighted(_FIVE_WEIGHTED[:3]))
     provider = OllamaExtractionProvider(client=client, min_tags=5)
@@ -332,7 +318,6 @@ def test_min_tag_count_enforced_on_weighted_tags():
 
 
 def test_tag_entry_without_text_is_skipped():
-    from src.processing.extraction import OllamaExtractionProvider
 
     payload = json.loads(_weighted(_FIVE_WEIGHTED + [("", 0.5)]))
     client = _make_client(json.dumps(payload))
@@ -345,7 +330,6 @@ def test_tag_entry_without_text_is_skipped():
 
 
 def test_prompt_requests_centrality_weights():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_weighted(_FIVE_WEIGHTED))
     provider = OllamaExtractionProvider(client=client, min_tags=5)
@@ -358,8 +342,6 @@ def test_prompt_requests_centrality_weights():
 
 def test_emoji_stripped_from_tag_text():
     """Emoji embed to a constant vector and dilute the words beside them."""
-    from src.models.tag import Tag
-    from src.processing.extraction import OllamaExtractionProvider
 
     pairs = [("🎤 karaoke", 1.0), ("live music 🎸", 0.9), ("punk rock", 0.7),
              ("all ages", 0.5), ("bar", 0.1)]
@@ -374,8 +356,6 @@ def test_emoji_stripped_from_tag_text():
 
 def test_emoji_only_tag_falls_back_to_its_name():
     """Nothing to dilute, so the name carries more signal than a dropped tag."""
-    from src.models.tag import Tag
-    from src.processing.extraction import OllamaExtractionProvider
 
     pairs = _FIVE_WEIGHTED + [("🎤", 0.4)]
     client = _make_client(_weighted(pairs))
@@ -387,7 +367,6 @@ def test_emoji_only_tag_falls_back_to_its_name():
 
 
 def test_tag_of_only_invisible_characters_is_dropped():
-    from src.processing.extraction import ExtractionError, OllamaExtractionProvider
 
     pairs = _FIVE_WEIGHTED + [("​﻿", 0.4)]
     client = _make_client(_weighted(pairs))
@@ -413,7 +392,6 @@ def _response_with_setting(setting=_OMIT) -> str:
 
 
 def _extract_setting(setting=_OMIT) -> str:
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_response_with_setting(setting))
     return OllamaExtractionProvider(client=client, min_tags=5).extract("text").setting
@@ -439,7 +417,6 @@ def test_missing_setting_key_coerces_to_unknown():
 
 
 def test_off_enum_setting_does_not_trigger_a_retry():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_response_with_setting("outside"))
     OllamaExtractionProvider(client=client, min_tags=5).extract("text")
@@ -447,7 +424,6 @@ def test_off_enum_setting_does_not_trigger_a_retry():
 
 
 def test_prompt_requests_the_setting_field():
-    from src.processing.extraction import OllamaExtractionProvider
 
     client = _make_client(_valid_response())
     OllamaExtractionProvider(client=client, min_tags=5).extract("text")

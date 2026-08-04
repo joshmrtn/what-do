@@ -6,11 +6,18 @@ The ``slow`` tests at the bottom hit the real Gemini API and are skipped unless
 
 from __future__ import annotations
 
-import os
+from datetime import date, datetime
 from unittest.mock import MagicMock
+import os
 
-import pytest
 from dotenv import load_dotenv
+import pytest
+
+from src.ingestion.disambiguation import OllamaDisambiguationProvider
+from src.processing.extraction import OllamaExtractionProvider
+from src.utils.chat_client import ChatClient, LLMError
+from src.utils.gemini_client import GeminiClient, GeminiError
+from src.utils.ollama_client import OllamaError
 
 
 class FakeResponse:
@@ -34,7 +41,6 @@ def _contents(fake) -> list:
 
 
 def test_chat_returns_response_text():
-    from src.utils.gemini_client import GeminiClient
 
     fake = _fake_genai_client("hello from gemini")
     gc = GeminiClient(api_key="x", client=fake)
@@ -43,7 +49,6 @@ def test_chat_returns_response_text():
 
 
 def test_chat_passes_model_through():
-    from src.utils.gemini_client import GeminiClient
 
     fake = _fake_genai_client()
     gc = GeminiClient(api_key="x", client=fake)
@@ -52,7 +57,6 @@ def test_chat_passes_model_through():
 
 
 def test_chat_translates_roles():
-    from src.utils.gemini_client import GeminiClient
 
     fake = _fake_genai_client()
     gc = GeminiClient(api_key="x", client=fake)
@@ -70,7 +74,6 @@ def test_chat_translates_roles():
 
 
 def test_chat_attaches_images_to_last_user_message():
-    from src.utils.gemini_client import GeminiClient
 
     fake = _fake_genai_client()
     gc = GeminiClient(api_key="x", client=fake)
@@ -87,7 +90,6 @@ def test_chat_attaches_images_to_last_user_message():
 
 
 def test_chat_without_images_sends_no_inline_data():
-    from src.utils.gemini_client import GeminiClient
 
     fake = _fake_genai_client()
     gc = GeminiClient(api_key="x", client=fake)
@@ -97,7 +99,6 @@ def test_chat_without_images_sends_no_inline_data():
 
 
 def test_chat_wraps_sdk_error_as_gemini_error():
-    from src.utils.gemini_client import GeminiClient, GeminiError
 
     fake = _fake_genai_client(raise_exc=RuntimeError("boom"))
     gc = GeminiClient(api_key="x", client=fake)
@@ -106,7 +107,6 @@ def test_chat_wraps_sdk_error_as_gemini_error():
 
 
 def test_none_text_response_raises_gemini_error():
-    from src.utils.gemini_client import GeminiClient, GeminiError
 
     fake = _fake_genai_client(response_text=None)
     gc = GeminiClient(api_key="x", client=fake)
@@ -115,22 +115,16 @@ def test_none_text_response_raises_gemini_error():
 
 
 def test_gemini_error_is_llm_error():
-    from src.utils.chat_client import LLMError
-    from src.utils.gemini_client import GeminiError
 
     assert issubclass(GeminiError, LLMError)
 
 
 def test_ollama_error_is_llm_error():
-    from src.utils.chat_client import LLMError
-    from src.utils.ollama_client import OllamaError
 
     assert issubclass(OllamaError, LLMError)
 
 
 def test_gemini_client_satisfies_chat_client_protocol():
-    from src.utils.chat_client import ChatClient
-    from src.utils.gemini_client import GeminiClient
 
     gc = GeminiClient(api_key="x", client=MagicMock())
     assert isinstance(gc, ChatClient)
@@ -158,8 +152,6 @@ def _require_gemini() -> tuple[str, str]:
 @pytest.mark.slow
 def test_real_gemini_extraction():
     """Real Gemini extraction produces a structurally valid result."""
-    from src.processing.extraction import OllamaExtractionProvider
-    from src.utils.gemini_client import GeminiClient
 
     key, model = _require_gemini()
     provider = OllamaExtractionProvider(client=GeminiClient(api_key=key), model=model, min_tags=5)
@@ -173,10 +165,7 @@ def test_real_gemini_extraction():
 @pytest.mark.slow
 def test_real_gemini_resolves_relative_date():
     """Gemini resolves 'this Saturday' against an injected reference date."""
-    from datetime import date, datetime
 
-    from src.processing.extraction import OllamaExtractionProvider
-    from src.utils.gemini_client import GeminiClient
 
     key, model = _require_gemini()
     provider = OllamaExtractionProvider(client=GeminiClient(api_key=key), model=model, min_tags=5)
@@ -193,8 +182,6 @@ def test_real_gemini_resolves_relative_date():
 @pytest.mark.slow
 def test_real_gemini_disambiguation():
     """Real Gemini classifies an obvious venue handle as 'venue'."""
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
-    from src.utils.gemini_client import GeminiClient
 
     key, model = _require_gemini()
     provider = OllamaDisambiguationProvider(client=GeminiClient(api_key=key), model=model)

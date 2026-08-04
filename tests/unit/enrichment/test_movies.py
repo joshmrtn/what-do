@@ -5,11 +5,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from src.enrichment.movies import (
-    MovieMetadataProvider,
-    TMDbProvider,
-    enrich_movie_event,
-)
+from src.enrichment.movies import MovieMetadataProvider, TMDbProvider, enrich_movie_event
 from src.models.event import Event
 from src.utils.logging import StructuredLogger
 

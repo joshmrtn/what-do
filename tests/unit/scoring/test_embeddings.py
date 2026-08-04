@@ -6,6 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.scoring.embeddings import EmbeddingError, EmbeddingProvider, OllamaEmbeddingProvider
+from src.utils.chat_client import LLMError
+
 
 class _FakeClient:
     """Stands in for OllamaClient — records calls, returns canned vectors."""
@@ -28,7 +31,6 @@ class _FakeClient:
 
 
 def test_ollama_provider_satisfies_embedding_provider():
-    from src.scoring.embeddings import EmbeddingProvider, OllamaEmbeddingProvider
 
     provider = OllamaEmbeddingProvider(client=_FakeClient())
 
@@ -37,7 +39,6 @@ def test_ollama_provider_satisfies_embedding_provider():
 
 def test_any_object_with_embed_satisfies_protocol():
     """The protocol is structural, so a fake substitutes with no inheritance."""
-    from src.scoring.embeddings import EmbeddingProvider
 
     class Stub:
         def embed(self, text: str) -> list[float]:
@@ -52,7 +53,6 @@ def test_any_object_with_embed_satisfies_protocol():
 
 
 def test_embed_returns_vector():
-    from src.scoring.embeddings import OllamaEmbeddingProvider
 
     provider = OllamaEmbeddingProvider(client=_FakeClient(vector=[0.5, 0.6]))
 
@@ -60,7 +60,6 @@ def test_embed_returns_vector():
 
 
 def test_embed_passes_configured_model_through():
-    from src.scoring.embeddings import OllamaEmbeddingProvider
 
     client = _FakeClient()
     provider = OllamaEmbeddingProvider(client=client, model="custom-embed-model")
@@ -71,7 +70,6 @@ def test_embed_passes_configured_model_through():
 
 
 def test_default_model_is_nomic_embed_text():
-    from src.scoring.embeddings import OllamaEmbeddingProvider
 
     client = _FakeClient()
     OllamaEmbeddingProvider(client=client).embed("karaoke")
@@ -80,8 +78,6 @@ def test_default_model_is_nomic_embed_text():
 
 
 def test_client_failure_raises_embedding_error():
-    from src.utils.chat_client import LLMError
-    from src.scoring.embeddings import EmbeddingError, OllamaEmbeddingProvider
 
     provider = OllamaEmbeddingProvider(client=_FakeClient(error=LLMError("refused")))
 
@@ -91,14 +87,11 @@ def test_client_failure_raises_embedding_error():
 
 def test_embedding_error_is_an_llm_error():
     """Callers already handle LLMError; embedding failures must fit that net."""
-    from src.scoring.embeddings import EmbeddingError
-    from src.utils.chat_client import LLMError
 
     assert issubclass(EmbeddingError, LLMError)
 
 
 def test_empty_text_raises_without_calling_client():
-    from src.scoring.embeddings import EmbeddingError, OllamaEmbeddingProvider
 
     client = _FakeClient()
     provider = OllamaEmbeddingProvider(client=client)
@@ -110,7 +103,6 @@ def test_empty_text_raises_without_calling_client():
 
 
 def test_empty_vector_response_raises():
-    from src.scoring.embeddings import EmbeddingError, OllamaEmbeddingProvider
 
     provider = OllamaEmbeddingProvider(client=_FakeClient(vector=[]))
 
@@ -120,7 +112,6 @@ def test_empty_vector_response_raises():
 
 def test_no_network_call_made_by_provider_itself():
     """The provider must delegate transport, never reach the network directly."""
-    from src.scoring.embeddings import OllamaEmbeddingProvider
 
     client = MagicMock()
     client.embed.return_value = [0.1]
@@ -138,7 +129,6 @@ def test_no_network_call_made_by_provider_itself():
 
 def test_text_is_lowercased_before_embedding():
     """Capitalised words hit [UNK]: 'Karaoke', 'Trivia' and 'Death' all embed identically."""
-    from src.scoring.embeddings import OllamaEmbeddingProvider
 
     client = _FakeClient()
     OllamaEmbeddingProvider(client=client).embed("Karaoke Night at Koto")
@@ -148,7 +138,6 @@ def test_text_is_lowercased_before_embedding():
 
 def test_case_differences_produce_one_cache_hit():
     """Both sides of a comparison must be folded identically."""
-    from src.scoring.embeddings import OllamaEmbeddingProvider
 
     client = _FakeClient()
     provider = OllamaEmbeddingProvider(client=client)
@@ -157,7 +146,6 @@ def test_case_differences_produce_one_cache_hit():
 
 
 def test_blank_after_folding_still_raises():
-    from src.scoring.embeddings import EmbeddingError, OllamaEmbeddingProvider
 
     with pytest.raises(EmbeddingError, match="empty"):
         OllamaEmbeddingProvider(client=_FakeClient()).embed("   ")

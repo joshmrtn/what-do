@@ -1,7 +1,7 @@
 """Unit tests for SyntheticActivityGenerator and parse_time_window."""
 
-import zoneinfo
 from datetime import date, datetime, time, timedelta, timezone
+import zoneinfo
 
 import pytest
 

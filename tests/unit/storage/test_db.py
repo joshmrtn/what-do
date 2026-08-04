@@ -2,9 +2,10 @@ import sqlite3
 
 import pytest
 
+from src.storage.db import init_db
+
 
 def test_all_tables_exist(tmp_path):
-    from src.storage.db import init_db
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
@@ -28,7 +29,6 @@ def test_all_tables_exist(tmp_path):
 
 
 def test_events_table_has_blob_columns(tmp_path):
-    from src.storage.db import init_db
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
@@ -41,7 +41,6 @@ def test_events_table_has_blob_columns(tmp_path):
 
 
 def test_recommendations_table_columns(tmp_path):
-    from src.storage.db import init_db
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
@@ -57,7 +56,6 @@ def test_recommendations_table_columns(tmp_path):
 
 
 def test_init_db_idempotent(tmp_path):
-    from src.storage.db import init_db
 
     db_path = tmp_path / "test.db"
     init_db(db_path=db_path)
@@ -65,7 +63,6 @@ def test_init_db_idempotent(tmp_path):
 
 
 def test_event_candidates_has_raw_published_at(tmp_path):
-    from src.storage.db import init_db
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
@@ -77,7 +74,6 @@ def test_event_candidates_has_raw_published_at(tmp_path):
 
 
 def test_candidate_entities_has_depth_and_mention_sources(tmp_path):
-    from src.storage.db import init_db
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
@@ -90,7 +86,6 @@ def test_candidate_entities_has_depth_and_mention_sources(tmp_path):
 
 
 def test_events_table_has_image_bytes_blob(tmp_path):
-    from src.storage.db import init_db
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")

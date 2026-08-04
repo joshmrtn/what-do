@@ -7,6 +7,13 @@ import sqlite3
 
 import pytest
 
+from src.scoring.embeddings import EmbeddingError
+from src.scoring.preferences import (
+    MAX_PREFERENCE_LENGTH,
+    PreferenceError,
+    PreferenceRepository,
+    parse_preferences,
+)
 from src.storage.db import init_db
 from src.utils.logging import get_logger
 
@@ -26,7 +33,6 @@ class _CountingProvider:
 
 
 def _repo(tmp_path, provider=None, logger=None):
-    from src.scoring.preferences import PreferenceRepository
 
     db_path = tmp_path / "test.db"
     init_db(db_path)
@@ -49,7 +55,6 @@ def _write(tmp_path, name: str, content: str):
 
 
 def test_lines_before_first_header_are_general():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("karaoke\nlive music\n", preference_type="like")
 
@@ -58,7 +63,6 @@ def test_lines_before_first_header_are_general():
 
 
 def test_section_headers_set_domain():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences(
         "karaoke\n\n[movies]\nhorror films\n\n[restaurants]\nsushi\n",
@@ -73,7 +77,6 @@ def test_section_headers_set_domain():
 
 
 def test_explicit_general_header_supported():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("[general]\nkaraoke\n", preference_type="like")
 
@@ -81,7 +84,6 @@ def test_explicit_general_header_supported():
 
 
 def test_header_case_and_whitespace_normalised():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("[ Movies ]\nhorror films\n", preference_type="like")
 
@@ -89,7 +91,6 @@ def test_header_case_and_whitespace_normalised():
 
 
 def test_blank_lines_and_whitespace_skipped():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("karaoke\n\n   \n\nlive music\n", preference_type="like")
 
@@ -97,7 +98,6 @@ def test_blank_lines_and_whitespace_skipped():
 
 
 def test_surrounding_whitespace_stripped_from_entries():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("   karaoke   \n", preference_type="like")
 
@@ -106,7 +106,6 @@ def test_surrounding_whitespace_stripped_from_entries():
 
 def test_comment_lines_skipped():
     """A user will write a comment; embedding it would pollute scoring."""
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("# things I like\nkaraoke\n", preference_type="like")
 
@@ -114,13 +113,11 @@ def test_comment_lines_skipped():
 
 
 def test_preference_type_recorded():
-    from src.scoring.preferences import parse_preferences
 
     assert parse_preferences("bars\n", preference_type="dislike")[0].preference_type == "dislike"
 
 
 def test_empty_file_yields_no_preferences():
-    from src.scoring.preferences import parse_preferences
 
     assert parse_preferences("", preference_type="like") == []
 
@@ -294,7 +291,6 @@ class _Failing:
         self._failing_text = failing_text
 
     def embed(self, text):
-        from src.scoring.embeddings import EmbeddingError
 
         self.calls.append(text)
         if text == self._failing_text:
@@ -304,7 +300,6 @@ class _Failing:
 
 def test_embedding_failure_is_fatal(tmp_path):
     """A partial preference set silently re-scores the whole batch, so refuse it."""
-    from src.scoring.embeddings import EmbeddingError
 
     repo, _ = _repo(tmp_path, _Failing())
     likes = _write(tmp_path, "likes.txt", "karaoke\npunk music\n")
@@ -315,7 +310,6 @@ def test_embedding_failure_is_fatal(tmp_path):
 
 
 def test_embedding_failure_names_the_file_and_logs(tmp_path):
-    from src.scoring.embeddings import EmbeddingError
 
     stream = io.StringIO()
     repo, _ = _repo(tmp_path, _Failing(), logger=get_logger("test", stream=stream))
@@ -330,7 +324,6 @@ def test_embedding_failure_names_the_file_and_logs(tmp_path):
 
 def test_successful_lines_before_a_failure_are_still_cached(tmp_path):
     """A retry after a transient failure must not re-embed what already worked."""
-    from src.scoring.embeddings import EmbeddingError
 
     provider = _Failing()
     repo, _ = _repo(tmp_path, provider)
@@ -349,7 +342,6 @@ def test_successful_lines_before_a_failure_are_still_cached(tmp_path):
 
 def test_undecodable_file_is_fatal(tmp_path):
     """A present-but-unreadable file means real preferences are being ignored."""
-    from src.scoring.preferences import PreferenceError
 
     repo, _ = _repo(tmp_path)
     likes = tmp_path / "likes.txt"
@@ -372,7 +364,6 @@ def test_absent_file_is_tolerated_but_unreadable_is_not(tmp_path):
 
 def test_overlong_line_is_rejected_before_embedding(tmp_path):
     """A pasted document would otherwise time out the embedder on every run."""
-    from src.scoring.preferences import PreferenceError
 
     provider = _CountingProvider()
     repo, _ = _repo(tmp_path, provider)
@@ -386,7 +377,6 @@ def test_overlong_line_is_rejected_before_embedding(tmp_path):
 
 
 def test_overlong_line_error_identifies_the_line(tmp_path):
-    from src.scoring.preferences import PreferenceError
 
     repo, _ = _repo(tmp_path)
     likes = _write(tmp_path, "likes.txt", "sushi " * 200 + "\n")
@@ -397,7 +387,6 @@ def test_overlong_line_error_identifies_the_line(tmp_path):
 
 
 def test_line_at_the_length_limit_is_accepted(tmp_path):
-    from src.scoring.preferences import MAX_PREFERENCE_LENGTH, parse_preferences
 
     prefs = parse_preferences("a" * MAX_PREFERENCE_LENGTH, preference_type="like")
 
@@ -406,7 +395,6 @@ def test_line_at_the_length_limit_is_accepted(tmp_path):
 
 def test_zero_width_characters_stripped(tmp_path):
     """Invisible characters would embed as a real but meaningless preference."""
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("kara​ok﻿e\n", preference_type="like")
 
@@ -414,7 +402,6 @@ def test_zero_width_characters_stripped(tmp_path):
 
 
 def test_line_of_only_invisible_characters_skipped(tmp_path):
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("​﻿\n‍\n", preference_type="like")
 
@@ -458,7 +445,6 @@ def test_domain_lookup_for_unknown_domain_returns_general_only(tmp_path):
 
 
 def test_emoji_stripped_from_preference_line():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("🍻 bars\nnightclubs 💃\n", preference_type="dislike")
 
@@ -466,7 +452,6 @@ def test_emoji_stripped_from_preference_line():
 
 
 def test_emoji_only_preference_line_falls_back_to_its_name():
-    from src.scoring.preferences import parse_preferences
 
     prefs = parse_preferences("🍺\n", preference_type="dislike")
 
@@ -474,6 +459,5 @@ def test_emoji_only_preference_line_falls_back_to_its_name():
 
 
 def test_preference_line_of_only_invisible_characters_skipped():
-    from src.scoring.preferences import parse_preferences
 
     assert parse_preferences("​﻿\n", preference_type="dislike") == []

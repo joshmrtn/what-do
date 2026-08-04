@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-import zoneinfo
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
+import zoneinfo
 
 import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
+from src.processing.extraction_stage import ExtractionStage
+from src.scoring.embedding_stage import EmbeddingStage
+from src.scoring.similarity import SimilarityResult
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
 from src.utils.vectors import decode_vector, encode_vector
@@ -180,7 +184,6 @@ def test_saving_empty_list_is_a_no_op(db):
 
 def test_similarity_is_not_persisted(db):
     """Scores are derived and cheap to recompute; recommendations own them."""
-    from src.scoring.similarity import SimilarityResult
 
     event = _full_event()
     event.similarity = SimilarityResult(base_score=0.8, match="yes")
@@ -195,8 +198,6 @@ def test_similarity_is_not_persisted(db):
 
 
 def test_reloaded_event_bypasses_extraction(db):
-    from src.processing.extraction_stage import ExtractionStage
-    from unittest.mock import MagicMock
 
     save_events([_full_event()], db)
     provider = MagicMock()
@@ -207,9 +208,7 @@ def test_reloaded_event_bypasses_extraction(db):
 
 
 def test_reloaded_event_bypasses_embedding(db):
-    from unittest.mock import MagicMock
 
-    from src.scoring.embedding_stage import EmbeddingStage
 
     save_events([_full_event()], db)
     provider = MagicMock()

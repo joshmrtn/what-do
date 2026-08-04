@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import io
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
+import io
 
 import pytest
 
+from src.ingestion.failover import FailoverChain
+from src.ingestion.source import IngestionSource
+from src.models.event_candidate import EventCandidate
 from src.utils.logging import get_logger
 
 
@@ -16,7 +19,6 @@ def _make_logger():
 
 
 def _make_candidate(n: int):
-    from src.models.event_candidate import EventCandidate
 
     return EventCandidate(
         id=f"id-{n}",
@@ -28,7 +30,6 @@ def _make_candidate(n: int):
 
 def _stub_source(candidates):
     """Return a mock IngestionSource that yields given candidates."""
-    from src.ingestion.source import IngestionSource
 
     src = MagicMock(spec=IngestionSource)
     src.fetch.return_value = candidates
@@ -37,7 +38,6 @@ def _stub_source(candidates):
 
 def _failing_source(exc=None):
     """Return a mock IngestionSource that always raises."""
-    from src.ingestion.source import IngestionSource
 
     src = MagicMock(spec=IngestionSource)
     src.fetch.side_effect = exc or RuntimeError("provider down")
@@ -50,7 +50,6 @@ def _failing_source(exc=None):
 
 
 def test_single_source_success():
-    from src.ingestion.failover import FailoverChain
 
     candidates = [_make_candidate(1), _make_candidate(2)]
     chain = FailoverChain(sources=[_stub_source(candidates)], logger=_make_logger())
@@ -59,7 +58,6 @@ def test_single_source_success():
 
 
 def test_primary_fails_secondary_used():
-    from src.ingestion.failover import FailoverChain
 
     candidates = [_make_candidate(1)]
     chain = FailoverChain(
@@ -71,7 +69,6 @@ def test_primary_fails_secondary_used():
 
 
 def test_primary_and_secondary_fail_tertiary_used():
-    from src.ingestion.failover import FailoverChain
 
     candidates = [_make_candidate(1)]
     chain = FailoverChain(
@@ -83,7 +80,6 @@ def test_primary_and_secondary_fail_tertiary_used():
 
 
 def test_all_sources_fail_returns_empty():
-    from src.ingestion.failover import FailoverChain
 
     chain = FailoverChain(
         sources=[_failing_source(), _failing_source()],
@@ -94,7 +90,6 @@ def test_all_sources_fail_returns_empty():
 
 
 def test_empty_source_list_returns_empty():
-    from src.ingestion.failover import FailoverChain
 
     chain = FailoverChain(sources=[], logger=_make_logger())
     result = chain.fetch_all()
@@ -103,7 +98,6 @@ def test_empty_source_list_returns_empty():
 
 def test_first_success_stops_chain():
     """Once a source succeeds, later sources are never called."""
-    from src.ingestion.failover import FailoverChain
 
     good = _stub_source([_make_candidate(1)])
     never_called = _stub_source([_make_candidate(2)])

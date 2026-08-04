@@ -5,6 +5,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests as req
+
+from src.processing.image_fetcher import HttpImageFetcher, ImageFetchError, ImageFetcher
 
 
 def _make_response(status_code: int, content: bytes = b""):
@@ -15,7 +18,6 @@ def _make_response(status_code: int, content: bytes = b""):
 
 
 def test_fetch_returns_bytes_on_200():
-    from src.processing.image_fetcher import HttpImageFetcher
 
     fetcher = HttpImageFetcher(timeout=10)
     mock_resp = _make_response(200, content=b"\x89PNG image data")
@@ -27,7 +29,6 @@ def test_fetch_returns_bytes_on_200():
 
 
 def test_fetch_raises_on_non_200():
-    from src.processing.image_fetcher import HttpImageFetcher, ImageFetchError
 
     fetcher = HttpImageFetcher(timeout=10)
     mock_resp = _make_response(404)
@@ -38,8 +39,6 @@ def test_fetch_raises_on_non_200():
 
 
 def test_fetch_raises_on_timeout():
-    from src.processing.image_fetcher import HttpImageFetcher, ImageFetchError
-    import requests as req
 
     fetcher = HttpImageFetcher(timeout=10)
 
@@ -49,8 +48,6 @@ def test_fetch_raises_on_timeout():
 
 
 def test_fetch_raises_on_connection_error():
-    from src.processing.image_fetcher import HttpImageFetcher, ImageFetchError
-    import requests as req
 
     fetcher = HttpImageFetcher(timeout=10)
 
@@ -60,7 +57,6 @@ def test_fetch_raises_on_connection_error():
 
 
 def test_mock_fetcher_satisfies_abc():
-    from src.processing.image_fetcher import ImageFetcher
 
     class MockFetcher(ImageFetcher):
         def fetch(self, url: str) -> bytes:

@@ -1,19 +1,21 @@
 """Unit tests for the ChatClient structural protocol."""
 
 from __future__ import annotations
+
+from src.ingestion.disambiguation import OllamaDisambiguationProvider
 from src.models.tag import Tag
+from src.processing.extraction import OllamaExtractionProvider
+from src.utils.chat_client import ChatClient
+from src.utils.ollama_client import OllamaClient
 
 
 def test_ollama_client_satisfies_chat_client_protocol():
-    from src.utils.chat_client import ChatClient
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434", timeout=1)
     assert isinstance(client, ChatClient)
 
 
 def test_object_with_chat_method_satisfies_protocol():
-    from src.utils.chat_client import ChatClient
 
     class Stub:
         def chat(self, model, messages, images=None):
@@ -23,7 +25,6 @@ def test_object_with_chat_method_satisfies_protocol():
 
 
 def test_object_without_chat_is_not_a_chat_client():
-    from src.utils.chat_client import ChatClient
 
     class NotAClient:
         pass
@@ -32,7 +33,6 @@ def test_object_without_chat_is_not_a_chat_client():
 
 
 def test_extraction_provider_accepts_any_chat_client():
-    from src.processing.extraction import OllamaExtractionProvider
 
     class Stub:
         def chat(self, model, messages, images=None):
@@ -44,7 +44,6 @@ def test_extraction_provider_accepts_any_chat_client():
 
 
 def test_disambiguation_provider_accepts_any_chat_client():
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
 
     class Stub:
         def chat(self, model, messages, images=None):

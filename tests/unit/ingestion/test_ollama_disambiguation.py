@@ -6,6 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.ingestion.disambiguation import DisambiguationError, OllamaDisambiguationProvider
+from src.utils.ollama_client import OllamaClient
+
 
 def _make_client(response_text: str):
     client = MagicMock()
@@ -19,7 +22,6 @@ def _make_client(response_text: str):
 
 
 def test_classifies_venue():
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
 
     client = _make_client('{"classification": "venue"}')
     provider = OllamaDisambiguationProvider(client=client, model="gemma4:e2b")
@@ -29,7 +31,6 @@ def test_classifies_venue():
 
 
 def test_classifies_person():
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
 
     client = _make_client('{"classification": "person"}')
     provider = OllamaDisambiguationProvider(client=client, model="gemma4:e2b")
@@ -39,7 +40,6 @@ def test_classifies_person():
 
 
 def test_classify_called_with_handle_and_context():
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
 
     client = _make_client('{"classification": "venue"}')
     provider = OllamaDisambiguationProvider(client=client, model="gemma4:e2b")
@@ -55,7 +55,6 @@ def test_classify_called_with_handle_and_context():
 
 
 def test_retry_on_malformed_json_succeeds_second_try():
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
 
     client = MagicMock()
     client.chat.side_effect = [
@@ -70,7 +69,6 @@ def test_retry_on_malformed_json_succeeds_second_try():
 
 
 def test_raises_after_two_failures():
-    from src.ingestion.disambiguation import DisambiguationError, OllamaDisambiguationProvider
 
     client = _make_client("I cannot determine this from the context provided.")
     provider = OllamaDisambiguationProvider(client=client, model="gemma4:e2b")
@@ -82,7 +80,6 @@ def test_raises_after_two_failures():
 
 
 def test_raises_on_unknown_classification_value():
-    from src.ingestion.disambiguation import DisambiguationError, OllamaDisambiguationProvider
 
     client = MagicMock()
     client.chat.side_effect = [
@@ -98,8 +95,6 @@ def test_raises_on_unknown_classification_value():
 @pytest.mark.slow
 def test_real_ollama_classifies_venue_handle():
     """Confirm real Ollama can classify an obvious venue handle."""
-    from src.utils.ollama_client import OllamaClient
-    from src.ingestion.disambiguation import OllamaDisambiguationProvider
 
     client = OllamaClient(host="http://localhost:11434", timeout=3600)
     provider = OllamaDisambiguationProvider(client=client, model="gemma4:e2b")

@@ -1,9 +1,10 @@
 import io
 import json
 
+from src.utils.logging import get_logger
+
 
 def test_log_entry_has_required_fields():
-    from src.utils.logging import get_logger
 
     stream = io.StringIO()
     log = get_logger("test.fields", stream=stream)
@@ -20,7 +21,6 @@ def test_log_entry_has_required_fields():
 
 
 def test_debug_absent_at_info_level():
-    from src.utils.logging import get_logger
 
     stream = io.StringIO()
     log = get_logger("test.level", stream=stream, level="INFO")
@@ -31,7 +31,6 @@ def test_debug_absent_at_info_level():
 
 
 def test_debug_present_at_debug_level():
-    from src.utils.logging import get_logger
 
     stream = io.StringIO()
     log = get_logger("test.debug", stream=stream, level="DEBUG")
@@ -44,7 +43,6 @@ def test_debug_present_at_debug_level():
 
 
 def test_warning_and_error_levels():
-    from src.utils.logging import get_logger
 
     stream = io.StringIO()
     log = get_logger("test.levels", stream=stream)

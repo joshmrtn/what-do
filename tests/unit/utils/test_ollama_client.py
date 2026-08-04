@@ -5,6 +5,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
+import requests as req
+
+from src.utils.ollama_client import OllamaClient, OllamaError
 
 
 def _make_response(status_code: int, json_body: dict | None = None, text: str = ""):
@@ -22,7 +26,6 @@ def _make_response(status_code: int, json_body: dict | None = None, text: str = 
 
 
 def test_chat_returns_content_on_success():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"message": {"content": "hello world"}})
@@ -35,7 +38,6 @@ def test_chat_returns_content_on_success():
 
 
 def test_chat_raises_on_http_error():
-    from src.utils.ollama_client import OllamaClient, OllamaError
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(500, text="internal error")
@@ -46,8 +48,6 @@ def test_chat_raises_on_http_error():
 
 
 def test_chat_raises_on_timeout():
-    from src.utils.ollama_client import OllamaClient, OllamaError
-    import requests as req
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
 
@@ -57,8 +57,6 @@ def test_chat_raises_on_timeout():
 
 
 def test_chat_raises_on_connection_error():
-    from src.utils.ollama_client import OllamaClient, OllamaError
-    import requests as req
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
 
@@ -68,7 +66,6 @@ def test_chat_raises_on_connection_error():
 
 
 def test_chat_passes_images_when_provided():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"message": {"content": "described"}})
@@ -87,7 +84,6 @@ def test_chat_passes_images_when_provided():
 
 
 def test_chat_omits_images_field_when_none():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"message": {"content": "ok"}})
@@ -105,7 +101,6 @@ def test_chat_omits_images_field_when_none():
 
 
 def test_chat_uses_configured_host():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://192.168.1.50:11434", timeout=30)
     mock_resp = _make_response(200, {"message": {"content": "ok"}})
@@ -123,7 +118,6 @@ def test_chat_uses_configured_host():
 
 
 def test_embed_returns_vector_on_success():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"embeddings": [[0.1, 0.2, 0.3]]})
@@ -135,7 +129,6 @@ def test_embed_returns_vector_on_success():
 
 
 def test_embed_posts_model_and_input_to_embed_endpoint():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"embeddings": [[0.1]]})
@@ -150,7 +143,6 @@ def test_embed_posts_model_and_input_to_embed_endpoint():
 
 
 def test_embed_strips_trailing_slash_from_host():
-    from src.utils.ollama_client import OllamaClient
 
     client = OllamaClient(host="http://localhost:11434/", timeout=30)
     mock_resp = _make_response(200, {"embeddings": [[0.1]]})
@@ -162,7 +154,6 @@ def test_embed_strips_trailing_slash_from_host():
 
 
 def test_embed_raises_on_http_error():
-    from src.utils.ollama_client import OllamaClient, OllamaError
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(500, text="boom")
@@ -173,9 +164,7 @@ def test_embed_raises_on_http_error():
 
 
 def test_embed_raises_on_timeout():
-    import requests
 
-    from src.utils.ollama_client import OllamaClient, OllamaError
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
 
@@ -185,9 +174,7 @@ def test_embed_raises_on_timeout():
 
 
 def test_embed_raises_on_connection_error():
-    import requests
 
-    from src.utils.ollama_client import OllamaClient, OllamaError
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
 
@@ -197,7 +184,6 @@ def test_embed_raises_on_connection_error():
 
 
 def test_embed_raises_on_malformed_response():
-    from src.utils.ollama_client import OllamaClient, OllamaError
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"unexpected": "shape"})
@@ -208,7 +194,6 @@ def test_embed_raises_on_malformed_response():
 
 
 def test_embed_raises_on_empty_embeddings_list():
-    from src.utils.ollama_client import OllamaClient, OllamaError
 
     client = OllamaClient(host="http://localhost:11434", timeout=30)
     mock_resp = _make_response(200, {"embeddings": []})

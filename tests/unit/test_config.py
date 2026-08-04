@@ -368,7 +368,6 @@ def test_aggregator_overridable(tmp_path):
 
 
 def test_unknown_aggregator_rejected(tmp_path):
-    from src.config import ConfigError
 
     with pytest.raises(ConfigError, match="aggregator"):
         _load(tmp_path, {"scoring": {"aggregator": "vibes"}})
@@ -401,7 +400,6 @@ def test_domain_map_loaded_from_config(tmp_path):
 @pytest.mark.parametrize("label", ["yes", "maybe", "no"])
 def test_zero_match_multiplier_rejected(tmp_path, label):
     """A negative base score divides by the multiplier, so zero would crash."""
-    from src.config import ConfigError
 
     with pytest.raises(ConfigError, match="multiplier"):
         _load(tmp_path, {"scoring": {"match_multipliers": {label: 0}}})
@@ -409,7 +407,6 @@ def test_zero_match_multiplier_rejected(tmp_path, label):
 
 @pytest.mark.parametrize("label", ["yes", "maybe", "no"])
 def test_negative_match_multiplier_rejected(tmp_path, label):
-    from src.config import ConfigError
 
     with pytest.raises(ConfigError, match="multiplier"):
         _load(tmp_path, {"scoring": {"match_multipliers": {label: -1.5}}})
@@ -553,8 +550,6 @@ def test_fallback_for_unknown_factor_rejected(tmp_path):
 def test_default_hour_outside_the_day_rejected(tmp_path, bad_hour):
     with pytest.raises(ConfigError, match="default_hour"):
         _weather_config(tmp_path, default_hour=bad_hour)
-
-
 
 
 def test_synthetic_rule_setting_loads(tmp_path):

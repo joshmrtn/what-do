@@ -4,13 +4,54 @@ Use real local resources (SQLite, config files) but never make external network 
 One test per phase; they accumulate as phases complete.
 """
 
-import json
-import sqlite3
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
+import io
+import json
+import sqlite3
+import uuid
+import zoneinfo
 
 import pytest
 import yaml
+
+from src.config import (
+    AppConfig,
+    DeduplicationConfig,
+    LocationConfig,
+    ScoringConfig,
+    ScrapingConfig,
+    SyntheticActivityRule,
+    SyntheticConditions,
+    VenueDiscoveryConfig,
+    _load_weather,
+    load_config,
+)
+from src.enrichment.astronomical import AstronomicalCalculator
+from src.enrichment.comfort import compute_comfort
+from src.enrichment.service import EnrichmentService
+from src.enrichment.weather import WeatherProvider
+from src.ingestion.geocoder import GeocoderProvider
+from src.ingestion.ingestion_service import IngestionService
+from src.ingestion.source import IngestionSource
+from src.ingestion.venue_discovery import VenueDiscoveryService
+from src.ingestion.venue_source import VenueSource
+from src.models.event import Event
+from src.models.event_candidate import EventCandidate
+from src.models.tag import Tag
+from src.models.venue import Venue
+from src.normalization.semantic_dedup import SemanticDeduplicationEngine
+from src.normalization.service import NormalizationService
+from src.scoring.embedding_stage import EmbeddingStage
+from src.scoring.embeddings import OllamaEmbeddingProvider
+from src.scoring.preferences import PreferenceRepository
+from src.scoring.similarity_stage import SimilarityStage
+from src.storage.db import init_db
+from src.storage.events import load_events, save_events
+from src.utils.logging import get_logger
+from src.utils.ollama_client import OllamaClient
+from src.utils.vectors import decode_vector
 
 
 @pytest.fixture
@@ -31,7 +72,6 @@ def sample_config(tmp_path):
 
 def test_config_smoke(sample_config):
     """Config loads and exposes typed location data."""
-    from src.config import load_config
 
     cfg = load_config(config_path=sample_config)
     assert isinstance(cfg.location.latitude, float)
@@ -40,11 +80,7 @@ def test_config_smoke(sample_config):
 
 def test_db_and_logger_smoke(sample_config, tmp_path):
     """DB initialises and logger writes a structured entry without error."""
-    import io
-    import json
 
-    from src.storage.db import init_db
-    from src.utils.logging import get_logger
 
     init_db(db_path=tmp_path / "smoke.db")
 
@@ -60,15 +96,7 @@ def test_db_and_logger_smoke(sample_config, tmp_path):
 
 def test_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
     """Venue discovery persists a seed venue and a provider venue end-to-end."""
-    import io
 
-    from src.ingestion.geocoder import GeocoderProvider
-    from src.ingestion.venue_discovery import VenueDiscoveryService
-    from src.ingestion.venue_source import VenueSource
-    from src.models.venue import Venue
-    from src.config import load_config
-    from src.storage.db import init_db
-    from src.utils.logging import get_logger
 
     # Seed with one handle and one venue
     seeds_path = tmp_path / "seeds.yaml"
@@ -129,19 +157,7 @@ def test_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
 
 def test_ingestion_smoke(tmp_path: Path) -> None:
     """3 valid events + 1 malformed; failover path works when primary adapter raises."""
-    import io
-    import uuid
-    from datetime import datetime, timedelta, timezone
-    from unittest.mock import MagicMock
 
-    import yaml
-
-    from src.config import AppConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
-    from src.ingestion.ingestion_service import IngestionService
-    from src.ingestion.source import IngestionSource
-    from src.models.event_candidate import EventCandidate
-    from src.storage.db import init_db
-    from src.utils.logging import get_logger
 
     now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
     recent = now - timedelta(days=5)
@@ -218,15 +234,7 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
 
 def test_normalization_smoke(tmp_path: Path) -> None:
     """2 identical candidates + 1 unique + 1 malformed → 2 events, 1 discard, merged attribution."""
-    import io
-    import uuid
-    from datetime import datetime, timezone
 
-    from src.config import AppConfig, DeduplicationConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
-    from src.models.event_candidate import EventCandidate
-    from src.normalization.service import NormalizationService
-    from src.storage.db import init_db
-    from src.utils.logging import get_logger
 
     now = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
     event_time = datetime(2025, 6, 15, 20, 0, 0, tzinfo=timezone.utc)
@@ -308,24 +316,7 @@ def test_normalization_smoke(tmp_path: Path) -> None:
 
 def test_enrichment_smoke(tmp_path: Path) -> None:
     """Enrichment attaches weather/solar to a real event and injects a synthetic activity."""
-    import zoneinfo
-    from datetime import date, datetime, timezone
-    from unittest.mock import MagicMock
 
-    from src.config import (
-        AppConfig,
-        LocationConfig,
-        ScrapingConfig,
-        SyntheticActivityRule,
-        SyntheticConditions,
-        VenueDiscoveryConfig,
-    )
-    from src.enrichment.astronomical import AstronomicalCalculator
-    from src.enrichment.service import EnrichmentService
-    from src.enrichment.weather import WeatherProvider
-    from src.models.event import Event
-    from src.models.tag import Tag
-    from src.storage.db import init_db
 
     run_date = date(2025, 6, 21)
     now = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
@@ -433,22 +424,7 @@ def test_semantic_matching_smoke(tmp_path: Path) -> None:
     those files are gitignored and personal, so a test reading them would fail
     on a fresh clone and change behaviour whenever the user edits a preference.
     """
-    import io
-    from datetime import datetime, timedelta, timezone
 
-    from src.config import DeduplicationConfig, ScoringConfig
-    from src.models.event import Event
-    from src.models.tag import Tag
-    from src.normalization.semantic_dedup import SemanticDeduplicationEngine
-    from src.scoring.embedding_stage import EmbeddingStage
-    from src.scoring.embeddings import OllamaEmbeddingProvider
-    from src.scoring.preferences import PreferenceRepository
-    from src.scoring.similarity_stage import SimilarityStage
-    from src.storage.db import init_db
-    from src.storage.events import load_events, save_events
-    from src.utils.logging import get_logger
-    from src.utils.ollama_client import OllamaClient
-    from src.utils.vectors import decode_vector
 
     db_path = tmp_path / "smoke.db"
     init_db(db_path)
@@ -563,24 +539,7 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
     ranking engine will depend on, using the curves in config.example.yaml
     rather than test-local numbers.
     """
-    import zoneinfo
-    from datetime import date, datetime, timezone
-    from unittest.mock import MagicMock
 
-    from src.config import (
-        AppConfig,
-        LocationConfig,
-        ScrapingConfig,
-        VenueDiscoveryConfig,
-        _load_weather,
-    )
-    from src.enrichment.astronomical import AstronomicalCalculator
-    from src.enrichment.comfort import compute_comfort
-    from src.enrichment.service import EnrichmentService
-    from src.enrichment.weather import WeatherProvider
-    from src.models.event import Event
-    from src.storage.db import init_db
-    from src.storage.events import load_events, save_events
 
     example = yaml.safe_load(Path("config/config.example.yaml").read_text())
     weather_cfg = _load_weather(example["weather"])

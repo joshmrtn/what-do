@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, timezone
+import math
 
 from src.config import ScoringConfig
 from src.models.event import Event
