@@ -10,13 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from rapidfuzz import fuzz
-
 from src.config import AppConfig
 from src.ingestion.geocoder import GeocoderProvider
 from src.ingestion.seeds import Seeds, load_seeds
 from src.ingestion.venue_source import VenueSource
 from src.models.venue import Venue
+from src.utils.blocklist import is_blocked, name_similarity
 
 
 def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -31,11 +30,6 @@ def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
         * math.sin(dlng / 2) ** 2
     )
     return r * 2 * math.asin(math.sqrt(a))
-
-
-def _fuzzy_match(a: str, b: str) -> float:
-    """Return rapidfuzz ratio score (0–100) between two strings, case-insensitive."""
-    return fuzz.ratio(a.lower(), b.lower())
 
 
 class VenueDiscoveryService:
@@ -119,15 +113,12 @@ class VenueDiscoveryService:
             return json.load(f)  # type: ignore[no-any-return]
 
     def _is_blocked(self, venue: Venue, blocklist: list[str]) -> bool:
-        threshold = self._config.venue_discovery.blocklist_name_match_threshold * 100
-        for entry in blocklist:
-            if entry.startswith("@"):
-                if entry in venue.social_handles:
-                    return True
-            else:
-                if _fuzzy_match(venue.name, entry) >= threshold:
-                    return True
-        return False
+        return is_blocked(
+            venue.name,
+            venue.social_handles,
+            blocklist,
+            self._config.venue_discovery.blocklist_name_match_threshold,
+        )
 
     # ------------------------------------------------------------------
     # Radius
@@ -215,11 +206,11 @@ class VenueDiscoveryService:
         ).fetchall()
 
         for eid, ename, eaddress in existing:
-            name_score = _fuzzy_match(venue.name, ename)
+            name_score = name_similarity(venue.name, ename)
             if name_score < name_threshold:
                 continue
             if venue.address and eaddress:
-                addr_score = _fuzzy_match(venue.address, eaddress)
+                addr_score = name_similarity(venue.address, eaddress)
                 if addr_score < addr_threshold:
                     continue
             # Duplicate found — skip
