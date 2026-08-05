@@ -5,6 +5,7 @@ One test per phase; they accumulate as phases complete.
 """
 
 from datetime import date, datetime, timedelta, timezone
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 import io
@@ -47,6 +48,8 @@ from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import EVERYTHING_ELSE, TOP_PICK, WORTH_CONSIDERING, RankingEngine
+from src.presentation.cli import run
+from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
@@ -805,3 +808,150 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     # A re-run supersedes its earlier attempt rather than accumulating a second copy.
     save_recommendations(engine.rank(shuffled, run_date), db_path)
     assert load_recommendations(db_path) == ranked
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — CLI interface
+# ---------------------------------------------------------------------------
+
+
+def test_cli_smoke(tmp_path: Path) -> None:
+    """Ranking -> persist -> CLI render, over ten events across two days.
+
+    Not marked slow: the CLI's whole premise is that query time needs no model
+    and no network, so a smoke test that needed either would be testing the
+    wrong system. Similarity is attached directly here for the same reason —
+    `RankingEngine` consumes it rather than re-scoring, and Phase 7's smoke
+    already covers producing it.
+    """
+
+    example = yaml.safe_load(Path("config/config.example.yaml").read_text())
+    example["location"] = {
+        "latitude": 42.52,
+        "longitude": -70.89,
+        "postal_code": "01970",
+        "search_radius_miles": 10,
+    }
+    config_file = tmp_path / "example_config.yaml"
+    config_file.write_text(yaml.dump(example))
+    config = load_config(config_path=config_file)
+
+    db_path = tmp_path / "cli_smoke.db"
+    init_db(db_path)
+
+    tz = zoneinfo.ZoneInfo(config.location.timezone)
+    run_date = date(2025, 6, 21)
+    now = datetime(2025, 6, 21, 17, 0, tzinfo=tz)
+    sunset = datetime(2025, 6, 21, 20, 15, tzinfo=tz)
+
+    def _event(event_id: str, title: str, base: float, hour: int | None, day: int = 21) -> Event:
+        start = datetime(2025, 6, day, hour, 0, tzinfo=tz) if hour is not None else None
+        return Event(
+            event_id=event_id,
+            source_event_candidates=[f"cand-{event_id}"],
+            source_type="instagram",
+            created_at=now,
+            updated_at=now,
+            title=title,
+            venue="The Dive Bar",
+            start_time=start,
+            tags=[Tag(text="karaoke", weight=1.0), Tag(text="live music", weight=0.8)],
+            summary=f"{title} at The Dive Bar",
+            astronomical_data={"sunset": sunset.isoformat()},
+            similarity=SimilarityResult(
+                tag_score=base,
+                summary_score=base,
+                base_score=base,
+                match="yes" if base > 0.2 else "maybe",
+                reasons=[
+                    Reason(
+                        factor="like_similarity",
+                        matched_preference="karaoke night",
+                        similarity=0.87,
+                        contribution=base,
+                        direction="positive" if base >= 0 else "negative",
+                        tag="karaoke",
+                    )
+                ],
+            ),
+        )
+
+    # Ten events over two days: eight tonight (one of them undated), two tomorrow.
+    events = [
+        _event("t1", "Karaoke Night", 0.62, 20),
+        _event("t2", "Open Mic", 0.55, 19),
+        _event("t3", "Late Jazz", 0.48, 22),
+        _event("t4", "Afternoon Market", 0.20, 14),
+        _event("t5", "Evening Talk", 0.12, 18),
+        _event("t6", "Corporate Mixer", 0.01, 18),
+        _event("t7", "Crypto Meetup", -0.35, 19),
+        _event("u1", "Open Studio Weekend", 0.40, None),
+        _event("m1", "Tomorrow Gig", 0.58, 20, day=22),
+        _event("m2", "Tomorrow Matinee", 0.30, 11, day=22),
+    ]
+
+    engine = RankingEngine(config, blocklist=[], logger=get_logger("smoke", stream=io.StringIO()))
+    ranked = engine.rank(events, run_date)
+    assert len(ranked) == 10
+
+    save_events(events, db_path)
+    save_recommendations(ranked, db_path)
+
+    def _invoke(*argv: str) -> str:
+        stdout = io.StringIO()
+        code = run(
+            ["--db", str(db_path), *argv],
+            get_now=lambda: now,
+            stdout=stdout,
+            stderr=io.StringIO(),
+        )
+        assert code == 0
+        return stdout.getvalue()
+
+    started = time.perf_counter()
+    default_view = _invoke()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0, f"the CLI took {elapsed:.3f}s reading precomputed rows"
+
+    # Only tonight, plus the undated event under its own heading.
+    assert "Karaoke Night" in default_view
+    assert "Tomorrow Gig" not in default_view
+    assert "Tomorrow Matinee" not in default_view
+    assert "Open Studio Weekend" in default_view
+    assert "UNDATED" in default_view
+
+    # The engine's order survives to the screen, and its reasons with it.
+    assert default_view.index("Karaoke Night") < default_view.index("Open Mic")
+    assert "karaoke night" in default_view
+
+    # Nothing is lost: what the default view folds, it counts, and --all shows.
+    folded = [r for r in ranked if r.tier == EVERYTHING_ELSE]
+    assert folded, "the shipped thresholds should leave something below the fold"
+    assert f"{len(folded)} more" in default_view
+    for recommendation in folded:
+        title = next(e.title for e in events if e.event_id == recommendation.event_id)
+        assert title not in default_view
+        assert title in _invoke("--all")
+
+    # Raw ignores ranking entirely and shows every stored event.
+    raw_view = _invoke("--raw")
+    for event in events:
+        assert event.title in raw_view
+    assert "TOP PICKS" not in raw_view
+
+    # Filters compose and stay honest about timing they cannot assert.
+    windowed = _invoke("--time", "19:30-23:00")
+    assert "Late Jazz" in windowed
+    assert "Afternoon Market" not in windowed
+    assert "Open Studio Weekend" not in windowed
+
+    after_dark = _invoke("--after-sunset")
+    assert "Late Jazz" in after_dark
+    assert "Open Mic" not in after_dark
+
+    # Seed management writes where it is told and does not duplicate.
+    seeds = tmp_path / "seeds.yaml"
+    _invoke("add-source", "@smoketest", "--seeds-file", str(seeds))
+    _invoke("add-source", "@smoketest", "--seeds-file", str(seeds))
+    assert yaml.safe_load(seeds.read_text())["handles"] == ["@smoketest"]
