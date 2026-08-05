@@ -75,9 +75,15 @@ tag_score     = mean(positive contributions) - mean(|negative contributions|)
 summary_score = same formula on the 1-sentence summary
 base_score    = tag_score + (summary_weight × summary_score)
 
+# Symmetric: confidence shrinks magnitude toward zero in BOTH directions,
+# because thin evidence means uncertain, not bad. Synthetic activities are
+# exempt — their tags are authored, not extracted.
+tag_confidence = min(1.0, len(tags) / min_tags_per_event)
+confident      = base_score × tag_confidence
+
 # Direction-aware: the multiplier acts on magnitude, sign preserved.
-final_score   = base_score × match_multiplier + weather_adjustment   if base_score >= 0
-final_score   = base_score ÷ match_multiplier + weather_adjustment   if base_score < 0
+final_score   = confident × match_multiplier + weather_adjustment   if confident >= 0
+final_score   = confident ÷ match_multiplier + weather_adjustment   if confident < 0
 ```
 
 Three parts are load-bearing and were each measured against real embeddings — dropping any one
@@ -89,6 +95,11 @@ breaks real cases. See `docs/decisions.md`:
 - **Weights multiply the contribution.** Never use them as averaging weights — that normalises
   them away and the suppression silently does nothing.
 - **The balanced mean** stops several weak incidental negatives outvoting one strong positive.
+
+The two scaling terms are deliberately different shapes and each looks like a bug from the
+other's perspective. The **multiplier** expresses how strong a verdict is, so it preserves sign.
+**Confidence** expresses how much evidence exists at all, so it pulls both signs toward zero — a
+one-tag event lands mid-ranking, which is where something we know almost nothing about belongs.
 
 Scores are unbounded floats (higher = better, negatives valid). Never normalize relative to
 current batch — events must stay comparable across runs.
@@ -202,6 +213,11 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Tag weights used as averaging weights | Normalises the weight away — suppression silently does nothing. Weight must multiply the contribution: `c = w × similarity` |
 | Assuming unrelated concepts score ~0 | `nomic-embed-text` puts unrelated pairs at ~0.30–0.47. Every absolute threshold must account for the floor; the logistic gate exists for this |
 | Raw cosine magnitude on a near-tie | A 0.03 noise gap becomes a ~0.43 penalty. Always gate before comparing |
+| Making tag confidence direction-aware "to match the multiplier" | Inverts its meaning — a thin *negative* would deepen, punishing an event for evidence we never gathered. Confidence multiplies both signs |
+| Applying tag confidence to synthetic activities | Their tags come from hand-written `config.yaml` rules, so a low count is authoring, not extraction failure. `source_type == "synthetic"` is exempt |
+| Serving a cached forecast without checking its age | An event found a week out would score on the forecast issued that day, forever. `weather.cache_ttl_hours` must stay under 24 so a nightly batch refetches |
+| `tier` used as a filter in a query | Nothing is ever withheld by ranking. The tier below `worth_considering_min` is `everything_else` precisely so `WHERE tier != 'excluded'` cannot be written by accident |
+| Blocklist `@handle` entries at ranking time | An `Event` carries no handle — normalization drops it. Handles are enforced at ingestion; ranking matches venue names only. See #15 |
 
 ---
 
@@ -252,7 +268,7 @@ OLLAMA_HOST=http://localhost:11434
 | 6 | LLM extraction pipeline | ✅ complete |
 | 7 | Semantic matching engine | ✅ complete |
 | 8 | Weather comfort enrichment | ✅ complete |
-| 9 | Deterministic ranking engine | ⬜ not started |
+| 9 | Deterministic ranking engine | ✅ complete |
 | 10 | CLI interface | ⬜ not started |
 | 11 | Maintenance utilities | ⬜ not started |
 | 12 | Hardening & reliability | ⬜ not started |

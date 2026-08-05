@@ -907,7 +907,44 @@ STOP otherwise.
 
 ---
 
-# 11. Phase 8 - Deterministic Ranking Engine
+# 11. Phase 8 - Weather Comfort Enrichment
+
+## Goal
+
+Produce the data the ranking engine needs: weather at the event's own hour, and a reliable
+indoor/outdoor signal.
+
+Inserted after the original plan was written. The formula referenced a `weather_bonus` that had no
+definition, no config key, and no rule anywhere — this phase defines it.
+
+---
+
+## Deliverables
+
+Hourly weather sampling at the event's start time. Air quality from a second Open-Meteo endpoint.
+A `setting` field on `Event`, assigned by LLM Pass 1. A pure, config-driven comfort function
+producing a signed adjustment.
+
+---
+
+## Green Criteria
+
+Weather reflects the event's actual hour. Comfort is a signed function that degrades per factor —
+a missing reading is dropped and the remaining weights renormalise, never scored as zero. Every
+event carries a trustworthy `setting`.
+
+---
+
+## Outcome
+
+Complete. Nine entries in `docs/decisions.md` record the design: the trapezoid curve shape, signed
+adjustment with asymmetric caps, per-factor degradation, dominant factors capping rather than
+averaging, precipitation superseding the categorical rain penalty, and correlated factors standing
+in for each other.
+
+---
+
+# 12. Phase 9 - Deterministic Ranking Engine
 
 ## Goal
 
@@ -921,6 +958,13 @@ This phase intentionally avoids LLM involvement.
 
 Ranking shall always be reproducible.
 
+Ordering correctness is the only goal that matters here. Tier thresholds are cosmetic labels at
+this stage and are explicitly not tuned.
+
+Nothing is ever excluded. Every scored event is persisted and appears in the output at every tier,
+negative scores included. The single exception is a blocklisted venue, which is user intent rather
+than a scoring judgement.
+
 ---
 
 ## Deliverables
@@ -931,6 +975,8 @@ Conflict resolution.
 
 Recommendation ordering.
 
+Recommendation model and persistence.
+
 ---
 
 ## Red Tests
@@ -939,26 +985,34 @@ Scoring:
 
 - event with high like similarity scores higher than event with low like similarity
 - event with high dislike similarity scores lower than event with low dislike similarity
-- event close to both a like and a dislike → specificity wins (closer match determines direction)
-- identical inputs → identical scores on repeated runs (determinism)
-- match multiplier applied: `yes` produces higher score than `maybe` from same base; `no` produces lower
+- event close to both a like and a dislike -> specificity wins (closer match determines direction)
+- identical inputs -> identical scores on repeated runs (determinism)
+- two runs over a shuffled input list produce identical output, `rank` included
+- match multiplier applied: `yes` produces higher score than `maybe` from the same positive base
+- from an identical negative base, `no` ranks below `maybe` (the direction-aware guard)
 - match multipliers read from config (not hardcoded)
-- weather bonus applied to event tagged `outdoor` on a clear-weather day
-- weather bonus absent on a rainy day for same event
-- blocklisted venue → event hard-excluded before ranking (never appears in output)
+- tag confidence scales a thin extraction toward zero in both directions
+- synthetic activities are exempt from tag confidence
+- weather adjustment lifts an outdoor event on a clear night and demotes it on a bad one
+- no weather adjustment for `indoor`, `unknown`, or an event with no weather
+- ties broken by `event_id`, ascending
+- blocklisted venue hard-excluded before ranking (never appears in output)
+- nothing else is ever dropped: N events in, N recommendations out
 
 Tiers:
 
-- score above `top_picks_min` threshold → tier = `top_pick`
-- score between `worth_considering_min` and `top_picks_min` → tier = `worth_considering`
-- score below `worth_considering_min` → tier = `excluded`
+- score above `top_picks_min` -> tier = `top_pick`
+- score between `worth_considering_min` and `top_picks_min` -> tier = `worth_considering`
+- score below `worth_considering_min` -> tier = `everything_else`, still present in the output
 - tier thresholds read from `config.yaml` (not hardcoded)
 
 Output:
 
-- each `Recommendation` has `run_date` stamped with current batch date
-- `reasons[]` populated with all contributing factors
+- each `Recommendation` has `run_date` stamped from the injected value
+- `reasons[]` populated with all contributing factors, weather included when applicable
 - domain-scoped scoring: `[movies]` preferences only applied to movie events
+- round-trip through SQLite preserves every score component and the rank
+- re-running the same `run_date` replaces that run's rows rather than accumulating duplicates
 
 ---
 
@@ -968,13 +1022,16 @@ Ranking is deterministic.
 
 Tiers correctly classified from config thresholds.
 
-All score factors applied correctly.
+All score factors applied correctly, and every one of them explained by a `Reason`.
 
 ---
 
 ## Smoke Test
 
-Score 10 mock events with known similarity values. Confirm ordering matches expected ranking. Run scorer twice — confirm output is byte-identical. Confirm blocklisted venue absent from output. Confirm tier assignments match configured thresholds.
+Score 10 mock events with known similarity values against real Ollama embeddings. Confirm ordering
+matches expected ranking. Run the scorer twice over a shuffled list — confirm output is identical.
+Confirm the blocklisted venue is absent and every other event present. Confirm tier assignments
+match configured thresholds and that recommendations survive a round trip through SQLite.
 
 ---
 
@@ -986,7 +1043,7 @@ STOP otherwise.
 
 ---
 
-# 12. Phase 9 - CLI Interface
+# 13. Phase 10 - CLI Interface
 
 ## Goal
 
@@ -1067,7 +1124,7 @@ STOP otherwise.
 
 ---
 
-# 13. Phase 10 - Maintenance Utilities
+# 14. Phase 11 - Maintenance Utilities
 
 ## Goal
 
@@ -1141,7 +1198,7 @@ STOP otherwise.
 
 ---
 
-# 14. Phase 11 - Hardening & Reliability
+# 15. Phase 12 - Hardening & Reliability
 
 ## Goal
 

@@ -714,7 +714,7 @@ scoring:
     no: 0.5
 ```
 
-Events below `worth_considering_min` are excluded from the default CLI view. Tune thresholds after observing real score distributions.
+Events below `worth_considering_min` fall into the `everything_else` tier, which the default CLI view collapses. They are still scored, ranked, and persisted — the tier is a label the CLI renders, never a filter applied at ranking. Tune thresholds after observing real score distributions.
 
 Domain-scoped preferences:
 
@@ -921,17 +921,33 @@ Represents a ranked event.
 
 Fields:
 
+recommendation_id (derived from run_date + event_id, never random — two runs of the same batch must be identical)
+
 event_id
 
 run_date (which batch produced this recommendation)
 
-score (unbounded float — higher is always better, may be negative)
+base_score (semantic score from the similarity engine, before anything else acts on it)
 
-tier (derived: "top_pick" | "worth_considering" | "excluded")
+weather_adjustment (signed; 0.0 unless the event is held outdoors)
+
+tag_confidence (0.0-1.0; how much of min_tags_per_event the extraction produced)
+
+final_score (unbounded float — higher is always better, may be negative)
+
+tier (derived: "top_pick" | "worth_considering" | "everything_else")
 
 match ("yes" | "maybe" | "no" — from Stage 4 classification)
 
+rank (1-based position within the run, persisted so a reader cannot reorder the batch's decision)
+
 reasons[] (list of structured reason objects)
+
+Every score component is stored rather than the total alone: a retuned curve or
+threshold can then be explained against history instead of guessed at. The tier
+below `worth_considering_min` is named `everything_else` and not `excluded` —
+nothing is ever withheld from the CLI, and the old name invited a
+`WHERE tier != 'excluded'` that would silently hide events.
 
 Reason schema:
 
@@ -946,7 +962,7 @@ Reason schema:
 }
 ```
 
-Supported factor values: `like_similarity`, `dislike_similarity`, `match_classification`, `weather_adjustment`, `domain_mismatch`.
+Supported factor values: `like_similarity`, `dislike_similarity`, `match_classification`, `low_tag_confidence`, `weather_adjustment`, `domain_mismatch`.
 
 ---
 
@@ -1159,7 +1175,7 @@ Manual execution: `what-do-run-batch` runs the full pipeline immediately.
 
 Default CLI behaviour:
 
-`what-do` with no arguments displays today's events sorted by score, grouped into Top Picks and Worth Considering sections. Events with tier `excluded` are hidden by default.
+`what-do` with no arguments displays today's events sorted by score, grouped into Top Picks and Worth Considering sections. Events in the `everything_else` tier are collapsed by default.
 
 Required secrets (`.env.example`):
 

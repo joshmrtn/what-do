@@ -876,3 +876,157 @@ so the provider is optional and its absence is indistinguishable from a miss.
 **Known gap:** air quality is cached only in memory for the duration of a run, whereas weather is
 also cached in the `weather_cache` table. Deliberate for now — AQI is volatile and cheap — but it
 means the two follow different caching rules, which is worth knowing before adding a TTL to either.
+
+---
+
+## Cached forecasts expire; scoring uses the freshest one for the event's date
+
+**Decision:** `weather_cache` entries are served only while they are younger than
+`weather.cache_ttl_hours` (default 12). A stale entry falls through as an ordinary cache miss and
+is overwritten in place. Filed during Phase 8 as issue #14; fixed at the start of Phase 9.
+
+**Rationale:** the cache is keyed `(date, latitude, longitude)` with no expiry, and nothing ever
+deleted an entry. An event discovered a week ahead therefore cached the forecast issued that day
+and was scored against it on every subsequent run — including the run on the night it actually
+happens, which is the only run whose ordering the user ever sees. Once `weather_adjustment` feeds
+the ranking directly, a stale forecast is not a stale cache entry, it is a wrong recommendation.
+
+**Why under 24 hours specifically:** the batch is nightly, so any TTL below a day guarantees each
+run refetches every date it needs. Within a run the cache still collapses all events on a date to
+one provider call, so the cost is one call per distinct date per run against a free, keyless
+endpoint.
+
+**Consequence:** `_db_weather_put` now stamps `fetched_at` from the injected `get_now` rather than
+calling `datetime.now()` directly. That was a standing violation of the injectable-time rule, and
+expiry cannot be tested without it.
+
+**Note:** air quality is still cached only in memory for the duration of a run, so the two now
+follow different rules for a second reason — weather expires on a clock, AQI expires with the
+process.
+
+---
+
+## Comfort is computed at ranking time, not during enrichment
+
+**Decision:** `EnrichmentService` persists raw readings; `RankingEngine` calls `compute_comfort`
+when it scores. No adjustment is ever stored alongside the readings.
+
+**Rationale:** Phase 8 deliberately stored raw readings rather than a derived verdict so retuned
+curves could rescore history without refetching anything. Storing the adjustment too would give
+that up for nothing — the stored value would be the one computed under whichever curves happened
+to be configured that night, and no later reader could tell which.
+
+**Consequence:** `select_readings` prefers `observed` over `forecast`, which is the first code to
+read the slot Phase 8 reserved. A later backfill of what actually happened will rescore those
+events automatically, with no migration and no other change.
+
+---
+
+## Ranking consumes the attached similarity result; it does not re-score
+
+**Decision:** `RankingEngine.rank(events, run_date)` reads `event.similarity`, which
+`SimilarityStage` has already attached. It takes no `PreferenceSet` and never calls the similarity
+engine.
+
+**Rationale:** two code paths computing the same score will drift, and the drift would be silent
+because both look right in isolation. Ranking's job is ordering; semantics belong upstream.
+
+**Consequence:** an event arriving with `similarity is None` scores `base_score = 0.0` and match
+`maybe` rather than raising — one unscorable event costs one recommendation, not the batch,
+matching the existing stage behaviour. Note where that lands it: at zero, i.e. the middle of the
+ranking, which is also where a thin extraction lands. Uncertainty of every kind collects in the
+middle, which is the intended failure mode but worth knowing when reading a result list.
+
+---
+
+## `recommendation_id` is derived, never generated
+
+**Decision:** `make_recommendation_id(run_date, event_id)` returns `"2026-08-06:evt-1"`. No uuid4.
+
+**Rationale:** determinism is the phase's headline guarantee, and "two runs of the same batch
+produce identical output" is untestable if every row carries a fresh random id. A derived id also
+makes re-running a date idempotent by construction rather than by convention.
+
+---
+
+## Tag confidence is symmetric, unlike the match multiplier
+
+**Decision:** `tag_confidence = min(1.0, len(tags) / min_tags_per_event)`, multiplied into
+`base_score` **in both directions** — a thin positive falls toward zero and a thin negative rises
+toward zero. Synthetic activities are exempt and always score at full confidence.
+
+**Rationale:** `min_tags_per_event` had been configured since Phase 1 and read by nothing. Fewer
+than five tags means LLM Pass 1 underperformed, so the score built on those tags rests on less
+evidence, and the ranking should say so.
+
+The symmetry is the load-bearing part, and it is deliberately the opposite of the rule immediately
+above it in the formula. The **multiplier** expresses how strong a verdict is, so it must preserve
+sign — dividing a negative deepens it. **Confidence** expresses how much evidence exists at all,
+so it must pull both signs toward zero. Making confidence direction-aware "for consistency" would
+deepen a thin negative, punishing an event for evidence we never gathered. Each rule looks like a
+bug from the other's perspective; both are commented in place.
+
+**Where a low-confidence event lands:** in the middle of the ranking, not at the bottom. That is
+the correct place for something we know almost nothing about.
+
+**Synthetic activities are exempt** because their tags come from hand-written `config.yaml` rules.
+A three-tag rule is an authoring choice, not an extraction failure, and scaling it down would
+demote the user's own activities unless they padded every rule to five tags.
+
+**No floor and no extra config knob:** one tag out of five scores ×0.2, and zero tags scores 0.0.
+Zero tags is total extraction failure; its `tag_score` is already 0, so the only thing additionally
+discarded is the summary term, which is not worth ranking on alone.
+
+**Emits a `low_tag_confidence` reason** whenever confidence is below 1.0, so a demoted event is
+never demoted invisibly.
+
+---
+
+## The bottom tier is `everything_else`, not `excluded`
+
+**Decision:** the tier below `worth_considering_min` is named `everything_else`.
+
+**Rationale:** ranking withholds nothing. `tier` is a label the CLI renders, and the old name
+invited exactly the behaviour the design forbids — one stray `WHERE tier != 'excluded'` would
+silently hide events the engine was careful to keep. Renaming makes that mistake impossible to
+write by accident.
+
+**Consequence:** because tiers are cut on `final_score`, the weather adjustment can move an event
+across a boundary between runs. That is intended — an outdoor event genuinely is a worse option in
+a thunderstorm — but it means tier is a property of an event *on a night*, not of the event.
+
+---
+
+## The blocklist applies at ranking too, on venue names only
+
+**Decision:** `RankingEngine` drops events whose venue matches `data/blocklist.json`, using the
+matcher extracted to `src/utils/blocklist.py` and shared with venue discovery. It is the only drop
+in the system. Dropped events are logged with their venue.
+
+**Rationale:** discovery and ingestion both filter earlier, but neither can reach an event that is
+already in the database. Without a check at ranking, a venue blocked today keeps being recommended
+forever from events scraped yesterday. The matcher is shared rather than reimplemented so the two
+call sites cannot disagree about what "blocked" means.
+
+**Known gap:** `@handle` entries cannot be matched here. An `Event` carries no handle —
+`EventNormalizer` keeps only `source_event_candidates` and `source_type` — so ranking matches
+venue names alone, and handles stay enforced at ingestion where the candidate still has one. Filed
+as issue #15 rather than expanding Phase 9 into the events schema.
+
+**Consequence:** a blank or missing venue name never matches a name entry. An empty string scores
+against every entry and would block indiscriminately.
+
+---
+
+## A run's recommendations replace that run's rows, and an empty batch clears nothing
+
+**Decision:** `save_recommendations` deletes only the `run_date`s it is about to write, then
+inserts. Saving an empty list returns immediately.
+
+**Rationale:** a batch retried after a partial failure must supersede its own earlier attempt,
+or the CLI reads two conflicting orderings for the same night. Scoping the delete to the dates
+being written keeps previous nights intact, which matters because those rows are the only record
+of what was recommended when.
+
+Treating an empty list as a no-op rather than a clear is the conservative reading: an empty batch
+means "nothing to add", and interpreting it as "delete everything" would be both silent and total.

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import io
 import json
+import random
 import sqlite3
 import uuid
 import zoneinfo
@@ -45,9 +46,11 @@ from src.normalization.service import NormalizationService
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
+from src.scoring.ranking import EVERYTHING_ELSE, TOP_PICK, WORTH_CONSIDERING, RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
+from src.storage.recommendations import load_recommendations, save_recommendations
 from src.utils.logging import get_logger
 from src.utils.ollama_client import OllamaClient
 from src.utils.vectors import decode_vector
@@ -635,3 +638,170 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
     assert 0 < scores["drizzle"] < scores["crisp"], "a drizzle at 58F is still a fine night out"
     assert scores["muggy_storm"] == pytest.approx(-weather_cfg.max_negative_adjustment)
     assert scores["crisp"] > scores["drizzle"] > scores["muggy_storm"]
+
+
+@pytest.mark.slow
+def test_ranking_smoke(tmp_path: Path) -> None:
+    """Embeddings -> similarity -> ranking -> persist -> reload.
+
+    Uses real Ollama embeddings, real SQLite, and the thresholds, multipliers
+    and comfort curves shipped in config.example.yaml, so the ordering under
+    test is the one production would produce.
+    """
+
+    example = yaml.safe_load(Path("config/config.example.yaml").read_text())
+    example["location"] = {
+        "latitude": 42.52,
+        "longitude": -70.89,
+        "postal_code": "01970",
+        "search_radius_miles": 10,
+    }
+    config_file = tmp_path / "example_config.yaml"
+    config_file.write_text(yaml.dump(example))
+    config = load_config(config_path=config_file)
+
+    db_path = tmp_path / "ranking_smoke.db"
+    init_db(db_path)
+    logger = get_logger("smoke", stream=io.StringIO())
+
+    likes = tmp_path / "likes.txt"
+    likes.write_text("karaoke\npunk music\nlive jazz\nquiet cafes\n")
+    dislikes = tmp_path / "dislikes.txt"
+    dislikes.write_text("nightclubs\nsports bars\ndancing\n")
+
+    provider = OllamaEmbeddingProvider(client=OllamaClient("http://localhost:11434", timeout=180))
+    prefs = PreferenceRepository(provider, db_path, logger).load(likes, dislikes)
+
+    run_date = date(2026, 8, 6)
+    now = datetime(2026, 8, 6, 20, 0, tzinfo=timezone.utc)
+
+    def weather(temp_f: float, dew_f: float, wind: float, precip: float, condition: str) -> dict:
+        hour = {
+            "hour": 20,
+            "temperature_f": temp_f,
+            "dew_point_f": dew_f,
+            "wind_speed_mph": wind,
+            "precipitation_mm": precip,
+            "condition": condition,
+        }
+        return {
+            "sampled_hour": 20,
+            "forecast": {"issued_at": now.isoformat(), "hour": hour, "day_series": []},
+            "observed": None,
+        }
+
+    CLEAR = weather(62.0, 50.0, 5.0, 0.0, "clear")
+    STORM = weather(88.0, 74.0, 18.0, 9.0, "thunderstorm")
+
+    def event(event_id, tags, summary, venue, setting="indoor", weather_record=None, source="apify"):
+        return Event(
+            event_id=event_id, source_event_candidates=[event_id], source_type=source,
+            created_at=now, updated_at=now, venue=venue, start_time=now,
+            title=event_id, summary=summary, setting=setting, weather=weather_record,
+            tags=[Tag(text=t, weight=w) for t, w in tags],
+        )
+
+    karaoke_tags = [
+        ("karaoke", 1.0), ("singing", 0.8), ("live music", 0.6),
+        ("drinks", 0.3), ("thursday", 0.1),
+    ]
+    jazz_tags = [
+        ("live jazz", 1.0), ("jazz quartet", 0.9), ("live music", 0.7),
+        ("cocktails", 0.3), ("rooftop", 0.2),
+    ]
+
+    events = [
+        event("karaoke-night", karaoke_tags, "a karaoke night with a full bar", "Koto"),
+        # Same event, one surviving tag: a thin extraction, not a different night.
+        event("karaoke-thin", [("karaoke", 1.0)], "a karaoke night with a full bar", "Koto"),
+        event("punk-show", [
+            ("punk music", 1.0), ("live band", 0.9), ("loud", 0.5),
+            ("all ages", 0.3), ("friday", 0.1),
+        ], "a punk gig with three local bands", "The Basement"),
+        event("quiet-cafe", [
+            ("quiet cafe", 1.0), ("coffee", 0.8), ("reading", 0.5),
+            ("pastries", 0.3), ("morning", 0.1),
+        ], "a quiet cafe with good coffee and no music", "Bean There"),
+        event("nightclub", [
+            ("nightclub", 1.0), ("dancing", 0.9), ("dj set", 0.7),
+            ("late night", 0.4), ("saturday", 0.1),
+        ], "a late night club with a resident dj", "Pulse"),
+        event("sports-trivia", [
+            ("sports bar", 1.0), ("trivia night", 0.8), ("draft beer", 0.5),
+            ("wings", 0.3), ("tuesday", 0.1),
+        ], "a pub trivia night with sports on every screen", "O'Doul's"),
+        # Identical events, opposite nights: weather is the only difference.
+        event("rooftop-jazz-clear", jazz_tags, "a rooftop jazz set under the stars",
+              "Sky Bar", setting="outdoor", weather_record=CLEAR),
+        event("rooftop-jazz-storm", jazz_tags, "a rooftop jazz set under the stars",
+              "Roof Garden", setting="outdoor", weather_record=STORM),
+        event("no-venue-karaoke", karaoke_tags, "a karaoke night with a full bar", None),
+        event("blocked-bar", karaoke_tags, "a karaoke night with a full bar", "The Sports Bar"),
+    ]
+
+    EmbeddingStage(provider, logger).process(events)
+    SimilarityStage(preferences=prefs, config=config.scoring).process(events)
+
+    blocklist = ["The Sports Bar"]
+    engine = RankingEngine(config, blocklist=blocklist, logger=logger)
+    ranked = engine.rank(events, run_date)
+
+    by_id = {r.event_id: r for r in ranked}
+
+    # Only the blocklisted venue is dropped; everything else survives, negatives included.
+    assert "blocked-bar" not in by_id
+    assert set(by_id) == {e.event_id for e in events} - {"blocked-bar"}
+    assert "no-venue-karaoke" in by_id, "an event with no venue must not match a name entry"
+
+    # Ranks are contiguous over what remains, and the list is in rank order.
+    assert [r.rank for r in ranked] == list(range(1, len(ranked) + 1))
+    assert ranked == sorted(ranked, key=lambda r: (-r.final_score, r.event_id))
+
+    scores = {r.event_id: r.final_score for r in ranked}
+
+    # Stated preferences decide the ordering.
+    assert scores["karaoke-night"] > scores["nightclub"], scores
+    assert scores["punk-show"] > scores["sports-trivia"], scores
+    assert scores["nightclub"] < 0, "a nightclub hits two dislikes"
+
+    # Weather separates two otherwise identical outdoor events.
+    assert scores["rooftop-jazz-clear"] > scores["rooftop-jazz-storm"], scores
+    assert by_id["rooftop-jazz-clear"].weather_adjustment > 0
+    assert by_id["rooftop-jazz-storm"].weather_adjustment < 0
+
+    # A thin extraction is uncertain, not bad: it sinks toward the middle.
+    assert by_id["karaoke-thin"].tag_confidence < 1.0
+    assert by_id["karaoke-night"].tag_confidence == 1.0
+    assert scores["karaoke-thin"] < scores["karaoke-night"], scores
+
+    # Every score component is explained.
+    for recommendation in ranked:
+        factors = {reason.factor for reason in recommendation.reasons}
+        assert "match_classification" in factors
+        if recommendation.weather_adjustment != 0:
+            assert "weather_adjustment" in factors
+    assert "low_tag_confidence" in {r.factor for r in by_id["karaoke-thin"].reasons}
+
+    # Tiers come from the shipped thresholds, and never reorder the list.
+    tier_rank = {TOP_PICK: 0, WORTH_CONSIDERING: 1, EVERYTHING_ELSE: 2}
+    assert [tier_rank[r.tier] for r in ranked] == sorted(tier_rank[r.tier] for r in ranked)
+    for recommendation in ranked:
+        if recommendation.final_score >= config.scoring.top_picks_min:
+            assert recommendation.tier == TOP_PICK
+        elif recommendation.final_score >= config.scoring.worth_considering_min:
+            assert recommendation.tier == WORTH_CONSIDERING
+        else:
+            assert recommendation.tier == EVERYTHING_ELSE
+
+    # Re-ranking the same batch is identical, whatever order the events arrive in.
+    shuffled = list(events)
+    random.Random(7).shuffle(shuffled)
+    assert engine.rank(shuffled, run_date) == ranked
+
+    # The run survives a real round trip through SQLite.
+    save_recommendations(ranked, db_path)
+    assert load_recommendations(db_path, run_date=run_date) == ranked
+
+    # A re-run supersedes its earlier attempt rather than accumulating a second copy.
+    save_recommendations(engine.rank(shuffled, run_date), db_path)
+    assert load_recommendations(db_path) == ranked
