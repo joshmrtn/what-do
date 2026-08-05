@@ -1030,3 +1030,76 @@ of what was recommended when.
 
 Treating an empty list as a no-op rather than a clear is the conservative reading: an empty batch
 means "nothing to add", and interpreting it as "delete everything" would be both silent and total.
+
+---
+
+## The CLI folds the bottom tier; it never hides it
+
+**Decision:** the default view renders `TOP PICKS` and `WORTH CONSIDERING`, then a single line
+reporting how many events sit below them: `+ 14 more events ranked lower (--all)`. `--all` expands
+them under an `EVERYTHING ELSE` heading.
+
+**Rationale:** the Phase 10 spec's red test said "excluded events do not appear in default output",
+written before the tier was renamed. Nothing is excluded, and hiding a category outright would
+undo the rename's whole point. Folding keeps the default view short without making anything
+invisible: the count is always on screen, so a mis-tiered event announces itself as a number that
+looks wrong rather than by silently never appearing.
+
+**Consequence:** the thresholds are uncalibrated this early, and this is the mechanism for noticing
+that. `-v` complements it by printing `final_score`, `base_score`, `weather_adjustment` and
+`tag_confidence` per event, so a boundary that looks wrong can be judged on the number the cut was
+made on rather than on the tier label alone.
+
+---
+
+## Undated events get a labelled section, not a filter
+
+**Decision:** an event with no `start_time` appears in the default view under
+`UNDATED — timing unconfirmed`, below the timed sections. It is dropped only by `--time` and
+`--after-sunset`.
+
+**Rationale:** an event with no start time is not *known* to be today; it is known to be in
+today's *run*. That argues for labelling it honestly rather than hiding it — dropping it would
+lose a real event because extraction failed to find a date, which is a gap in what we know and not
+evidence about when it happens. The timing filters are different: each is a claim about when an
+event occurs, and we cannot assert it for an event with no time at all.
+
+**Consequence:** `on_date()` deliberately drops undated events, and `_cmd_recommend` adds them back
+before rendering. The filter stays a clean predicate; the view decides what to do with the gap.
+
+---
+
+## The CLI renders with the standard library, not `rich`
+
+**Decision:** plain strings and bare ANSI codes, suppressed when stdout is not a terminal.
+
+**Rationale:** the deciding cost is testing, not the dependency. `rich` wraps to terminal width, so
+`assert "Karaoke at The Dive" in output` can fail because a line broke mid-title, and every render
+test then has to pin console width or strip-and-rejoin. It earns that for dense columnar output;
+this view is a list — sections, one or two lines per event, indented reasons.
+
+**Consequence:** `render_recommendations` and `render_raw` are pure `-> str`, so adopting `rich`
+later touches one module and no tests outside it. Revisit if the output ever wants real columns.
+
+---
+
+## Database readiness is checked before reading, and injected with the loaders
+
+**Decision:** `has_schema(db_path)` (`src/storage/db.py`) reports whether a database exists *and*
+carries the `events` and `recommendations` tables. The CLI calls it before any read, and takes it
+as an injected parameter alongside its loaders.
+
+**Rationale:** `sqlite3.connect` creates a zero-byte file for any path it is handed, so checking
+`Path.exists()` proves nothing — a stray read leaves behind a file that then looks like a database
+and fails with `no such table` on the next run. This was not hypothetical: an early version of the
+CLI created exactly such a file in `database/` while a test was failing.
+
+Injecting the check matters for the same reason the loaders are injected. A test that substitutes
+the loaders but leaves the readiness check reading the real filesystem passes or fails on whether
+the developer's own `database/` happens to exist, which is the kind of coupling that makes a suite
+pass on one machine and fail on another.
+
+**Consequence:** a missing database at the *default* path exits 0 with "run the overnight batch" —
+it is the normal state before the first run. A missing database at an *explicitly named* `--db`
+path exits 1 on stderr, because that is a typo and reporting it as "no events" would hide the
+mistake.

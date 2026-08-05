@@ -218,6 +218,8 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Serving a cached forecast without checking its age | An event found a week out would score on the forecast issued that day, forever. `weather.cache_ttl_hours` must stay under 24 so a nightly batch refetches |
 | `tier` used as a filter in a query | Nothing is ever withheld by ranking. The tier below `worth_considering_min` is `everything_else` precisely so `WHERE tier != 'excluded'` cannot be written by accident |
 | Blocklist `@handle` entries at ranking time | An `Event` carries no handle — normalization drops it. Handles are enforced at ingestion; ranking matches venue names only. See #15 |
+| Checking a database exists with `Path.exists()` | `sqlite3.connect` creates a zero-byte file for any path, so a stray read leaves one that then fails with `no such table`. Use `has_schema()` |
+| Hiding the bottom tier in the CLI instead of folding it | The count must stay on screen (`+ N more (--all)`). Thresholds are uncalibrated; a folded event is recoverable, a hidden one is invisible |
 
 ---
 
@@ -269,7 +271,7 @@ OLLAMA_HOST=http://localhost:11434
 | 7 | Semantic matching engine | ✅ complete |
 | 8 | Weather comfort enrichment | ✅ complete |
 | 9 | Deterministic ranking engine | ✅ complete |
-| 10 | CLI interface | ⬜ not started |
+| 10 | CLI interface | ✅ complete |
 | 11 | Maintenance utilities | ⬜ not started |
 | 12 | Hardening & reliability | ⬜ not started |
 
