@@ -22,7 +22,7 @@ from src.models.event import Event
 from src.models.tag import tags_from_json, tags_to_json
 from src.utils.vectors import pack_vectors, unpack_vectors
 
-_COLUMNS = (
+EVENT_COLUMNS = (
     "id, source_event_candidates, source_type, url, image_url, title, venue, "
     "description, location, start_time, end_time, tags, summary, "
     "tag_embeddings, summary_embedding, weather, astronomical_data, metadata, "
@@ -63,7 +63,7 @@ def event_to_row(event: Event) -> tuple[Any, ...]:
 
 
 def row_to_event(row: tuple[Any, ...]) -> Event:
-    """Rebuild an Event from a row selected with _COLUMNS."""
+    """Rebuild an Event from a row selected with EVENT_COLUMNS."""
     tags = tags_from_json(row[11]) if row[11] else []
     packed = row[13]
 
@@ -112,11 +112,11 @@ def save_events(events: list[Event], db_path: Path | str) -> None:
     if not events:
         return
 
-    placeholders = ", ".join("?" * len(_COLUMNS.split(", ")))
+    placeholders = ", ".join("?" * len(EVENT_COLUMNS.split(", ")))
     conn = sqlite3.connect(db_path)
     try:
         conn.executemany(
-            f"INSERT OR REPLACE INTO events ({_COLUMNS}) VALUES ({placeholders})",
+            f"INSERT OR REPLACE INTO events ({EVENT_COLUMNS}) VALUES ({placeholders})",
             [event_to_row(e) for e in events],
         )
         conn.commit()
@@ -137,7 +137,7 @@ def load_events(db_path: Path | str) -> list[Event]:
     """
     conn = sqlite3.connect(db_path)
     try:
-        rows = conn.execute(f"SELECT {_COLUMNS} FROM events").fetchall()
+        rows = conn.execute(f"SELECT {EVENT_COLUMNS} FROM events").fetchall()
     finally:
         conn.close()
 

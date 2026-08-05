@@ -12,12 +12,19 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from src.models.event import Event
 from src.models.recommendation import Recommendation, reasons_from_json, reasons_to_json
+from src.storage.events import EVENT_COLUMNS, row_to_event
 
 _COLUMNS = (
     "id, event_id, run_date, base_score, weather_adjustment, tag_confidence, "
     "final_score, tier, match, rank, reasons"
 )
+
+
+def _qualify(columns: str, alias: str) -> str:
+    """Prefix a column list with a table alias, for use in a join."""
+    return ", ".join(f"{alias}.{name}" for name in columns.split(", "))
 
 
 def recommendation_to_row(recommendation: Recommendation) -> tuple[Any, ...]:
@@ -116,3 +123,58 @@ def load_recommendations(
         conn.close()
 
     return [row_to_recommendation(row) for row in rows]
+
+
+def latest_run_date(db_path: Path | str) -> date | None:
+    """Return the most recent run date held in the recommendations table.
+
+    Previous runs are kept deliberately, so a reader that wants "the current
+    ordering" has to ask which run that is rather than reading the whole table.
+
+    Returns:
+        The latest run date, or None if no batch has ranked anything yet.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT MAX(run_date) FROM recommendations").fetchone()
+    finally:
+        conn.close()
+
+    return date.fromisoformat(row[0]) if row and row[0] else None
+
+
+def load_ranked(
+    db_path: Path | str, run_date: date | None = None
+) -> list[tuple[Recommendation, Event]]:
+    """Load one run's recommendations alongside the events they rank.
+
+    The join is inner, so a recommendation whose event has been purged is
+    skipped rather than surfacing as a half-empty row — one missing event must
+    not take down the whole view.
+
+    Args:
+        db_path: Path to the SQLite database.
+        run_date: Which batch to read. Defaults to the latest one.
+
+    Returns:
+        (recommendation, event) pairs in the rank order the batch assigned.
+        Empty if nothing has been ranked yet.
+    """
+    target = run_date if run_date is not None else latest_run_date(db_path)
+    if target is None:
+        return []
+
+    split = len(_COLUMNS.split(", "))
+    query = (
+        f"SELECT {_qualify(_COLUMNS, 'r')}, {_qualify(EVENT_COLUMNS, 'e')} "
+        "FROM recommendations r JOIN events e ON e.id = r.event_id "
+        "WHERE r.run_date = ? ORDER BY r.rank"
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(query, (target.isoformat(),)).fetchall()
+    finally:
+        conn.close()
+
+    return [(row_to_recommendation(row[:split]), row_to_event(row[split:])) for row in rows]

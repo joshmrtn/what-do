@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from src.storage.db import init_db
+from src.storage.db import has_schema, init_db
 
 
 def test_all_tables_exist(tmp_path):
@@ -96,3 +96,22 @@ def test_events_table_has_image_bytes_blob(tmp_path):
 
     assert "image_bytes" in columns
     assert columns["image_bytes"] == "BLOB"
+
+
+def test_has_schema_is_false_when_the_file_does_not_exist(tmp_path):
+    assert has_schema(tmp_path / "never_created.db") is False
+
+
+def test_has_schema_is_false_for_an_empty_file(tmp_path):
+    """sqlite3.connect creates a zero-byte file, so existence proves nothing."""
+    path = tmp_path / "touched.db"
+    sqlite3.connect(path).close()
+
+    assert has_schema(path) is False
+
+
+def test_has_schema_is_true_after_init(tmp_path):
+    path = tmp_path / "real.db"
+    init_db(path)
+
+    assert has_schema(path) is True

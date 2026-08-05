@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-_DEFAULT_DB_PATH = Path("database/event_hub.db")
+DEFAULT_DB_PATH = Path("database/event_hub.db")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS venues (
@@ -148,7 +148,7 @@ def init_db(db_path: Path | str | None = None) -> None:
     Args:
         db_path: Path to the SQLite file. Defaults to database/event_hub.db.
     """
-    path = Path(db_path) if db_path is not None else _DEFAULT_DB_PATH
+    path = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(path)
@@ -157,3 +157,35 @@ def init_db(db_path: Path | str | None = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def has_schema(db_path: Path | str) -> bool:
+    """Report whether a database exists and has been initialised.
+
+    Existence alone proves nothing: `sqlite3.connect` creates a zero-byte file
+    for any path it is handed, so a reader that only checked for the file would
+    still hit "no such table" on one that a stray connection had created.
+
+    Args:
+        db_path: Path to the SQLite file.
+
+    Returns:
+        True if the file exists and carries the events and recommendations
+        tables, meaning a batch has initialised it.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return False
+
+    conn = sqlite3.connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('events', 'recommendations')"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        conn.close()
+
+    return len(rows) == 2

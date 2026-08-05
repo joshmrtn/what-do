@@ -1,14 +1,21 @@
 """Unit tests for recommendation persistence."""
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
+from src.models.event import Event
 from src.models.recommendation import Recommendation, make_recommendation_id
 from src.scoring.similarity import Reason
 from src.storage.db import init_db
-from src.storage.recommendations import load_recommendations, save_recommendations
+from src.storage.events import save_events
+from src.storage.recommendations import (
+    latest_run_date,
+    load_ranked,
+    load_recommendations,
+    save_recommendations,
+)
 
 RUN_DATE = date(2025, 6, 21)
 NEXT_DAY = date(2025, 6, 22)
@@ -134,3 +141,85 @@ def test_saving_nothing_does_not_clear_an_existing_run(db_path):
 def test_run_date_round_trips_as_a_date(db_path):
     save_recommendations([_make()], db_path)
     assert load_recommendations(db_path)[0].run_date == RUN_DATE
+
+
+def _event(event_id: str = "evt-1", title: str = "Karaoke Night", **overrides) -> Event:
+    fields = {
+        "event_id": event_id,
+        "source_event_candidates": [f"cand-{event_id}"],
+        "source_type": "instagram",
+        "created_at": datetime(2025, 6, 21, 9, 0),
+        "updated_at": datetime(2025, 6, 21, 9, 0),
+        "title": title,
+    }
+    fields.update(overrides)
+    return Event(**fields)
+
+
+def test_latest_run_date_returns_the_most_recent_run(db_path):
+    save_recommendations([_make(event_id="evt-1", run_date=RUN_DATE)], db_path)
+    save_recommendations([_make(event_id="evt-2", run_date=NEXT_DAY)], db_path)
+
+    assert latest_run_date(db_path) == NEXT_DAY
+
+
+def test_latest_run_date_is_none_when_nothing_has_been_ranked(db_path):
+    """A CLI run before the first batch is an empty result, not a crash."""
+    assert latest_run_date(db_path) is None
+
+
+def test_load_ranked_pairs_each_recommendation_with_its_event(db_path):
+    save_events([_event("evt-1", title="Karaoke Night")], db_path)
+    save_recommendations([_make(event_id="evt-1")], db_path)
+
+    pairs = load_ranked(db_path)
+
+    assert len(pairs) == 1
+    recommendation, event = pairs[0]
+    assert recommendation.event_id == "evt-1"
+    assert event.title == "Karaoke Night"
+
+
+def test_load_ranked_preserves_the_batch_rank_order(db_path):
+    save_events([_event("evt-a"), _event("evt-b"), _event("evt-c")], db_path)
+    save_recommendations(
+        [
+            _make(event_id="evt-c", rank=3),
+            _make(event_id="evt-a", rank=1),
+            _make(event_id="evt-b", rank=2),
+        ],
+        db_path,
+    )
+
+    assert [e.event_id for _, e in load_ranked(db_path)] == ["evt-a", "evt-b", "evt-c"]
+
+
+def test_load_ranked_defaults_to_the_latest_run(db_path):
+    """Older runs are kept deliberately; the CLI must not render them together."""
+    save_events([_event("evt-old"), _event("evt-new")], db_path)
+    save_recommendations([_make(event_id="evt-old", run_date=RUN_DATE)], db_path)
+    save_recommendations([_make(event_id="evt-new", run_date=NEXT_DAY)], db_path)
+
+    assert [r.event_id for r, _ in load_ranked(db_path)] == ["evt-new"]
+
+
+def test_load_ranked_can_be_pinned_to_an_earlier_run(db_path):
+    save_events([_event("evt-old"), _event("evt-new")], db_path)
+    save_recommendations([_make(event_id="evt-old", run_date=RUN_DATE)], db_path)
+    save_recommendations([_make(event_id="evt-new", run_date=NEXT_DAY)], db_path)
+
+    assert [r.event_id for r, _ in load_ranked(db_path, run_date=RUN_DATE)] == ["evt-old"]
+
+
+def test_load_ranked_skips_a_recommendation_whose_event_is_gone(db_path):
+    """A purged event must not take down the whole view."""
+    save_events([_event("evt-1")], db_path)
+    save_recommendations(
+        [_make(event_id="evt-1", rank=1), _make(event_id="evt-missing", rank=2)], db_path
+    )
+
+    assert [r.event_id for r, _ in load_ranked(db_path)] == ["evt-1"]
+
+
+def test_load_ranked_is_empty_when_nothing_has_been_ranked(db_path):
+    assert load_ranked(db_path) == []
