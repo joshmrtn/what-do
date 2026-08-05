@@ -48,8 +48,9 @@ def test_recommendations_table_columns(tmp_path):
     columns = {row[1]: row[2] for row in cursor.fetchall()}
     conn.close()
 
-    assert "score" in columns
-    assert columns["score"] == "REAL"
+    for score_column in ("base_score", "weather_adjustment", "tag_confidence", "final_score"):
+        assert columns.get(score_column) == "REAL"
+    assert columns.get("rank") == "INTEGER"
     assert "reasons" in columns
     assert "tier" in columns
     assert "match" in columns

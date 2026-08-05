@@ -80,9 +80,13 @@ CREATE TABLE IF NOT EXISTS recommendations (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL,
     run_date TEXT NOT NULL,
-    score REAL NOT NULL,
+    base_score REAL NOT NULL,
+    weather_adjustment REAL NOT NULL,
+    tag_confidence REAL NOT NULL,
+    final_score REAL NOT NULL,
     tier TEXT NOT NULL,
     match TEXT NOT NULL,
+    rank INTEGER NOT NULL,
     reasons TEXT NOT NULL,
     FOREIGN KEY (event_id) REFERENCES events(id)
 );
