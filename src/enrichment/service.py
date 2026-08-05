@@ -3,7 +3,7 @@
 import json
 import sqlite3
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -181,8 +181,12 @@ class EnrichmentService:
         }
 
     def _fetch_weather(self, event_date: date, lat: float, lng: float) -> dict | None:
-        """Return weather for (date, lat, lng), using DB cache; on miss, fetch and cache."""
-        # Check DB cache first
+        """Return weather for (date, lat, lng), using DB cache; on miss, fetch and cache.
+
+        A cached day is only served while it is still fresh. An event discovered
+        days ahead would otherwise be scored forever against the forecast issued
+        on the day it was found, including on the night it actually happens.
+        """
         cached = self._db_weather_get(event_date, lat, lng)
         if cached is not None:
             return cached
@@ -203,12 +207,35 @@ class EnrichmentService:
         return weather
 
     def _db_weather_get(self, event_date: date, lat: float, lng: float) -> dict | None:
+        """Return the cached day, or None if absent or past its TTL."""
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
-                "SELECT data FROM weather_cache WHERE date=? AND latitude=? AND longitude=?",
+                """SELECT data, fetched_at FROM weather_cache
+                   WHERE date=? AND latitude=? AND longitude=?""",
                 (event_date.isoformat(), lat, lng),
             ).fetchone()
-        return json.loads(row[0]) if row else None
+        if row is None or not self._is_fresh(row[1]):
+            return None
+        cached: dict[str, Any] = json.loads(row[0])
+        return cached
+
+    def _is_fresh(self, fetched_at: str) -> bool:
+        """Whether a cache entry stamped `fetched_at` may still be served."""
+        try:
+            stamped = datetime.fromisoformat(fetched_at)
+        except ValueError:
+            # An unparseable stamp is treated as expired: refetching costs one
+            # request, while trusting it could serve a forecast of any age.
+            return False
+
+        now = self._get_now()
+        # The stamp is written by this same clock, so a mismatch means the clock
+        # itself changed shape. Compare on common ground rather than raising.
+        if (stamped.tzinfo is None) != (now.tzinfo is None):
+            stamped = stamped.replace(tzinfo=now.tzinfo)
+
+        age_hours = (now - stamped).total_seconds() / 3600
+        return age_hours <= self._config.weather.cache_ttl_hours
 
     def _db_weather_put(self, event_date: date, lat: float, lng: float, weather: dict) -> None:
         with sqlite3.connect(self._db_path) as conn:
@@ -222,6 +249,6 @@ class EnrichmentService:
                     lat,
                     lng,
                     json.dumps(weather),
-                    datetime.now(timezone.utc).isoformat(),
+                    self._get_now().isoformat(),
                 ),
             )

@@ -552,6 +552,21 @@ def test_default_hour_outside_the_day_rejected(tmp_path, bad_hour):
         _weather_config(tmp_path, default_hour=bad_hour)
 
 
+def test_cache_ttl_hours_loads(tmp_path):
+    assert _weather_config(tmp_path, cache_ttl_hours=6).cache_ttl_hours == 6.0
+
+
+def test_cache_ttl_hours_defaults_below_a_day(tmp_path):
+    """A nightly batch must refetch, or it scores on yesterday's forecast."""
+    assert 0 < _load(tmp_path, {}).weather.cache_ttl_hours < 24
+
+
+@pytest.mark.parametrize("bad_ttl", [0, -1])
+def test_non_positive_cache_ttl_rejected(tmp_path, bad_ttl):
+    with pytest.raises(ConfigError, match="cache_ttl_hours"):
+        _weather_config(tmp_path, cache_ttl_hours=bad_ttl)
+
+
 def test_synthetic_rule_setting_loads(tmp_path):
     cfg = _load(tmp_path, {
         "synthetic_activities": [

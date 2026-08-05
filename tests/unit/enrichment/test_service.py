@@ -115,6 +115,7 @@ def _make_service(
     movie: MovieMetadataProvider | None = None,
     rules: list[SyntheticActivityRule] | None = None,
     logger: StructuredLogger | None = None,
+    now: datetime = NOW,
 ) -> EnrichmentService:
     return EnrichmentService(
         weather_provider=weather or _weather_provider(),
@@ -124,7 +125,7 @@ def _make_service(
         synthetic_rules=rules or [],
         config=cfg,
         db_path=db_path,
-        get_now=lambda: NOW,
+        get_now=lambda: now,
         logger=logger,
     )
 
@@ -269,6 +270,85 @@ def test_weather_cached_in_db_between_calls(db_path, cfg):
 
     svc.enrich([_make_event()], RUN_DATE)
     assert wp.fetch.call_count == first_call_count  # no additional fetch
+
+
+# ---------------------------------------------------------------------------
+# Weather cache expiry: a forecast is only reused while it is still fresh
+# ---------------------------------------------------------------------------
+
+
+def _cache_rows(db_path: Path) -> list[tuple]:
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute("SELECT date, fetched_at FROM weather_cache").fetchall()
+
+
+def test_cached_weather_within_ttl_is_reused(db_path, cfg):
+    wp = _weather_provider(CLEAR_DAY)
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    later = NOW + timedelta(hours=cfg.weather.cache_ttl_hours) - timedelta(minutes=1)
+    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
+
+    assert wp.fetch.call_count == 1
+
+
+def test_cached_weather_beyond_ttl_is_refetched(db_path, cfg):
+    """A forecast issued days ago must never decide tonight's score."""
+    wp = _weather_provider(CLEAR_DAY)
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    later = NOW + timedelta(hours=cfg.weather.cache_ttl_hours, minutes=1)
+    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
+
+    assert wp.fetch.call_count == 2
+
+
+def test_refetched_weather_replaces_the_stale_row(db_path, cfg):
+    wp = _weather_provider(CLEAR_DAY)
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    later = NOW + timedelta(days=5)
+    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
+
+    rows = _cache_rows(db_path)
+    assert len(rows) == 1
+    assert datetime.fromisoformat(rows[0][1]) == later
+
+
+def test_freshly_fetched_weather_is_stamped_from_injected_clock(db_path, cfg):
+    """fetched_at drives expiry, so it cannot come from the wall clock."""
+    _make_service(db_path, cfg, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    assert datetime.fromisoformat(_cache_rows(db_path)[0][1]) == NOW
+
+
+def test_stale_cache_serves_the_new_forecast_not_the_old_one(db_path, cfg):
+    stale_day = {"date": "2025-06-21", "hours": [_hour_record(h) for h in range(24)]}
+    fresh_day = {
+        "date": "2025-06-21",
+        "hours": [_hour_record(h, condition="thunderstorm") for h in range(24)],
+    }
+    wp = _weather_provider(stale_day)
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    wp.fetch.return_value = fresh_day
+    later = NOW + timedelta(days=5)
+    event = _make_service(db_path, cfg, weather=wp, now=later).enrich(
+        [_make_event()], RUN_DATE
+    )[0]
+
+    assert event.weather["forecast"]["hour"]["condition"] == "thunderstorm"
+
+
+def test_ttl_is_read_from_config(db_path, cfg):
+    cfg.weather.cache_ttl_hours = 48
+    wp = _weather_provider(CLEAR_DAY)
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    later = NOW + timedelta(hours=24)
+    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
+
+    assert wp.fetch.call_count == 1
 
 
 # ---------------------------------------------------------------------------

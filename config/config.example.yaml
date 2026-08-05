@@ -75,6 +75,11 @@ weather:
   # daily extreme.
   default_hour: 20
 
+  # How long a cached forecast may be reused before it is refetched. Keep this
+  # under 24 hours: an event discovered a week out would otherwise be scored on
+  # the forecast issued the day it was found, including on the night it happens.
+  cache_ttl_hours: 12
+
   # How far weather can move a score. Bad weather vetoes harder than good
   # weather promotes: a thunderstorm is close to disqualifying, while a perfect
   # night is a nudge that should not overturn a strong preference match.

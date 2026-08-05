@@ -92,6 +92,10 @@ class WeatherConfig:
     max_positive_adjustment: float = 0.15
     max_negative_adjustment: float = 0.25
     air_quality_enabled: bool = True
+    #: How long a cached forecast may be served. Under 24h so a nightly batch
+    #: always rescores against a forecast issued that night, never one issued
+    #: days earlier when the event was first discovered.
+    cache_ttl_hours: float = 12.0
     #: Reading name -> curve. Names must match keys in the weather dict.
     comfort: dict[str, ComfortCurve] = field(default_factory=dict)
     #: Condition -> comfort ceiling. Only negative values cap.
@@ -232,6 +236,13 @@ def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
         raise ConfigError(f"Invalid default_hour {default_hour}: must be between 0 and 23")
 
     defaults = WeatherConfig()
+
+    cache_ttl_hours = float(raw.get("cache_ttl_hours", defaults.cache_ttl_hours))
+    if cache_ttl_hours <= 0:
+        raise ConfigError(
+            f"Invalid cache_ttl_hours {cache_ttl_hours}: must be positive"
+        )
+
     return WeatherConfig(
         provider=raw.get("provider", defaults.provider),
         default_hour=default_hour,
@@ -244,6 +255,7 @@ def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
         air_quality_enabled=bool(
             (raw.get("air_quality") or {}).get("enabled", defaults.air_quality_enabled)
         ),
+        cache_ttl_hours=cache_ttl_hours,
         comfort=comfort,
         condition_penalty={
             str(k): float(v) for k, v in (raw.get("condition_penalty") or {}).items()
