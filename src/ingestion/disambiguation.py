@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from src.config import DEFAULT_DISAMBIGUATION_MODEL
 from src.utils.chat_client import ChatClient
 
 
@@ -68,7 +69,7 @@ class OllamaDisambiguationProvider(DisambiguationProvider):
         model: Model name to use for classification.
     """
 
-    def __init__(self, client: ChatClient, model: str = "gemma4:e2b") -> None:
+    def __init__(self, client: ChatClient, model: str = DEFAULT_DISAMBIGUATION_MODEL) -> None:
         self._client = client
         self._model = model
 

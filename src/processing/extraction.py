@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from src.config import SETTINGS
+from src.config import DEFAULT_EXTRACTION_MODEL, SETTINGS
 from src.models.tag import DEFAULT_WEIGHT, Tag, clamp_weight
 from src.utils.chat_client import ChatClient
 from src.utils.text import normalize_embedding_text
@@ -143,7 +143,12 @@ class OllamaExtractionProvider(ExtractionProvider):
         min_tags: Minimum number of tags required in the output.
     """
 
-    def __init__(self, client: ChatClient, model: str = "gemma4:e4b", min_tags: int = 5) -> None:
+    def __init__(
+        self,
+        client: ChatClient,
+        model: str = DEFAULT_EXTRACTION_MODEL,
+        min_tags: int = 5,
+    ) -> None:
         self._client = client
         self._model = model
         self._min_tags = min_tags

@@ -188,6 +188,22 @@ class SyntheticActivityRule:
     setting: str = "unknown"
 
 
+#: Default model names. Providers import these for their constructor fallbacks, so
+#: a default cannot drift between `config.yaml` and the call site.
+DEFAULT_EXTRACTION_MODEL = "gemma4:e4b"
+DEFAULT_DISAMBIGUATION_MODEL = "gemma4:e2b"
+DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
+
+
+@dataclass
+class ModelsConfig:
+    """Model names for the three model-backed stages."""
+
+    llm_extraction: str = DEFAULT_EXTRACTION_MODEL
+    llm_disambiguation: str = DEFAULT_DISAMBIGUATION_MODEL
+    embeddings: str = DEFAULT_EMBEDDING_MODEL
+
+
 @dataclass
 class AppConfig:
     location: LocationConfig
@@ -197,6 +213,7 @@ class AppConfig:
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
+    models: ModelsConfig = field(default_factory=ModelsConfig)
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
     gemini_api_key: str | None = None
@@ -335,6 +352,25 @@ def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
     return SourcesConfig(
         ics_calendars=_load_feeds(raw.get("ics_calendars"), "ICS calendar"),
         html_calendars=_load_feeds(raw.get("html_calendars"), "HTML calendar"),
+    )
+
+
+def _load_models(raw: dict[str, Any]) -> ModelsConfig:
+    """Build the model names, rejecting a blank name rather than calling with none."""
+    defaults = ModelsConfig()
+
+    def _name(key: str, default: str) -> str:
+        if key not in raw:
+            return default
+        value = str(raw[key]).strip()
+        if not value:
+            raise ConfigError(f"Model name '{key}' is blank")
+        return value
+
+    return ModelsConfig(
+        llm_extraction=_name("llm_extraction", defaults.llm_extraction),
+        llm_disambiguation=_name("llm_disambiguation", defaults.llm_disambiguation),
+        embeddings=_name("embeddings", defaults.embeddings),
     )
 
 
@@ -504,6 +540,7 @@ def load_config(
         weather=weather,
         scoring=scoring,
         sources=_load_sources(data.get("sources") or {}),
+        models=_load_models(data.get("models") or {}),
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
         gemini_api_key=os.environ.get("GEMINI_API_KEY"),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from src.config import DEFAULT_EMBEDDING_MODEL
 from src.utils.chat_client import LLMError
 
 
@@ -47,7 +48,7 @@ class OllamaEmbeddingProvider:
     """
 
     def __init__(
-        self, client: EmbeddingClient, model: str = "nomic-embed-text"
+        self, client: EmbeddingClient, model: str = DEFAULT_EMBEDDING_MODEL
     ) -> None:
         self._client = client
         self._model = model

@@ -705,3 +705,52 @@ def test_html_calendar_loads_alongside_ics(tmp_path):
 def test_html_calendar_missing_url_rejected(tmp_path):
     with pytest.raises(ConfigError, match="HTML calendar"):
         _load(tmp_path, {"sources": {"html_calendars": [{"name": "broken"}]}})
+
+
+def test_models_block_loads(tmp_path):
+    cfg = _load(
+        tmp_path,
+        {
+            "models": {
+                "llm_extraction": "custom-extract",
+                "llm_disambiguation": "custom-disambig",
+                "embeddings": "custom-embed",
+            }
+        },
+    )
+    assert cfg.models.llm_extraction == "custom-extract"
+    assert cfg.models.llm_disambiguation == "custom-disambig"
+    assert cfg.models.embeddings == "custom-embed"
+
+
+def test_models_absent_yields_defaults(tmp_path):
+    cfg = _load(tmp_path, {})
+    assert cfg.models.llm_extraction == "gemma4:e4b"
+    assert cfg.models.llm_disambiguation == "gemma4:e2b"
+    assert cfg.models.embeddings == "nomic-embed-text"
+
+
+def test_partial_models_block_keeps_other_defaults(tmp_path):
+    cfg = _load(tmp_path, {"models": {"llm_extraction": "custom-extract"}})
+    assert cfg.models.llm_extraction == "custom-extract"
+    assert cfg.models.llm_disambiguation == "gemma4:e2b"
+    assert cfg.models.embeddings == "nomic-embed-text"
+
+
+@pytest.mark.parametrize(
+    "key", ["llm_extraction", "llm_disambiguation", "embeddings"]
+)
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_model_name_rejected(tmp_path, key, blank):
+    """An empty name would reach Ollama as a request for no model at all."""
+    with pytest.raises(ConfigError, match=key):
+        _load(tmp_path, {"models": {key: blank}})
+
+
+def test_provider_defaults_come_from_the_config_defaults(tmp_path):
+    """One source of truth: a provider's fallback cannot drift from config."""
+    from src.processing.extraction import OllamaExtractionProvider
+
+    cfg = _load(tmp_path, {})
+    provider = OllamaExtractionProvider(client=object())
+    assert provider._model == cfg.models.llm_extraction
