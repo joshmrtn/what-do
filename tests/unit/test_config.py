@@ -754,3 +754,19 @@ def test_provider_defaults_come_from_the_config_defaults(tmp_path):
     cfg = _load(tmp_path, {})
     provider = OllamaExtractionProvider(client=object())
     assert provider._model == cfg.models.llm_extraction
+
+
+def test_horizon_days_loads(tmp_path):
+    cfg = _load(tmp_path, {"scraping": {"horizon_days": 45}})
+    assert cfg.scraping.horizon_days == 45
+
+
+def test_horizon_days_defaults(tmp_path):
+    """Defaults to the reach of the calendar feeds the lookahead exists for."""
+    assert _load(tmp_path, {}).scraping.horizon_days == 30
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_non_positive_horizon_rejected(tmp_path, bad):
+    with pytest.raises(ConfigError, match="horizon_days"):
+        _load(tmp_path, {"scraping": {"horizon_days": bad}})

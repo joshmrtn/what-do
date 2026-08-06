@@ -588,3 +588,78 @@ def test_social_source_failure_pipeline_continues(db, seeds_yaml):
     conn.close()
 
     assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Fetch without persisting
+# ---------------------------------------------------------------------------
+
+
+def _svc_with(db, seeds_yaml, candidates):
+    return IngestionService(
+        config=_make_config(),
+        db_path=db,
+        seeds_path=seeds_yaml,
+        social_sources=[_mock_social_source(candidates)],
+        movie_sources=[],
+        logger=_make_logger(),
+    )
+
+
+def test_run_returns_the_candidates_it_accepted(db, seeds_yaml):
+    candidate = _make_candidate(title="Jazz Night")
+    result = _svc_with(db, seeds_yaml, [candidate]).run(get_now=lambda: FIXED_NOW)
+
+    assert [c.title for c in result.candidates] == ["Jazz Night"]
+
+
+def test_returned_candidates_exclude_discarded_ones(db, seeds_yaml):
+    good = _make_candidate(title="Jazz Night")
+    old = _make_candidate(title="Ancient", days_ago=400)
+    result = _svc_with(db, seeds_yaml, [good, old]).run(get_now=lambda: FIXED_NOW)
+
+    assert [c.title for c in result.candidates] == ["Jazz Night"]
+    assert result.accepted == 1
+    assert result.discarded == 1
+
+
+def test_persist_false_writes_no_candidates(db, seeds_yaml):
+    """--dry-run must leave the database exactly as it found it."""
+    _svc_with(db, seeds_yaml, [_make_candidate()]).run(
+        get_now=lambda: FIXED_NOW, persist=False
+    )
+
+    conn = sqlite3.connect(db)
+    rows = _get_persisted_candidates(conn)
+    conn.close()
+    assert rows == []
+
+
+def test_persist_false_writes_no_handles(db, seeds_yaml):
+    """Handle discovery writes too, and a dry run must not seed future runs."""
+    candidate = _make_candidate(description="Great set by @newvenue last night")
+    _svc_with(db, seeds_yaml, [candidate]).run(get_now=lambda: FIXED_NOW, persist=False)
+
+    conn = sqlite3.connect(db)
+    entities = _get_candidate_entities(conn)
+    conn.close()
+    assert entities == {}
+
+
+def test_persist_false_still_returns_what_it_fetched(db, seeds_yaml):
+    """The point of a dry run is proving the providers work."""
+    result = _svc_with(db, seeds_yaml, [_make_candidate(title="Jazz Night")]).run(
+        get_now=lambda: FIXED_NOW, persist=False
+    )
+
+    assert [c.title for c in result.candidates] == ["Jazz Night"]
+    assert result.accepted == 1
+
+
+def test_persisting_run_still_writes(db, seeds_yaml):
+    _svc_with(db, seeds_yaml, [_make_candidate()]).run(get_now=lambda: FIXED_NOW)
+
+    conn = sqlite3.connect(db)
+    rows = _get_persisted_candidates(conn)
+    conn.close()
+    assert len(rows) == 1

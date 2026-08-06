@@ -26,6 +26,9 @@ class LocationConfig:
 @dataclass
 class ScrapingConfig:
     lookback_days: int = 30
+    #: How far ahead of the run date an event may start and still be ranked.
+    #: The forward half of the window whose backward half is `lookback_days`.
+    horizon_days: int = 30
     max_discovery_depth: int = 2
     candidate_promotion_threshold: int = 3
 
@@ -435,8 +438,13 @@ def load_config(
     )
 
     scraping_data = data.get("scraping", {})
+    horizon_days = int(scraping_data.get("horizon_days", 30))
+    if horizon_days <= 0:
+        raise ConfigError(f"Invalid horizon_days: {horizon_days} — must be positive")
+
     scraping = ScrapingConfig(
         lookback_days=int(scraping_data.get("lookback_days", 30)),
+        horizon_days=horizon_days,
         max_discovery_depth=int(scraping_data.get("max_discovery_depth", 2)),
         candidate_promotion_threshold=int(
             scraping_data.get("candidate_promotion_threshold", 3)

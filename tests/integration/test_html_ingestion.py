@@ -190,17 +190,13 @@ def test_candidates_normalise_and_persist(db, candidates):
         venue_discovery=VenueDiscoveryConfig(),
     )
     service = NormalizationService(
-        config=config, db_path=db, logger=get_logger("test", stream=io.StringIO())
+        config=config, logger=get_logger("test", stream=io.StringIO())
     )
 
     result = service.run(candidates, get_now=lambda: FIXED_NOW)
 
-    assert result.persisted > 0
+    assert result.normalized > 0
 
-    conn = sqlite3.connect(db)
-    count = conn.execute(
-        "SELECT COUNT(*) FROM events WHERE source_type = ?", ("northshorenightout",)
-    ).fetchone()[0]
-    conn.close()
+    events = [e for e in result.events if e.source_type == "northshorenightout"]
 
-    assert count == result.persisted
+    assert len(events) == result.normalized

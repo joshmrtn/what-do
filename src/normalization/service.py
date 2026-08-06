@@ -1,10 +1,9 @@
-"""NormalizationService — orchestrates normalization, dedup, and persistence."""
+"""NormalizationService — orchestrates normalization and dedup pass 1."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Callable
 
 from src.config import AppConfig
@@ -12,7 +11,6 @@ from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.normalization.deduplicator import DeduplicationEngine
 from src.normalization.normalizer import NormalizationEngine
-from src.storage.events import save_events
 from src.utils.logging import StructuredLogger
 
 
@@ -20,31 +18,33 @@ from src.utils.logging import StructuredLogger
 class NormalizationResult:
     """Result returned by NormalizationService.run()."""
 
-    persisted: int
+    normalized: int
     discarded: int
+    events: list[Event]
 
 
 class NormalizationService:
-    """Orchestrate normalization → dedup → persistence for a batch of candidates.
+    """Orchestrate normalization → dedup pass 1 for a batch of candidates.
 
     Follows the same pattern as IngestionService: constructed with config and
     dependencies, driven via run().
+
+    It does not persist. The events it returns still carry the normalizer's
+    throwaway uuids, and the batch orchestrator reconciles those against stored
+    identity before anything is written.
     """
 
     def __init__(
         self,
         config: AppConfig,
-        db_path: Path,
         logger: StructuredLogger,
     ) -> None:
         """
         Args:
             config: Application config (timezone, dedup thresholds).
-            db_path: Path to SQLite database.
             logger: Structured logger for discard events.
         """
         self._config = config
-        self._db_path = Path(db_path)
         self._logger = logger
         self._normalizer = NormalizationEngine(
             timezone_name=config.location.timezone
@@ -63,7 +63,7 @@ class NormalizationService:
             get_now: Injectable clock for event timestamps.
 
         Returns:
-            NormalizationResult with persisted and discard counts.
+            NormalizationResult with the deduplicated events and their counts.
         """
         norm_result = self._normalizer.normalize(candidates, get_now=get_now)
 
@@ -79,10 +79,8 @@ class NormalizationService:
             norm_result.events, self._config.deduplication
         )
 
-        if events:
-            save_events(events, self._db_path)
-
         return NormalizationResult(
-            persisted=len(events),
+            normalized=len(events),
             discarded=len(norm_result.discards),
+            events=events,
         )

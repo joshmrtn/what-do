@@ -211,7 +211,7 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
     )
     result = svc.run(get_now=lambda: now)
 
-    assert result.persisted == 3, f"expected 3 persisted, got {result.persisted}"
+    assert result.accepted == 3, f"expected 3 accepted, got {result.accepted}"
     assert result.discarded == 1, f"expected 1 discarded, got {result.discarded}"
 
     # Failover: primary fails, secondary succeeds
@@ -232,7 +232,7 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
     )
     result2 = svc2.run(get_now=lambda: now)
 
-    assert result2.persisted == 1
+    assert result2.accepted == 1
     failing.fetch.assert_called_once()
     fallback.fetch.assert_called_once()
 
@@ -291,27 +291,23 @@ def test_normalization_smoke(tmp_path: Path) -> None:
     log_stream = io.StringIO()
     svc = NormalizationService(
         config=cfg,
-        db_path=db_path,
         logger=get_logger("smoke4", stream=log_stream),
     )
     result = svc.run([dup_a, dup_b, unique, malformed], get_now=lambda: now)
 
-    assert result.persisted == 2, f"expected 2 persisted, got {result.persisted}"
+    assert result.normalized == 2, f"expected 2 normalized, got {result.normalized}"
     assert result.discarded == 1, f"expected 1 discarded, got {result.discarded}"
 
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute("SELECT title, source_event_candidates FROM events ORDER BY title").fetchall()
-    conn.close()
+    events = sorted(result.events, key=lambda e: e.title or "")
 
-    assert len(rows) == 2
-    titles = {r[0] for r in rows}
+    assert len(events) == 2
+    titles = {e.title for e in events}
     assert "Jazz Night" in titles
     assert "Trivia Tuesday" in titles
 
-    jazz_row = next(r for r in rows if r[0] == "Jazz Night")
-    attribution = json.loads(jazz_row[1])
-    assert set(attribution) == {"dup-a", "dup-b"}, (
-        f"merged event should attribute both sources, got {attribution}"
+    jazz = next(e for e in events if e.title == "Jazz Night")
+    assert set(jazz.source_event_candidates) == {"dup-a", "dup-b"}, (
+        f"merged event should attribute both sources, got {jazz.source_event_candidates}"
     )
 
     log_stream.seek(0)

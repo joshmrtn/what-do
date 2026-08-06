@@ -124,6 +124,25 @@ def save_events(events: list[Event], db_path: Path | str) -> None:
         conn.close()
 
 
+def delete_events(event_ids: list[str], db_path: Path | str) -> None:
+    """Remove events superseded by a merge.
+
+    Args:
+        event_ids: Events to delete. An empty list is a no-op — nothing was
+            superseded, which is never the same as "clear the table".
+        db_path: Path to the SQLite database.
+    """
+    if not event_ids:
+        return
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executemany("DELETE FROM events WHERE id = ?", [(i,) for i in event_ids])
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def load_events(db_path: Path | str) -> list[Event]:
     """Load all persisted events.
 

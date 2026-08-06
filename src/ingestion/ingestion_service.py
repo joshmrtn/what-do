@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -22,9 +22,12 @@ from src.models.event_candidate import EventCandidate
 class IngestionResult:
     """Summary of a single ingestion run."""
 
-    persisted: int
+    #: Candidates that passed filtering. Named for what it counts rather than
+    #: what was written, since a `persist=False` run accepts without writing.
+    accepted: int
     discarded: int
     handles_discovered: int
+    candidates: list[EventCandidate] = dataclass_field(default_factory=list)
 
 
 class IngestionService:
@@ -48,25 +51,33 @@ class IngestionService:
         self._logger = logger
         self._blocklist = blocklist or []
 
-    def run(self, get_now: Callable[[], datetime] = datetime.now) -> IngestionResult:
+    def run(
+        self,
+        get_now: Callable[[], datetime] = datetime.now,
+        persist: bool = True,
+    ) -> IngestionResult:
         """Execute one ingestion pass.
 
         Args:
             get_now: Injectable time source.
+            persist: Whether to write anything. `False` fetches and filters as
+                normal but touches no table — a dry run must leave the database
+                exactly as it found it, while still proving the providers work.
 
         Returns:
-            IngestionResult with counts of persisted and discarded candidates.
+            IngestionResult with the accepted candidates and their counts.
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path) if persist else None
         try:
             seeds = load_seeds(self._seeds_path)
-            self._sync_seeds(conn, seeds, get_now)
-            conn.commit()
+            if conn is not None:
+                self._sync_seeds(conn, seeds, get_now)
+                conn.commit()
 
             seed_handles = {h for h in seeds.handles}
             candidates = self._collect_candidates()
 
-            persisted = 0
+            accepted: list[EventCandidate] = []
             discarded = 0
             handles_discovered = 0
 
@@ -100,27 +111,32 @@ class IngestionService:
                     discarded += 1
                     continue
 
-                self._persist_candidate(conn, ec)
-                persisted += 1
+                accepted.append(ec)
 
-                if ec.description:
-                    extractor.process(
-                        text=ec.description,
-                        source_handle=ec.source,
-                        source_depth=0,
-                    )
-                    handles_discovered += 1
+                if conn is not None:
+                    self._persist_candidate(conn, ec)
 
-            conn.commit()
-            self._evaluate_promotion(conn, seed_handles, get_now)
-            conn.commit()
+                    if ec.description:
+                        extractor.process(
+                            text=ec.description,
+                            source_handle=ec.source,
+                            source_depth=0,
+                        )
+                        handles_discovered += 1
+
+            if conn is not None:
+                conn.commit()
+                self._evaluate_promotion(conn, seed_handles, get_now)
+                conn.commit()
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
         return IngestionResult(
-            persisted=persisted,
+            accepted=len(accepted),
             discarded=discarded,
             handles_discovered=handles_discovered,
+            candidates=accepted,
         )
 
     # ------------------------------------------------------------------

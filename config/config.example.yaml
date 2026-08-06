@@ -12,6 +12,10 @@ venue_discovery:
 
 scraping:
   lookback_days: 30
+  # How far ahead an event may start and still be ranked. The forward half of
+  # the window whose backward half is lookback_days — a calendar feed reaching
+  # further out than this discovers events the batch will not yet rank.
+  horizon_days: 30
   max_discovery_depth: 2
   candidate_promotion_threshold: 3
 

@@ -14,7 +14,7 @@ from src.processing.extraction_stage import ExtractionStage
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.similarity import SimilarityResult
 from src.storage.db import init_db
-from src.storage.events import load_events, save_events
+from src.storage.events import delete_events, load_events, save_events
 from src.utils.vectors import decode_vector, encode_vector
 
 _TZ = zoneinfo.ZoneInfo("America/New_York")
@@ -226,3 +226,28 @@ def test_round_trip_preserves_setting(db):
 def test_setting_defaults_to_unknown(db):
     save_events([_event()], db)
     assert load_events(db)[0].setting == "unknown"
+
+
+def test_delete_events_removes_only_the_named_rows(db):
+    save_events([_event("keep"), _event("drop")], db)
+
+    delete_events(["drop"], db)
+
+    assert [e.event_id for e in load_events(db)] == ["keep"]
+
+
+def test_delete_events_with_no_ids_is_a_no_op(db):
+    """An empty list means nothing was superseded, never 'clear the table'."""
+    save_events([_event("keep")], db)
+
+    delete_events([], db)
+
+    assert [e.event_id for e in load_events(db)] == ["keep"]
+
+
+def test_delete_events_ignores_ids_that_are_not_present(db):
+    save_events([_event("keep")], db)
+
+    delete_events(["never-stored"], db)
+
+    assert [e.event_id for e in load_events(db)] == ["keep"]
