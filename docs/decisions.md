@@ -1103,3 +1103,155 @@ pass on one machine and fail on another.
 it is the normal state before the first run. A missing database at an *explicitly named* `--db`
 path exits 1 on stderr, because that is a typo and reporting it as "no events" would hide the
 mistake.
+
+---
+
+## Candidate ids are derived from the source's own key, never generated
+
+**Decision:** every ingestion adapter builds its `EventCandidate.id` from
+`derive_candidate_id(source_type, *parts)` (`src/ingestion/candidate_id.py`), preferring the
+upstream item's own identifier and falling back to a content hash only where the source publishes
+none. `uuid4` appears in no adapter.
+
+**Rationale:** the five original adapters minted a fresh `uuid4` on every fetch, so
+`INSERT OR REPLACE INTO event_candidates` never matched an existing row and each nightly run
+inserted a brand-new duplicate of every candidate it had ever seen. Nothing ran on a schedule, so
+this was invisible; the batch orchestrator is what makes it destructive, and unwinding it later
+would be a data problem — purging duplicate candidate rows and merging events whose tags are
+scattered across the duplicates — rather than a code fix.
+
+Every adapter already carried a usable key in the payload it was parsing and discarded it: apify
+`id`, picuki `post_id`, dumpor `shortcode`, Veezi `ScheduledFilmId`, and AMC's showtime `id`, which
+the GraphQL query already requested.
+
+**Veezi takes a composite.** `ScheduledFilmId` identifies the *film*, not the screening. Using it
+alone would collapse every showtime of a film onto one candidate — turning a duplication bug into a
+data-loss one — so the showtime is always part of the material.
+
+**Consequence:** the natural-key tier is stable under edits; the content-hash fallback is not, so an
+edited description there mints a new id and re-extracts. That is the accepted cost of a source with
+no identifier, and the reason the natural key is always preferred.
+
+**`derive_candidate_id` raises on empty material** rather than returning a shared id. Passing
+nothing identifying is a caller error, and a silent collapse would lose an entire source's
+candidates while looking like a quiet night.
+
+---
+
+## Normalization does not persist; the orchestrator owns every save point
+
+**Decision:** `NormalizationService.run()` returns its deduplicated events and writes nothing.
+`NormalizationResult.persisted` became `normalized`, and `db_path` left the constructor. The batch
+orchestrator saves after extraction, after embedding, and after semantic dedup.
+
+**Rationale:** the events normalization produces still carry `Normalizer`'s throwaway uuids.
+Persisting them wrote rows that `reconcile` then orphaned the moment it adopted a stored id — the
+same nightly row-doubling reconcile exists to prevent, merely relocated one stage earlier. Loading
+`stored` before the call does not help: the fresh-uuid rows are already on disk.
+
+The early save was added for issue #11, when `NormalizationService` was the only writer in the
+system and tags and embeddings were being discarded every run. Normalization output carries no
+expensive work of its own, so once the orchestrator owns the save points the reason for it expires.
+
+**Consequence:** the save points are now exactly where expensive work is produced, which is what
+activates the skip-if-done branches in `ExtractionStage` and `EmbeddingStage`. At roughly three
+minutes an event, that is the difference between a re-run costing minutes and costing hours.
+
+---
+
+## Reconcile carries the extraction output whole — including `setting`
+
+**Decision:** a fresh event adopting a stored event's id also adopts `tags`, `summary`, `setting`,
+`tag_embeddings`, `summary_embedding`, and `astronomical_data`. It never adopts `weather` or
+`metadata`. `created_at` comes from storage; the fresh event stays authoritative for scraped
+content.
+
+**Rationale, field by field:**
+
+**`setting` is the trap.** It is LLM Pass 1 output, but `ExtractionStage` bypasses on `if
+event.tags:` alone. Carry the tags without the setting and extraction skips, leaving `setting` at
+`"unknown"` — which earns no weather adjustment in either direction. An outdoor event would
+silently stop being weather-scored from its second night onward, and nothing would look broken.
+Anything Pass 1 produces has to travel with the tags that cause it to be skipped.
+
+**`weather` must never travel.** `weather.cache_ttl_hours` exists precisely so a nightly batch
+rescores against a forecast issued that night. A carried forecast would score an event discovered a
+week out on the day it was found, forever.
+
+**`metadata` must not travel either.** The normalizer writes this-run flags there
+(`missing_title`, `missing_start_time`), so carrying stored metadata over fresh would resurrect
+stale flags from a night when the data was thinner.
+
+**`astronomical_data` may travel** because it is deterministic from date and location and cannot go
+stale.
+
+**`created_at` records when the event was first seen.** Taking the fresh value would overwrite it
+with tonight's on every run, and `merge_cluster` tiebreaks on it.
+
+---
+
+## A stored event id is adopted at most once per run
+
+**Decision:** when two fresh events both match one stored event, the first adopts its id and the
+rest keep their own.
+
+**Rationale:** the plan covered one fresh event matching many stored ones — a cluster growing. The
+mirror happens too: stored `S` carries candidates `[c1, c2]` from an earlier merge, tonight's dedup
+keeps them apart, and fresh `A=[c1]` and `B=[c2]` both match `S`. Both adopting its id would collide
+on the primary key, and since `save_events` is `INSERT OR REPLACE`, one would silently overwrite the
+other. That is data loss, where the case it mirrors is only duplication.
+
+**Rejected:** raising instead. A legitimate dedup threshold change would then abort a batch.
+
+---
+
+## A dry run persists nothing, which ingestion has to help with
+
+**Decision:** `--dry-run` writes no events, no recommendations, no deletes — and
+`IngestionService.run(persist=False)` fetches and filters as normal while touching no table.
+`IngestionResult.persisted` became `accepted` and now carries the candidates themselves.
+
+**Rationale:** a flag named dry-run that writes to the database is a trap, and "it is only
+candidates" is the reasoning that makes a flag untrustworthy. But ingestion is the only stage that
+touches live providers, so a dry run that skips it entirely stops being a rehearsal for the riskiest
+moment in this system — the first run where credentials, rate limits, and real payloads meet at
+once. Fetching without writing keeps both properties.
+
+**Ingestion writes in four places, not one:** seed sync, candidates, handle discovery, and promotion
+evaluation. Gating only `_persist_candidate` would leave a dry run seeding `candidate_entities`,
+quietly shaping later real runs. `persist=False` skips all four and never opens a connection, so it
+cannot leave a stray zero-byte database either.
+
+**Consequence:** nothing was written, so the candidate loader cannot see what was just fetched. The
+orchestrator folds those candidates in from memory on a dry run only, preferring the loaded object
+on an id collision and sorting the way `load_candidates` sorts, so both paths hand the pipeline the
+same order.
+
+---
+
+## Ranking scope is a local-date window, plus everything stored that nothing claimed
+
+**Decision:** the orchestrator ranks events starting between `run_date` and
+`run_date + scraping.horizon_days`, plus undated events created inside `lookback_days`, plus stored
+events that no fresh event reconciled against.
+
+**Rationale, three parts:**
+
+**Local date, not UTC.** An event at 11pm local is tomorrow in UTC, so a UTC comparison would
+misfile exactly the evening events this system exists to rank. `start_time` converts through
+`config.location.timezone` before its date is taken.
+
+**Undated events are kept on discovery age.** The CLI has a labelled `UNDATED` section, and dropping
+one would lose a real event to a failed extraction rather than to anything we know about when it
+happens.
+
+**Carrying forward unclaimed stored events is load-bearing, not tidiness.** Reconcile only returns
+fresh events. Ranking just those would silently stop ranking events whose candidates aged out of the
+window, and the settled policy that a wholesale ingestion failure still re-ranks stored events
+against tonight's forecast would not work at all — with no candidates there are no fresh events, so
+ranking would receive an empty list.
+
+**Wholesale embedding failure stops the batch before ranking.** Every other stage failure is
+non-fatal and the batch continues with what it has, but ordering computed without vectors is
+meaningless and would be persisted as though it meant something. Everything already saved stays
+saved.
