@@ -81,7 +81,7 @@ class IngestionService:
             cutoff = now - timedelta(days=self._config.scraping.lookback_days)
 
             for ec in candidates:
-                if not self._passes_lookback(ec, cutoff):
+                if not self._passes_lookback(ec, cutoff, now):
                     self._logger.info(
                         f"Discarding old post from {ec.source}: raw_published_at={ec.raw_published_at}",
                         component="ingestion",
@@ -180,7 +180,16 @@ class IngestionService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _passes_lookback(ec: EventCandidate, cutoff: datetime) -> bool:
+    def _passes_lookback(ec: EventCandidate, cutoff: datetime, now: datetime) -> bool:
+        """Decide whether a candidate is recent enough to ingest.
+
+        The lookback exists to drop stale social posts, which is a judgement about
+        an announcement's age. A candidate whose event has not happened yet is not
+        stale under any reading, no matter how far back it was announced — forward
+        looking sources such as public calendars routinely carry both.
+        """
+        if ec.start_time is not None and ec.start_time > now:
+            return True
         if ec.raw_published_at is None:
             return True
         return ec.raw_published_at >= cutoff

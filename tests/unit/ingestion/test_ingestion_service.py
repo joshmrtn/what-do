@@ -68,6 +68,7 @@ def _make_candidate(
     source_type="apify",
     raw_published_at: datetime | None = None,
     days_ago: int | None = None,
+    start_time: datetime | None = None,
 ):
 
     pub = None
@@ -83,6 +84,7 @@ def _make_candidate(
         title=title,
         description=description,
         raw_published_at=pub,
+        start_time=start_time,
         discovered_at=FIXED_NOW,
     )
 
@@ -237,6 +239,62 @@ def test_old_post_discarded(db, seeds_yaml):
     conn.close()
 
     assert len(rows) == 0
+
+
+def _run_with(candidate, db, seeds_yaml, lookback_days=30):
+    """Run one ingestion pass over a single candidate, returning persisted rows."""
+    svc = IngestionService(
+        config=_make_config(lookback_days=lookback_days),
+        db_path=db,
+        seeds_path=seeds_yaml,
+        social_sources=[_mock_social_source([candidate])],
+        movie_sources=[],
+        logger=_make_logger(),
+    )
+    svc.run(get_now=lambda: FIXED_NOW)
+
+    conn = sqlite3.connect(db)
+    rows = _get_persisted_candidates(conn)
+    conn.close()
+    return rows
+
+
+def test_old_candidate_with_future_start_time_retained(db, seeds_yaml):
+    """An event that has not happened yet is never stale, however old its listing.
+
+    Forward-looking sources (public calendars) carry announcement dates that may
+    long predate the lookback window while the event itself is still upcoming.
+    """
+    upcoming = _make_candidate(
+        days_ago=400,
+        start_time=FIXED_NOW + timedelta(days=5),
+    )
+
+    assert len(_run_with(upcoming, db, seeds_yaml)) == 1
+
+
+def test_old_candidate_with_past_start_time_discarded(db, seeds_yaml):
+    """An old listing for an event that has already happened is still discarded."""
+    finished = _make_candidate(
+        days_ago=40,
+        start_time=FIXED_NOW - timedelta(days=2),
+    )
+
+    assert len(_run_with(finished, db, seeds_yaml)) == 0
+
+
+def test_old_candidate_starting_now_discarded(db, seeds_yaml):
+    """The boundary is strict: starting exactly now is not 'yet to happen'."""
+    starting_now = _make_candidate(days_ago=40, start_time=FIXED_NOW)
+
+    assert len(_run_with(starting_now, db, seeds_yaml)) == 0
+
+
+def test_old_candidate_without_start_time_discarded(db, seeds_yaml):
+    """Social posts carry no start_time at ingestion, so the lookback still governs."""
+    old_post = _make_candidate(days_ago=40, start_time=None)
+
+    assert len(_run_with(old_post, db, seeds_yaml)) == 0
 
 
 def test_none_published_at_bypasses_lookback(db, seeds_yaml):
