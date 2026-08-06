@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
 
+from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 
@@ -45,7 +45,7 @@ class CinemaVeeziAdapter(IngestionSource):
             else None
         )
         return EventCandidate(
-            id=str(uuid.uuid4()),
+            id=self._derive_id(session),
             source="cinema_veezi",
             source_type="cinema_veezi",
             title=session.get("FilmTitle"),
@@ -55,4 +55,20 @@ class CinemaVeeziAdapter(IngestionSource):
             start_time=start,
             raw_published_at=None,
             discovered_at=self._get_now(),
+        )
+
+    def _derive_id(self, session: dict[str, Any]) -> str:
+        """Build a stable id so a nightly refetch updates the session's row.
+
+        `ScheduledFilmId` identifies the film, not the screening, so the showtime
+        is always part of the material.
+        """
+        film_id = session.get("ScheduledFilmId")
+        if film_id:
+            return derive_candidate_id("cinema_veezi", film_id, session.get("ShowDateTime"))
+        return derive_candidate_id(
+            "cinema_veezi",
+            session.get("FilmTitle"),
+            session.get("ShowDateTime"),
+            session.get("CinemaName"),
         )

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
 
+from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 
@@ -65,7 +65,7 @@ class AmcAdapter(IngestionSource):
             else None
         )
         return EventCandidate(
-            id=str(uuid.uuid4()),
+            id=self._derive_id(movie, show),
             source="amc",
             source_type="amc",
             title=movie.get("name"),
@@ -75,4 +75,16 @@ class AmcAdapter(IngestionSource):
             start_time=start,
             raw_published_at=None,
             discovered_at=self._get_now(),
+        )
+
+    def _derive_id(self, movie: dict[str, Any], show: dict[str, Any]) -> str:
+        """Build a stable id so a nightly refetch updates the showtime's row."""
+        showtime_id = show.get("id")
+        if showtime_id:
+            return derive_candidate_id("amc", showtime_id)
+        return derive_candidate_id(
+            "amc",
+            movie.get("id") or movie.get("name"),
+            show.get("showDateTimeUtc"),
+            show.get("theatre", {}).get("name"),
         )

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
 
+from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 
@@ -44,7 +44,7 @@ class ApifyAdapter(IngestionSource):
         raw_ts = post.get("timestamp")
         pub_at = datetime.fromisoformat(raw_ts).replace(tzinfo=timezone.utc) if raw_ts else None
         return EventCandidate(
-            id=str(uuid.uuid4()),
+            id=self._derive_id(post),
             source=post.get("ownerUsername", ""),
             source_type="apify",
             url=post.get("url"),
@@ -53,4 +53,16 @@ class ApifyAdapter(IngestionSource):
             description=post.get("caption"),
             venue=post.get("locationName"),
             discovered_at=self._get_now(),
+        )
+
+    def _derive_id(self, post: dict[str, Any]) -> str:
+        """Build a stable id so a nightly refetch updates the post's row."""
+        natural_key = post.get("id") or post.get("url")
+        if natural_key:
+            return derive_candidate_id("apify", natural_key)
+        return derive_candidate_id(
+            "apify",
+            post.get("ownerUsername"),
+            post.get("timestamp"),
+            post.get("caption"),
         )

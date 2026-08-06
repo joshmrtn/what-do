@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
 
+from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 
@@ -42,7 +42,7 @@ class PicukiAdapter(IngestionSource):
         raw_date = post.get("date")
         pub_at = datetime.fromisoformat(raw_date).replace(tzinfo=timezone.utc) if raw_date else None
         return EventCandidate(
-            id=str(uuid.uuid4()),
+            id=self._derive_id(post, source_handle),
             source=source_handle,
             source_type="picuki",
             url=post.get("link"),
@@ -50,4 +50,16 @@ class PicukiAdapter(IngestionSource):
             raw_published_at=pub_at,
             description=post.get("text"),
             discovered_at=self._get_now(),
+        )
+
+    def _derive_id(self, post: dict[str, Any], source_handle: str) -> str:
+        """Build a stable id so a nightly refetch updates the post's row."""
+        natural_key = post.get("post_id") or post.get("link")
+        if natural_key:
+            return derive_candidate_id("picuki", natural_key)
+        return derive_candidate_id(
+            "picuki",
+            source_handle,
+            post.get("date"),
+            post.get("text"),
         )
