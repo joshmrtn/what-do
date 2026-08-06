@@ -113,6 +113,14 @@ CREATE TABLE IF NOT EXISTS weather_cache (
     UNIQUE(date, latitude, longitude)
 );
 
+CREATE TABLE IF NOT EXISTS http_cache (
+    url TEXT PRIMARY KEY,
+    etag TEXT,
+    last_modified TEXT,
+    body TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS run_history (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL,

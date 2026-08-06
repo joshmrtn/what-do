@@ -51,6 +51,37 @@ class DeduplicationConfig:
 
 
 @dataclass(frozen=True)
+class FeedConfig:
+    """One fetched event source, declared in config rather than code.
+
+    Attributes:
+        name: Identifier for the source, used as its `source` value.
+        url: Address of the feed or listing page.
+        source_type: Provenance label on every candidate. Defaults to `name`.
+        min_fetch_interval_hours: Politeness floor. Re-running the batch by hand
+            within this window reuses the cached copy rather than refetching.
+    """
+
+    name: str
+    url: str
+    source_type: str
+    min_fetch_interval_hours: float = 6.0
+
+
+@dataclass
+class SourcesConfig:
+    """Declared event sources that are configured rather than coded.
+
+    The two lists differ only in how the fetched document is parsed. A site can
+    legitimately appear in both — a calendar feed and a listing page often cover
+    different slices of the same venues.
+    """
+
+    ics_calendars: list[FeedConfig] = field(default_factory=list)
+    html_calendars: list[FeedConfig] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ComfortCurve:
     """An asymmetric trapezoid mapping a weather reading to comfort in -1.0..+1.0.
 
@@ -165,6 +196,7 @@ class AppConfig:
     deduplication: DeduplicationConfig = field(default_factory=DeduplicationConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
+    sources: SourcesConfig = field(default_factory=SourcesConfig)
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
     gemini_api_key: str | None = None
@@ -260,6 +292,49 @@ def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
         condition_penalty={
             str(k): float(v) for k, v in (raw.get("condition_penalty") or {}).items()
         },
+    )
+
+
+def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
+    """Build one list of fetched sources, rejecting entries that cannot be used.
+
+    Validation is strict on purpose: these run unattended overnight, so a typo
+    should fail at load rather than silently ingest nothing at 2am.
+    """
+    feeds = []
+
+    for index, entry in enumerate(entries or []):
+        for required in ("name", "url"):
+            if not entry.get(required):
+                raise ConfigError(
+                    f"{kind} at position {index} missing required field: '{required}'"
+                )
+
+        name = str(entry["name"])
+        interval = float(entry.get("min_fetch_interval_hours", 6.0))
+        if interval < 0:
+            raise ConfigError(
+                f"{kind} '{name}' has a negative "
+                f"min_fetch_interval_hours: {interval}"
+            )
+
+        feeds.append(
+            FeedConfig(
+                name=name,
+                url=str(entry["url"]),
+                source_type=str(entry.get("source_type", name)),
+                min_fetch_interval_hours=interval,
+            )
+        )
+
+    return feeds
+
+
+def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
+    """Build every configured source list."""
+    return SourcesConfig(
+        ics_calendars=_load_feeds(raw.get("ics_calendars"), "ICS calendar"),
+        html_calendars=_load_feeds(raw.get("html_calendars"), "HTML calendar"),
     )
 
 
@@ -428,6 +503,7 @@ def load_config(
         deduplication=deduplication,
         weather=weather,
         scoring=scoring,
+        sources=_load_sources(data.get("sources") or {}),
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
         gemini_api_key=os.environ.get("GEMINI_API_KEY"),

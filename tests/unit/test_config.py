@@ -594,3 +594,114 @@ def test_synthetic_rule_setting_outside_the_enum_rejected(tmp_path):
                  "summary": "A walk", "setting": "outside"},
             ]
         })
+
+
+def _calendar(**overrides):
+    entry = {
+        "name": "northshorenightout",
+        "url": "https://calendar.google.com/calendar/ical/abc/public/basic.ics",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_sources_absent_yields_no_calendars(tmp_path):
+    cfg = _load(tmp_path, {})
+    assert cfg.sources.ics_calendars == []
+
+
+def test_ics_calendar_loads(tmp_path):
+    cfg = _load(tmp_path, {"sources": {"ics_calendars": [_calendar()]}})
+
+    assert len(cfg.sources.ics_calendars) == 1
+    calendar = cfg.sources.ics_calendars[0]
+    assert calendar.name == "northshorenightout"
+    assert calendar.url.endswith("/public/basic.ics")
+
+
+def test_ics_calendar_source_type_defaults_to_its_name(tmp_path):
+    cfg = _load(tmp_path, {"sources": {"ics_calendars": [_calendar()]}})
+
+    assert cfg.sources.ics_calendars[0].source_type == "northshorenightout"
+
+
+def test_ics_calendar_source_type_can_be_overridden(tmp_path):
+    cfg = _load(tmp_path, {
+        "sources": {"ics_calendars": [_calendar(source_type="community_calendar")]}
+    })
+
+    assert cfg.sources.ics_calendars[0].source_type == "community_calendar"
+
+
+def test_ics_calendar_fetch_interval_defaults(tmp_path):
+    cfg = _load(tmp_path, {"sources": {"ics_calendars": [_calendar()]}})
+
+    assert cfg.sources.ics_calendars[0].min_fetch_interval_hours == 6.0
+
+
+def test_ics_calendar_fetch_interval_reads_from_config(tmp_path):
+    cfg = _load(tmp_path, {
+        "sources": {"ics_calendars": [_calendar(min_fetch_interval_hours=12)]}
+    })
+
+    assert cfg.sources.ics_calendars[0].min_fetch_interval_hours == 12.0
+
+
+def test_ics_calendar_missing_url_rejected(tmp_path):
+    """A calendar with no URL is unusable, and failing at load beats failing at 2am."""
+    with pytest.raises(ConfigError, match="url"):
+        _load(tmp_path, {"sources": {"ics_calendars": [{"name": "broken"}]}})
+
+
+def test_ics_calendar_missing_name_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="name"):
+        _load(tmp_path, {
+            "sources": {"ics_calendars": [{"url": "https://example.com/c.ics"}]}
+        })
+
+
+def test_negative_fetch_interval_rejected(tmp_path):
+    """A negative interval would defeat the politeness guard it exists to enforce."""
+    with pytest.raises(ConfigError, match="min_fetch_interval_hours"):
+        _load(tmp_path, {
+            "sources": {"ics_calendars": [_calendar(min_fetch_interval_hours=-1)]}
+        })
+
+
+def test_multiple_calendars_load_in_order(tmp_path):
+    cfg = _load(tmp_path, {
+        "sources": {
+            "ics_calendars": [
+                _calendar(name="first"),
+                _calendar(name="second", url="https://example.com/second.ics"),
+            ]
+        }
+    })
+
+    assert [c.name for c in cfg.sources.ics_calendars] == ["first", "second"]
+
+
+def test_html_calendars_absent_yields_empty(tmp_path):
+    cfg = _load(tmp_path, {})
+    assert cfg.sources.html_calendars == []
+
+
+def test_html_calendar_loads_alongside_ics(tmp_path):
+    """A site can legitimately appear as both a feed and a listing page."""
+    cfg = _load(tmp_path, {
+        "sources": {
+            "ics_calendars": [_calendar()],
+            "html_calendars": [
+                {"name": "northshorenightout", "url": "https://example.com/"}
+            ],
+        }
+    })
+
+    assert len(cfg.sources.ics_calendars) == 1
+    assert len(cfg.sources.html_calendars) == 1
+    assert cfg.sources.html_calendars[0].source_type == "northshorenightout"
+
+
+def test_html_calendar_missing_url_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="HTML calendar"):
+        _load(tmp_path, {"sources": {"html_calendars": [{"name": "broken"}]}})

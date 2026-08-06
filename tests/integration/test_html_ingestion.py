@@ -1,0 +1,206 @@
+"""End-to-end checks for the HTML listing source against a real captured page.
+
+Uses a trimmed capture of northshorenightout.com rather than the network.
+Assertions are on shape and invariants — the fixture ages, and pinning one band's
+name would fail for no useful reason.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+import io
+import sqlite3
+import zoneinfo
+
+import pytest
+
+from src.config import (
+    AppConfig,
+    FeedConfig,
+    LocationConfig,
+    ScrapingConfig,
+    VenueDiscoveryConfig,
+)
+from src.ingestion.calendars.html_source import HtmlListingSource
+from src.normalization.service import NormalizationService
+from src.storage.db import init_db
+from src.utils.logging import get_logger
+
+FIXTURE = Path("tests/fixtures/northshorenightout.html")
+EASTERN = zoneinfo.ZoneInfo("America/New_York")
+#: The page was captured on 2026-08-05, so its headings resolve against that day.
+FIXED_NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+URL = "https://listings.example.com/"
+
+
+@pytest.fixture
+def db(tmp_path):
+    path = tmp_path / "test.db"
+    init_db(path)
+    return path
+
+
+class _FakeResponse:
+    status_code = 200
+    headers: dict[str, str] = {}
+
+    def __init__(self, body: str) -> None:
+        self.text = body
+
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _FakeSession:
+    def __init__(self, body: str) -> None:
+        self._body = body
+        self.calls = 0
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls += 1
+        return _FakeResponse(self._body)
+
+
+@pytest.fixture
+def candidates(db):
+    source = HtmlListingSource(
+        config=FeedConfig(
+            name="northshorenightout",
+            url=URL,
+            source_type="northshorenightout",
+        ),
+        db_path=db,
+        tzname="America/New_York",
+        session=_FakeSession(FIXTURE.read_text(encoding="utf-8")),
+        get_now=lambda: FIXED_NOW,
+        logger=get_logger("test", stream=io.StringIO()),
+    )
+    return source.fetch()
+
+
+def test_the_whole_page_becomes_candidates(candidates):
+    """199 event lines, one of which the page itself lists twice."""
+
+    assert len(candidates) == 198
+
+
+def test_every_candidate_is_identifiable(candidates):
+
+    assert all(c.title for c in candidates)
+    assert len({c.id for c in candidates}) == len(candidates)
+
+
+def test_every_candidate_has_an_aware_start_time(candidates):
+
+    assert all(c.start_time is not None for c in candidates)
+    assert all(c.start_time.tzinfo is not None for c in candidates)
+
+
+def test_the_listing_covers_far_more_venues_than_the_feed(candidates):
+    """Breadth is the whole reason this source exists alongside the ICS one."""
+
+    venues = {c.venue for c in candidates if c.venue}
+
+    assert len(venues) > 50
+
+
+def test_nearly_every_candidate_carries_a_venue(candidates):
+
+    assert sum(1 for c in candidates if c.venue) / len(candidates) >= 0.95
+
+
+def test_some_candidates_carry_event_links(candidates):
+    """Links are what this source adds that the calendar feed cannot."""
+
+    assert sum(1 for c in candidates if c.url) >= 20
+
+
+def test_no_candidate_claims_a_published_date(candidates):
+
+    assert all(c.raw_published_at is None for c in candidates)
+
+
+def test_categories_reach_the_description(candidates):
+
+    described = [c.description for c in candidates if c.description]
+
+    assert len(described) >= 150
+    assert all(d.startswith("Category: ") for d in described)
+
+
+def test_start_times_stay_within_the_days_the_page_shows(candidates):
+
+    days = {c.start_time.astimezone(EASTERN).date().isoformat() for c in candidates}
+
+    assert min(days) == "2026-08-05"
+    assert max(days) == "2026-08-10"
+
+
+def test_evening_events_keep_their_evening_hour(candidates):
+    """A UTC mix-up would push a 7pm show into the small hours of the next day."""
+
+    evening = [
+        c for c in candidates
+        if c.description and "Music" in c.description
+    ]
+    hours = {c.start_time.astimezone(EASTERN).hour for c in evening}
+
+    assert hours
+    assert all(0 <= h <= 23 for h in hours)
+    assert any(17 <= h <= 22 for h in hours)
+
+
+def test_a_second_fetch_reuses_the_cache(db):
+
+    session = _FakeSession(FIXTURE.read_text(encoding="utf-8"))
+    config = FeedConfig(
+        name="northshorenightout", url=URL, source_type="northshorenightout"
+    )
+
+    def _source():
+        return HtmlListingSource(
+            config=config,
+            db_path=db,
+            tzname="America/New_York",
+            session=session,
+            get_now=lambda: FIXED_NOW,
+            logger=get_logger("test", stream=io.StringIO()),
+        )
+
+    first = _source().fetch()
+    second = _source().fetch()
+
+    assert session.calls == 1
+    assert [c.id for c in first] == [c.id for c in second]
+
+
+def test_candidates_normalise_and_persist(db, candidates):
+    """The real handoff: this source composes with the Phase 4 pipeline."""
+
+    config = AppConfig(
+        location=LocationConfig(
+            latitude=42.52,
+            longitude=-70.89,
+            postal_code="01970",
+            search_radius_miles=10,
+            timezone="America/New_York",
+        ),
+        scraping=ScrapingConfig(),
+        venue_discovery=VenueDiscoveryConfig(),
+    )
+    service = NormalizationService(
+        config=config, db_path=db, logger=get_logger("test", stream=io.StringIO())
+    )
+
+    result = service.run(candidates, get_now=lambda: FIXED_NOW)
+
+    assert result.persisted > 0
+
+    conn = sqlite3.connect(db)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE source_type = ?", ("northshorenightout",)
+    ).fetchone()[0]
+    conn.close()
+
+    assert count == result.persisted
