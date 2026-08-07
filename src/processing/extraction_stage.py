@@ -6,6 +6,7 @@ by extracting tags, summary, and filling missing fields via LLM.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import Any, Callable
 
@@ -14,12 +15,34 @@ from src.processing.extraction import ExtractionError, ExtractionProvider
 from src.processing.image_fetcher import ImageFetchError, ImageFetcher
 
 
+def extraction_input(event: Event) -> str:
+    """The text LLM Pass 1 runs over, and the thing whose hash gates a re-run."""
+    return "\n".join(filter(None, [event.title, event.description]))
+
+
+def _input_hash(text: str) -> str:
+    """Stable digest of an extraction input."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def extraction_input_hash(event: Event) -> str:
+    """The digest an event must carry for extraction to consider it done."""
+    return _input_hash(extraction_input(event))
+
+
 class ExtractionStage:
     """Pipeline stage that runs LLM Pass 1 extraction on each event.
 
-    Events with tags already populated are bypassed — their existing
-    tags and summary pass through unchanged. This handles synthetic events
-    and any future pre-tagged source without special-casing.
+    An event is extracted when the hash of its input text differs from the one
+    stored on it, so an edited description is picked up rather than skipped
+    forever — the old check was "does it already have tags?", which could not
+    tell an edited event from a finished one, nor a valid empty-tag result from
+    an extraction that never ran.
+
+    Synthetic events are never extracted. Their tags come from hand-written
+    config, so running Pass 1 over them would overwrite what a person wrote.
+    That exemption is provenance, not state, so it reads from `is_synthetic`
+    rather than from anything this stage stores.
 
     Args:
         provider: LLM extraction provider.
@@ -51,16 +74,17 @@ class ExtractionStage:
             Same list with tags, summary, and optional field fills applied.
         """
         for event in events:
-            if event.tags:
+            if event.is_synthetic:
                 continue
-            self._extract(event)
+            text = extraction_input(event)
+            if event.extraction_input_hash == _input_hash(text):
+                continue
+            self._extract(event, text)
         return events
 
-    def _extract(self, event: Event) -> None:
+    def _extract(self, event: Event, text: str) -> None:
         """Run extraction on a single event, updating it in place."""
         image_bytes = self._fetch_image(event)
-
-        text = "\n".join(filter(None, [event.title, event.description]))
 
         try:
             result = self._provider.extract(
@@ -74,6 +98,10 @@ class ExtractionStage:
             )
             event.metadata["llm_extraction_failed"] = True
             return
+
+        # Recorded only here, past the failure path, so a failed run stays
+        # distinguishable from a finished one and is retried.
+        event.extraction_input_hash = _input_hash(text)
 
         event.tags = result.tags
         event.summary = result.summary

@@ -30,6 +30,10 @@ _CARRIED_FIELDS = (
     "tag_embeddings",
     "summary_embedding",
     "astronomical_data",
+    # Without this the adopted event has no record of what was extracted, so
+    # every stored event re-extracts on the very next run — the exact cost the
+    # rest of this module exists to avoid.
+    "extraction_input_hash",
 )
 
 

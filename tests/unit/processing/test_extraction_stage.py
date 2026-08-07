@@ -8,10 +8,10 @@ import io
 
 import pytest
 
-from src.models.event import Event
+from src.models.event import SYNTHETIC_SOURCE_TYPE, Event
 from src.models.tag import Tag
 from src.processing.extraction import ExtractionError, ExtractionResult, OllamaExtractionProvider
-from src.processing.extraction_stage import ExtractionStage
+from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.processing.image_fetcher import ImageFetchError
 from src.utils.logging import get_logger
 from src.utils.ollama_client import OllamaClient
@@ -81,10 +81,11 @@ def test_reference_date_from_get_now_passed_to_provider():
 # ---------------------------------------------------------------------------
 
 
-def test_bypass_when_tags_already_populated():
+def test_bypass_when_the_input_is_unchanged():
 
     event = _make_event(tags=[Tag(text=t) for t in
                               ["jazz", "live", "music", "fun", "night"]])
+    event.extraction_input_hash = extraction_input_hash(event)
     provider = _make_provider()
     stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
 
@@ -93,6 +94,21 @@ def test_bypass_when_tags_already_populated():
     provider.extract.assert_not_called()
     assert results[0].tags == [Tag(text=t) for t in
                                ["jazz", "live", "music", "fun", "night"]]
+
+
+def test_tags_without_a_hash_are_re_extracted():
+    """Tags with no record of what produced them are not evidence of a finished run.
+
+    Only a synthetic event legitimately carries tags it did not extract, and
+    that is settled by provenance rather than by this check.
+    """
+    event = _make_event(tags=[Tag(text="stale")])
+    provider = _make_provider()
+    stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
+
+    stage.process([event])
+
+    provider.extract.assert_called_once()
 
 
 def test_extraction_called_when_tags_empty():
@@ -387,11 +403,91 @@ def test_extracted_setting_is_applied_to_the_event():
 
 
 def test_bypassed_event_keeps_its_own_setting():
-    """An event with tags already set skips extraction, so its setting must survive."""
+    """A bypassed event skips extraction, so its setting must survive."""
     stage = ExtractionStage(
         provider=_make_provider(setting="outdoor"),
         image_fetcher=None,
         logger=_make_logger(),
     )
-    preset = _make_event(tags=[Tag(text="synthetic")], setting="indoor")
+    preset = _make_event(tags=[Tag(text="jazz")], setting="indoor")
+    preset.extraction_input_hash = extraction_input_hash(preset)
     assert stage.process([preset])[0].setting == "indoor"
+
+
+# ---------------------------------------------------------------------------
+# Input-hash skip rule
+# ---------------------------------------------------------------------------
+
+
+def test_an_unchanged_event_is_not_re_extracted():
+    provider = _make_provider(tags=[Tag(text="jazz", weight=1.0)])
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+    stage.process([event])
+
+    assert provider.extract.call_count == 1
+
+
+def test_an_edited_description_is_re_extracted():
+    """The gap the old `if event.tags` rule left: edited text was never revisited."""
+    provider = _make_provider(tags=[Tag(text="jazz", weight=1.0)])
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+    event.description = "Actually it is a punk show now, same venue."
+    stage.process([event])
+
+    assert provider.extract.call_count == 2
+
+
+def test_an_extraction_returning_no_tags_is_not_retried_forever():
+    """Zero tags is a valid verdict, and was indistinguishable from never having run."""
+    provider = MagicMock()
+    provider.extract.return_value = ExtractionResult(
+        title=None,
+        venue=None,
+        start_time=None,
+        end_time=None,
+        tags=[],
+        summary="Nothing much to say about this one.",
+    )
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+    stage.process([event])
+
+    assert provider.extract.call_count == 1
+
+
+def test_a_failed_extraction_is_retried_next_run():
+    """The hash is stored only on success, so a failure stays distinguishable."""
+    provider = MagicMock()
+    provider.extract.side_effect = ExtractionError("model unavailable")
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+    stage.process([event])
+
+    assert provider.extract.call_count == 2
+
+
+def test_a_synthetic_event_is_never_extracted():
+    """Its tags are hand-written config; extracting would overwrite the author."""
+    provider = _make_provider(tags=[Tag(text="llm", weight=1.0)])
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event(
+        source_type=SYNTHETIC_SOURCE_TYPE,
+        title="Evening walk",
+        description=None,
+        tags=[Tag(text="walking", weight=1.0)],
+    )
+
+    stage.process([event])
+
+    assert provider.extract.call_count == 0
+    assert [t.text for t in event.tags] == ["walking"]

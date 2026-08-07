@@ -10,7 +10,7 @@ import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
-from src.processing.extraction_stage import ExtractionStage
+from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.similarity import SimilarityResult
 from src.storage.db import init_db
@@ -57,6 +57,7 @@ def _full_event() -> Event:
     )
     event.tag_embeddings = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
     event.summary_embedding = encode_vector([7.0, 8.0, 9.0])
+    event.extraction_input_hash = extraction_input_hash(event)
     return event
 
 
@@ -113,6 +114,13 @@ def test_round_trip_preserves_timezone_aware_times(db):
     assert loaded.start_time.utcoffset() is not None
     assert loaded.start_time == datetime(2026, 8, 26, 20, 30, tzinfo=_TZ)
     assert loaded.end_time == datetime(2026, 8, 26, 23, 30, tzinfo=_TZ)
+
+
+def test_round_trip_preserves_the_extraction_hash(db):
+    """Lose it and every stored event re-extracts on the next run."""
+    save_events([_full_event()], db)
+
+    assert load_events(db)[0].extraction_input_hash == _full_event().extraction_input_hash
 
 
 def test_round_trip_preserves_json_fields(db):

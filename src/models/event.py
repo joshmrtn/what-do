@@ -47,6 +47,11 @@ class Event:
     summary_embedding: bytes | None = None
     weather: dict[str, Any] | None = None
     astronomical_data: dict[str, Any] | None = None
+    #: Hash of the text LLM Pass 1 last ran over successfully. Set only on
+    #: success, so it distinguishes three states the old `if tags` check
+    #: conflated: set means done, absent means never ran, and a failure leaves
+    #: it absent so the next run retries.
+    extraction_input_hash: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     similarity: "SimilarityResult | None" = None
 
