@@ -103,6 +103,18 @@ sources:
     #   url: "https://example.com/"
     #   min_fetch_interval_hours: 6
 
+  # Veezi public ticketing pages — used by many independent cinemas and needing
+  # no credentials. The siteToken appears in the cinema's own booking links, so
+  # adding a cinema is a config entry. Set source_type to something mapped to
+  # the `movies` preference domain in scoring.domain_map above.
+  veezi_cinemas: []
+    # - name: example_cinema
+    #   url: "https://ticketing.useast.veezi.com/sessions/?siteToken=<token>"
+    #   source_type: cinema_veezi
+    #   venue: "The Example Cinema"
+    #   city: "Salem"
+    #   min_fetch_interval_hours: 6
+
 models:
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"

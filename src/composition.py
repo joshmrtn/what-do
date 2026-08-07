@@ -33,9 +33,9 @@ from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import OpenMeteoProvider
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.ingestion.cinemas.veezi_source import VeeziSessionsSource
 from src.ingestion.ingestion_service import IngestionService
 from src.ingestion.movies.amc import AmcAdapter
-from src.ingestion.movies.cinema_veezi import CinemaVeeziAdapter
 from src.ingestion.seeds import load_seeds
 from src.ingestion.social.apify import ApifyAdapter
 from src.ingestion.social.dumpor import DumporAdapter
@@ -132,9 +132,6 @@ def build_dependencies(
     failover_sources.append(DumporAdapter(handles, get_now=get_now))
 
     independent_sources: list[Any] = []
-    veezi_key = _credential("VEEZI_API_KEY", "cinema_veezi")
-    if veezi_key:
-        independent_sources.append(CinemaVeeziAdapter(veezi_key, get_now=get_now))
     amc_key = _credential("AMC_API_KEY", "amc")
     if amc_key:
         independent_sources.append(
@@ -150,6 +147,16 @@ def build_dependencies(
                 timezone_name=config.location.timezone,
                 horizon_days=config.scraping.horizon_days,
                 day_starts_at=config.day_starts_at,
+            )
+        )
+    for feed in config.sources.veezi_cinemas:
+        independent_sources.append(
+            VeeziSessionsSource(
+                feed,
+                db_path,
+                get_now=get_now,
+                logger=logger,
+                timezone_name=config.location.timezone,
             )
         )
     for feed in config.sources.html_calendars:
