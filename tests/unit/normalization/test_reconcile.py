@@ -165,24 +165,59 @@ def test_stored_event_with_no_fresh_counterpart_is_not_stale():
     assert result.stale_event_ids == []
 
 
-def test_a_stored_id_is_adopted_by_only_one_fresh_event():
-    """A cluster splitting is the mirror of one growing, and would collide on id."""
+def test_a_split_cluster_is_merged_back_onto_its_stored_event():
+    """The stored event is the record of a semantic verdict already paid for.
+
+    Dedup pass 1 is fuzzy and splits what pass 2 merged on a previous run. If
+    the second fresh event is emitted as new instead, it carries no tags,
+    re-extracts at roughly three minutes, and is saved as another row — every
+    night, without bound.
+    """
     stored = _enriched("old-1", ["c1", "c2"])
 
     result = reconcile([_event("new-a", ["c1"]), _event("new-b", ["c2"])], [stored])
 
-    ids = [e.event_id for e in result.events]
-    assert ids == ["old-1", "new-b"]
-    assert len(set(ids)) == 2
+    assert [e.event_id for e in result.events] == ["old-1"]
+    assert sorted(result.events[0].source_event_candidates) == ["c1", "c2"]
 
 
-def test_a_split_cluster_carries_enrichment_to_one_side_only():
+def test_a_merged_split_keeps_the_stored_enrichment():
+    """The whole point: nothing re-extracts because the tags came along."""
     stored = _enriched("old-1", ["c1", "c2"])
 
     result = reconcile([_event("new-a", ["c1"]), _event("new-b", ["c2"])], [stored])
 
     assert result.events[0].tags != []
-    assert result.events[1].tags == []
+    assert result.events[0].summary_embedding == b"\x02\x03"
+
+
+def test_a_merged_split_takes_content_from_both_sides():
+    """Which fresh event is 'first' is arbitrary, so neither may lose its content."""
+    stored = _enriched("old-1", ["c1", "c2"])
+    fresh = [
+        _event("new-a", ["c1"], title="Eras Tour Tribute"),
+        _event("new-b", ["c2"], venue="Kowloon"),
+    ]
+
+    result = reconcile(fresh, [stored])
+
+    assert result.events[0].title == "Eras Tour Tribute"
+    assert result.events[0].venue == "Kowloon"
+
+
+def test_two_stored_events_sharing_a_candidate_are_both_seen():
+    """Indexing candidate -> one event hides every owner but the last.
+
+    A hidden owner is never reported stale, so it lingers as a duplicate for
+    the life of the database.
+    """
+    rich = _enriched("old-rich", ["c1"])
+    thin = _event("old-thin", ["c1"])
+
+    result = reconcile([_event("new-a", ["c1"])], [rich, thin])
+
+    assert result.events[0].event_id == "old-rich"
+    assert result.stale_event_ids == ["old-thin"]
 
 
 def test_fresh_order_is_preserved():

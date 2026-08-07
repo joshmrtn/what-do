@@ -14,6 +14,7 @@ import copy
 from typing import NamedTuple
 
 from src.models.event import Event
+from src.normalization.deduplicator import merge_cluster
 
 #: Carried from a stored event onto its fresh counterpart. `weather` is
 #: deliberately absent: `weather.cache_ttl_hours` exists so a nightly batch
@@ -52,45 +53,69 @@ def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
         event's id and enrichment or keeping its own, plus the ids of stored
         events superseded by a merge and safe to delete.
     """
-    index: dict[str, Event] = {}
+    # candidate -> every stored event claiming it. A plain dict would keep only
+    # the last owner, and a hidden owner is never reported stale, so it lingers
+    # as a duplicate for the life of the database.
+    index: dict[str, list[Event]] = {}
     for event in stored:
         for candidate_id in event.source_event_candidates:
-            index[candidate_id] = event
+            index.setdefault(candidate_id, []).append(event)
 
-    reconciled: list[Event] = []
-    stale: list[str] = []
-    claimed: set[str] = set()
+    # Group the fresh events by the stored event each one claims, keeping the
+    # position of the first member so the result stays in the caller's order.
+    groups: dict[str, list[Event]] = {}
+    winners: dict[str, Event] = {}
+    order: list[str | None] = []
+    unmatched: dict[int, Event] = {}
+    stale: set[str] = set()
 
-    for event in fresh:
+    for position, event in enumerate(fresh):
         matches = _matches(event, index)
-        # A stored id already adopted this run means a cluster split into two
-        # fresh events. Letting both adopt it would collide on the primary key
-        # and one would silently overwrite the other, so the later one stays new.
-        matches = [m for m in matches if m.event_id not in claimed]
-
         if not matches:
-            reconciled.append(event)
+            unmatched[position] = event
+            order.append(None)
             continue
 
-        winner, losers = matches[0], matches[1:]
-        claimed.add(winner.event_id)
-        stale.extend(loser.event_id for loser in losers)
-        reconciled.append(_adopt(event, winner))
+        winner = matches[0]
+        stale.update(loser.event_id for loser in matches[1:])
+        if winner.event_id not in groups:
+            groups[winner.event_id] = []
+            winners[winner.event_id] = winner
+            order.append(winner.event_id)
+        else:
+            order.append(None)
+        groups[winner.event_id].append(event)
 
-    return ReconcileResult(events=reconciled, stale_event_ids=stale)
+    reconciled: list[Event] = []
+    for position, key in enumerate(order):
+        if key is None:
+            if position in unmatched:
+                reconciled.append(unmatched[position])
+            continue
+        members = groups[key]
+        # More than one fresh event claiming the same stored event means dedup
+        # pass 1 split what pass 2 merged on an earlier run. Pass 2 is the more
+        # capable judge and we already paid for its verdict, so the stored
+        # event is treated as the record of it rather than re-litigated.
+        merged = members[0] if len(members) == 1 else merge_cluster(members)
+        reconciled.append(_adopt(merged, winners[key]))
+
+    # A winner cannot also be stale: it was adopted.
+    stale.difference_update(winners)
+    return ReconcileResult(events=reconciled, stale_event_ids=sorted(stale))
 
 
-def _matches(event: Event, index: dict[str, Event]) -> list[Event]:
+def _matches(event: Event, index: dict[str, list[Event]]) -> list[Event]:
     """Stored events sharing a candidate with `event`, richest first.
 
     A cluster that has grown to span events previously held apart yields more
     than one. The richest wins so the most expensive work survives; ties break
-    on age and then id, so the choice cannot vary between runs.
+    on age and then id, so the choice cannot vary between runs — two fresh
+    events landing on the same stored winner depends on that determinism.
     """
     found: dict[str, Event] = {}
     for candidate_id in event.source_event_candidates:
-        match = index.get(candidate_id)
-        if match is not None:
+        for match in index.get(candidate_id, ()):
             found[match.event_id] = match
 
     return sorted(

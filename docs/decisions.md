@@ -1190,18 +1190,48 @@ with tonight's on every run, and `merge_cluster` tiebreaks on it.
 
 ---
 
-## A stored event id is adopted at most once per run
+## A split cluster is merged back onto its stored event
 
-**Decision:** when two fresh events both match one stored event, the first adopts its id and the
-rest keep their own.
+**Decision:** when two fresh events both match one stored event, they are merged into a single
+event that adopts its id. Superseded 2026-08-06; see the reversal below.
 
 **Rationale:** the plan covered one fresh event matching many stored ones — a cluster growing. The
 mirror happens too: stored `S` carries candidates `[c1, c2]` from an earlier merge, tonight's dedup
-keeps them apart, and fresh `A=[c1]` and `B=[c2]` both match `S`. Both adopting its id would collide
-on the primary key, and since `save_events` is `INSERT OR REPLACE`, one would silently overwrite the
-other. That is data loss, where the case it mirrors is only duplication.
+keeps them apart, and fresh `A=[c1]` and `B=[c2]` both match `S`.
+
+`S` is not merely an id to inherit — it is the record of a **semantic dedup verdict already paid
+for**. Pass 1 is fuzzy and splits what pass 2 merged; pass 2 is the more capable judge by design.
+Re-litigating its verdict nightly with the weaker pass is the defect, so the stored event is
+treated as the oracle.
+
+**The consequence of a merge being self-perpetuating is accepted.** Once `S` claims both
+candidates, every later run re-merges them and the two can never separate again. A wrong merge is
+therefore cemented — but it is cemented today regardless, because `S` already carries both
+candidates and nothing undoes that. Pre-v1 the relief valve is deleting the database; post-v1 this
+would want a real unmerge path.
+
+**Reversed:** the original decision was that the first fresh event adopts the id and the rest keep
+their own, on the grounds that letting both adopt would collide on the primary key and
+`INSERT OR REPLACE` would make one silently overwrite the other — data loss, where the mirrored
+case is only duplication.
+
+The collision reasoning was right; the conclusion was not. The alternative is not *only*
+duplication, because nothing ever cleans up the loser. Measured over six consecutive runs on the
+real fixtures, the batch grew by **two events and two re-extractions every run, without bound** —
+328, 330, 332, 334, 336. The loser was emitted with a fresh uuid and no tags, so it re-extracted at
+roughly three minutes and was saved as another row, which then claimed an already-claimed candidate
+and became invisible to the next run. After the change: 327 events, stable, and zero re-extraction
+from run 2 onward.
+
+**Also fixed:** the index was `candidate -> Event`, so when several stored events claimed one
+candidate a plain dict kept only the last. A hidden owner is never reported stale, so it lingered
+for the life of the database. It is now `candidate -> list[Event]`.
 
 **Rejected:** raising instead. A legitimate dedup threshold change would then abort a batch.
+
+**Note:** `merge_cluster` choosing its base by fewest-null fields is now load-bearing in a second
+place. It was dedup's internal business; it now also decides which fresh event's content survives a
+re-merge, so changing that heuristic reaches further than its name suggests.
 
 ---
 
