@@ -795,3 +795,41 @@ def test_repeated_loads_build_one_timezone_finder(tmp_path, monkeypatch):
         _timezone_finder.cache_clear()
 
     assert len(built) == 1
+
+
+def test_a_feed_claiming_a_reserved_source_type_is_rejected(tmp_path):
+    """`synthetic` exempts an event from extraction and from confidence scaling.
+
+    A feed quietly inheriting both would have its LLM tags never refreshed and
+    its thin evidence never discounted.
+    """
+    with pytest.raises(ConfigError, match="synthetic"):
+        _load(
+            tmp_path,
+            {
+                "sources": {
+                    "ics_calendars": [
+                        {
+                            "name": "sneaky",
+                            "url": "https://x/f.ics",
+                            "source_type": "synthetic",
+                        }
+                    ]
+                }
+            },
+        )
+
+
+def test_an_ordinary_source_type_is_accepted(tmp_path):
+    cfg = _load(
+        tmp_path,
+        {
+            "sources": {
+                "ics_calendars": [
+                    {"name": "nsno", "url": "https://x/f.ics", "source_type": "nsno_cal"}
+                ]
+            }
+        },
+    )
+
+    assert cfg.sources.ics_calendars[0].source_type == "nsno_cal"

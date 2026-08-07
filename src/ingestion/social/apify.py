@@ -10,6 +10,7 @@ import requests
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.source_type import APIFY
 
 _APIFY_BASE = "https://api.apify.com/v2"
 
@@ -46,7 +47,7 @@ class ApifyAdapter(IngestionSource):
         return EventCandidate(
             id=self._derive_id(post),
             source=post.get("ownerUsername", ""),
-            source_type="apify",
+            source_type=APIFY,
             url=post.get("url"),
             image_url=post.get("displayUrl"),
             raw_published_at=pub_at,

@@ -10,6 +10,8 @@ import yaml
 from dotenv import load_dotenv
 from timezonefinder import TimezoneFinder
 
+from src.models.source_type import RESERVED
+
 
 class ConfigError(ValueError):
     """Raised when config.yaml is missing required fields or is malformed."""
@@ -350,11 +352,19 @@ def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
                 f"min_fetch_interval_hours: {interval}"
             )
 
+        source_type = str(entry.get("source_type", name))
+        if source_type in RESERVED:
+            raise ConfigError(
+                f"{kind} '{name}' claims reserved source_type '{source_type}'. "
+                "Reserved values change how a stage treats an event, so a feed "
+                "would silently inherit that behaviour."
+            )
+
         feeds.append(
             FeedConfig(
                 name=name,
                 url=str(entry["url"]),
-                source_type=str(entry.get("source_type", name)),
+                source_type=source_type,
                 min_fetch_interval_hours=interval,
             )
         )

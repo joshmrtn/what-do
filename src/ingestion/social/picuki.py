@@ -10,6 +10,7 @@ import requests
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.source_type import PICUKI
 
 _PICUKI_BASE = "https://www.picuki.com/api"
 
@@ -44,7 +45,7 @@ class PicukiAdapter(IngestionSource):
         return EventCandidate(
             id=self._derive_id(post, source_handle),
             source=source_handle,
-            source_type="picuki",
+            source_type=PICUKI,
             url=post.get("link"),
             image_url=post.get("image"),
             raw_published_at=pub_at,

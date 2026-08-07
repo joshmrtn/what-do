@@ -10,6 +10,7 @@ import requests
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.source_type import AMC
 
 _AMC_GRAPHQL_URL = "https://api.amctheatres.com/graphql"
 
@@ -67,7 +68,7 @@ class AmcAdapter(IngestionSource):
         return EventCandidate(
             id=self._derive_id(movie, show),
             source="amc",
-            source_type="amc",
+            source_type=AMC,
             title=movie.get("name"),
             description=movie.get("synopsis"),
             image_url=movie.get("posterSrc"),

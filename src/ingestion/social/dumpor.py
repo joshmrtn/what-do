@@ -10,6 +10,7 @@ import requests
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.source_type import DUMPOR
 
 _DUMPOR_BASE = "https://dumpor.com/api"
 
@@ -48,7 +49,7 @@ class DumporAdapter(IngestionSource):
         return EventCandidate(
             id=self._derive_id(post, source_handle),
             source=source_handle,
-            source_type="dumpor",
+            source_type=DUMPOR,
             url=post.get("permalink"),
             image_url=post.get("display_url"),
             raw_published_at=pub_at,

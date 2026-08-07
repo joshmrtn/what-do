@@ -10,6 +10,7 @@ import requests
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.source_type import CINEMA_VEEZI
 
 _VEEZI_BASE = "https://api.us.veezi.com/v1"
 
@@ -47,7 +48,7 @@ class CinemaVeeziAdapter(IngestionSource):
         return EventCandidate(
             id=self._derive_id(session),
             source="cinema_veezi",
-            source_type="cinema_veezi",
+            source_type=CINEMA_VEEZI,
             title=session.get("FilmTitle"),
             description=session.get("SynopsisShort"),
             venue=session.get("CinemaName"),

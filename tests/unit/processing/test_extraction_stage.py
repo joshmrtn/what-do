@@ -8,7 +8,8 @@ import io
 
 import pytest
 
-from src.models.event import SYNTHETIC_SOURCE_TYPE, Event
+from src.models.event import Event
+from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
 from src.processing.extraction import ExtractionError, ExtractionResult, OllamaExtractionProvider
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
@@ -481,7 +482,7 @@ def test_a_synthetic_event_is_never_extracted():
     provider = _make_provider(tags=[Tag(text="llm", weight=1.0)])
     stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
     event = _make_event(
-        source_type=SYNTHETIC_SOURCE_TYPE,
+        source_type=SYNTHETIC,
         title="Evening walk",
         description=None,
         tags=[Tag(text="walking", weight=1.0)],

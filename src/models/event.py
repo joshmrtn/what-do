@@ -7,17 +7,11 @@ from datetime import datetime
 
 from typing import TYPE_CHECKING, Any
 
+from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
 
 if TYPE_CHECKING:
     from src.scoring.similarity import SimilarityResult
-
-#: Events the system generates itself from hand-written `config.yaml` rules,
-#: rather than fetching from a source. Every other `source_type` names where
-#: data came from; this one names data we authored, which is why several stages
-#: treat it differently. Lives here so producer and consumers share one
-#: definition — `source_type` is otherwise an open set, extensible from config.
-SYNTHETIC_SOURCE_TYPE = "synthetic"
 
 
 @dataclass
@@ -68,4 +62,4 @@ class Event:
         rather than a failed extraction, and running LLM Pass 1 over it would
         overwrite what a human wrote.
         """
-        return self.source_type == SYNTHETIC_SOURCE_TYPE
+        return self.source_type == SYNTHETIC
