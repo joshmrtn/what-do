@@ -12,13 +12,16 @@ which is what makes a re-run incremental and a crash survivable.
 
 from __future__ import annotations
 
+import argparse
+import sys
 import zoneinfo
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TextIO
 
-from src.config import AppConfig
+from src.composition import BatchDependencies, build_dependencies
+from src.config import AppConfig, load_config
 from src.enrichment.service import EnrichmentService
 from src.ingestion.ingestion_service import IngestionService
 from src.models.event import Event
@@ -32,9 +35,15 @@ from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.candidates import load_candidates
+from src.storage.db import DEFAULT_DB_PATH, init_db
 from src.storage.events import delete_events, load_events, save_events
 from src.storage.recommendations import save_recommendations
-from src.utils.logging import StructuredLogger
+from src.utils.logging import StructuredLogger, get_logger
+
+DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
+DEFAULT_LIKES_PATH = Path("data/likes.txt")
+DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
+DEFAULT_BLOCKLIST_PATH = Path("data/blocklist.json")
 
 
 @dataclass
@@ -280,3 +289,122 @@ def _scope_filter(
         return run_date <= start <= horizon
 
     return in_scope
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Flags are deliberately few; each earns its place.
+
+    There is no `--force-extract`. Extraction's bypass is a property of the
+    event, by design, with no special flag — deleting the row is the honest way
+    to force one.
+    """
+    parser = argparse.ArgumentParser(
+        prog="what-do-run-batch", description="Run the overnight batch."
+    )
+    parser.add_argument("--db", help=f"Path to the database (default: {DEFAULT_DB_PATH})")
+    parser.add_argument("--config", help="Path to config.yaml")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch and process everything, persist no events or recommendations",
+    )
+    parser.add_argument(
+        "--skip-ingest",
+        action="store_true",
+        help="Re-run the pipeline over already-fetched candidates, touching no network",
+    )
+    parser.add_argument("--run-date", help="The date to run for, as YYYY-MM-DD")
+    return parser
+
+
+def _summarise(result: BatchResult) -> str:
+    """Render what the run did, for a human reading cron output."""
+    lines = [f"outcome: {result.outcome}"]
+    for name, count in result.stage_counts.items():
+        lines.append(f"  {name}: {count}")
+    if result.skipped_sources:
+        lines.append(f"  skipped sources: {', '.join(result.skipped_sources)}")
+    for error in result.errors:
+        lines.append(f"  error: {error}")
+    return "\n".join(lines)
+
+
+def run(
+    argv: list[str] | None = None,
+    *,
+    get_now: Callable[[], datetime] = datetime.now,
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+    load_config_fn: Callable[..., AppConfig] = load_config,
+    build_dependencies_fn: Callable[..., BatchDependencies] = build_dependencies,
+    run_batch_fn: Callable[..., BatchResult] = run_batch,
+    init_db_fn: Callable[[Path], None] = init_db,
+) -> int:
+    """Entry point for `what-do-run-batch`.
+
+    Args:
+        argv: Command-line arguments, defaulting to `sys.argv[1:]`.
+        get_now: Injectable clock; nothing in this project reads one directly.
+        stdout: Where the run summary goes.
+        stderr: Where argument errors go.
+        load_config_fn: Injected for testing, as the CLI injects its loaders.
+        build_dependencies_fn: Injected for testing.
+        run_batch_fn: Injected for testing.
+        init_db_fn: Injected for testing.
+
+    Returns:
+        Process exit code. A `partial` run still exits zero — a stage failed but
+        recommendations were produced. Only `failed` is non-zero, which is the
+        case where the batch stopped before ranking and cron should notice.
+    """
+    args = _build_parser().parse_args(argv)
+
+    run_date = get_now().date()
+    if args.run_date:
+        try:
+            run_date = date.fromisoformat(args.run_date)
+        except ValueError:
+            print(f"Invalid --run-date {args.run_date!r}: expected YYYY-MM-DD", file=stderr)
+            return 2
+
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    config = load_config_fn(Path(args.config) if args.config else None)
+    logger = get_logger("batch")
+
+    # Schema, not data: the caches the pipeline reads through need their tables
+    # to exist even on a dry run, which promises to write no events, no
+    # recommendations, and no deletes.
+    init_db_fn(db_path)
+
+    dependencies = build_dependencies_fn(
+        config=config,
+        db_path=db_path,
+        seeds_path=DEFAULT_SEEDS_PATH,
+        likes_path=DEFAULT_LIKES_PATH,
+        dislikes_path=DEFAULT_DISLIKES_PATH,
+        blocklist_path=DEFAULT_BLOCKLIST_PATH,
+        logger=logger,
+        get_now=get_now,
+    )
+
+    result = run_batch_fn(
+        config=config,
+        db_path=db_path,
+        ingestion_service=dependencies.ingestion_service,
+        normalization_service=dependencies.normalization_service,
+        enrichment_service=dependencies.enrichment_service,
+        extraction_stage=dependencies.extraction_stage,
+        embedding_stage=dependencies.embedding_stage,
+        semantic_deduplicator=dependencies.semantic_deduplicator,
+        similarity_stage=dependencies.similarity_stage,
+        ranking_engine=dependencies.ranking_engine,
+        logger=logger,
+        run_date=run_date,
+        get_now=get_now,
+        skipped_sources=dependencies.skipped_sources,
+        skip_ingest=args.skip_ingest,
+        dry_run=args.dry_run,
+    )
+
+    print(_summarise(result), file=stdout)
+    return 1 if result.outcome == "failed" else 0
