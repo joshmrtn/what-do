@@ -31,10 +31,6 @@ EVERYTHING_ELSE = "everything_else"
 MATCH_FACTOR = "match_classification"
 CONFIDENCE_FACTOR = "low_tag_confidence"
 
-#: Synthetic activities are built from hand-written config rules rather than
-#: extracted, so their tag count is an authoring choice, not a failure signal.
-SYNTHETIC_SOURCE_TYPE = "synthetic"
-
 _UNSCORED = SimilarityResult()
 
 
@@ -154,7 +150,9 @@ class RankingEngine:
         evidence is weak, not that the verdict is bad. An event we know almost
         nothing about belongs in the middle of the ranking.
         """
-        if event.source_type == SYNTHETIC_SOURCE_TYPE:
+        # Tags authored in config, so a low count is an authoring choice rather
+        # than a failed extraction.
+        if event.is_synthetic:
             return 1.0
 
         expected = self._config.scoring.min_tags_per_event

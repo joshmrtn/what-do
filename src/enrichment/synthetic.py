@@ -6,7 +6,7 @@ from typing import Callable
 
 from src.config import SyntheticActivityRule, SyntheticConditions
 from src.enrichment.astronomical import AstronomicalData
-from src.models.event import Event
+from src.models.event import SYNTHETIC_SOURCE_TYPE, Event
 from src.models.tag import Tag
 from src.utils.text import normalize_embedding_text
 
@@ -156,7 +156,7 @@ class SyntheticActivityGenerator:
                 Event(
                     event_id=event_id,
                     source_event_candidates=[],
-                    source_type="synthetic",
+                    source_type=SYNTHETIC_SOURCE_TYPE,
                     created_at=now,
                     updated_at=now,
                     title=rule.name,

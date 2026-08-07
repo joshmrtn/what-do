@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.models.event import Event
+from src.models.event import SYNTHETIC_SOURCE_TYPE, Event
 from src.models.tag import Tag
 
 
@@ -163,3 +163,28 @@ def test_event_full_construction():
     assert event.tags == [Tag(text="jazz", weight=1.0), Tag(text="live music", weight=0.6)]
     assert event.start_time == start
     assert len(event.source_event_candidates) == 2
+
+
+def test_a_synthetic_event_is_identified_as_such():
+    """Provenance, not a stored flag: `source_type` already carries this fact."""
+    event = Event(
+        event_id="e1",
+        source_event_candidates=[],
+        source_type=SYNTHETIC_SOURCE_TYPE,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+
+    assert event.is_synthetic is True
+
+
+def test_a_scraped_event_is_not_synthetic():
+    event = Event(
+        event_id="e1",
+        source_event_candidates=[],
+        source_type="apify",
+        created_at=_now(),
+        updated_at=_now(),
+    )
+
+    assert event.is_synthetic is False

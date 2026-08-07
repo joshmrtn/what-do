@@ -12,6 +12,13 @@ from src.models.tag import Tag
 if TYPE_CHECKING:
     from src.scoring.similarity import SimilarityResult
 
+#: Events the system generates itself from hand-written `config.yaml` rules,
+#: rather than fetching from a source. Every other `source_type` names where
+#: data came from; this one names data we authored, which is why several stages
+#: treat it differently. Lives here so producer and consumers share one
+#: definition — `source_type` is otherwise an open set, extensible from config.
+SYNTHETIC_SOURCE_TYPE = "synthetic"
+
 
 @dataclass
 class Event:
@@ -42,3 +49,13 @@ class Event:
     astronomical_data: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     similarity: "SimilarityResult | None" = None
+
+    @property
+    def is_synthetic(self) -> bool:
+        """Whether this event was authored from config rather than extracted.
+
+        Its tags are hand-written, so a low tag count is an authoring choice
+        rather than a failed extraction, and running LLM Pass 1 over it would
+        overwrite what a human wrote.
+        """
+        return self.source_type == SYNTHETIC_SOURCE_TYPE
