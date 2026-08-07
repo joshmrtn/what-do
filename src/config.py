@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 from dataclasses import dataclass, field
+from datetime import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -221,6 +222,24 @@ class ModelsConfig:
     embeddings: str = DEFAULT_EMBEDDING_MODEL
 
 
+#: When one night's listing gives way to the next. Not midnight: a calendar
+#: rollover empties the evening still in progress, and someone asking at 00:30
+#: means the night they are standing in.
+DEFAULT_DAY_STARTS_AT = time(4, 0)
+
+
+@dataclass
+class PresentationConfig:
+    """How the CLI decides what it is showing.
+
+    Attributes:
+        day_starts_at: Local time of day at which the listing rolls over.
+            `00:00` restores plain calendar-day behaviour.
+    """
+
+    day_starts_at: time = DEFAULT_DAY_STARTS_AT
+
+
 @dataclass
 class AppConfig:
     location: LocationConfig
@@ -231,6 +250,7 @@ class AppConfig:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
+    presentation: PresentationConfig = field(default_factory=PresentationConfig)
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
     gemini_api_key: str | None = None
@@ -370,6 +390,40 @@ def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
         )
 
     return feeds
+
+
+def _load_presentation(raw: dict[str, Any]) -> PresentationConfig:
+    """Build presentation config, rejecting an unparseable rollover time.
+
+    A malformed value is not defaulted away: `day_starts_at` decides which day
+    the CLI claims to be showing, so a typo has to fail loudly rather than
+    silently reverting to a different night.
+    """
+    if "day_starts_at" not in raw:
+        return PresentationConfig()
+
+    value = raw["day_starts_at"]
+    if isinstance(value, time):
+        return PresentationConfig(day_starts_at=value)
+
+    # YAML 1.1 reads an unquoted `4:00` as sexagesimal and hands back the int
+    # 240, so the quoting advice is the actual fix far more often than the
+    # format is. `04:00` happens to survive unquoted, which makes the trap
+    # intermittent rather than obvious.
+    complaint = (
+        f"Invalid presentation day_starts_at {value!r}: expected HH:MM, quoted"
+    )
+
+    parts = str(value).split(":")
+    if not 2 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        raise ConfigError(complaint)
+
+    try:
+        parsed = time.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ConfigError(complaint) from exc
+
+    return PresentationConfig(day_starts_at=parsed)
 
 
 def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
@@ -571,6 +625,7 @@ def load_config(
         scoring=scoring,
         sources=_load_sources(data.get("sources") or {}),
         models=_load_models(data.get("models") or {}),
+        presentation=_load_presentation(data.get("presentation") or {}),
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
         gemini_api_key=os.environ.get("GEMINI_API_KEY"),

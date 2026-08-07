@@ -1,4 +1,5 @@
 import os
+from datetime import time
 
 import pytest
 import yaml
@@ -833,3 +834,49 @@ def test_an_ordinary_source_type_is_accepted(tmp_path):
     )
 
     assert cfg.sources.ics_calendars[0].source_type == "nsno_cal"
+
+
+def test_day_starts_at_loads(tmp_path):
+    cfg = _load(tmp_path, {"presentation": {"day_starts_at": "05:30"}})
+
+    assert cfg.presentation.day_starts_at == time(5, 30)
+
+
+def test_day_starts_at_defaults_to_four_am(tmp_path):
+    """The default has to be a small hour, not midnight.
+
+    A listing that rolls over at 00:00 answers "what should we do tonight?" with
+    tomorrow, and empties the evening still in progress.
+    """
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+
+    assert cfg.presentation.day_starts_at == time(4, 0)
+
+
+def test_day_starts_at_midnight_is_accepted(tmp_path):
+    """`00:00` is a real choice: it restores plain calendar-day semantics."""
+    cfg = _load(tmp_path, {"presentation": {"day_starts_at": "00:00"}})
+
+    assert cfg.presentation.day_starts_at == time(0, 0)
+
+
+@pytest.mark.parametrize("bad", ["25:00", "tea time", "4", "", "04:00:00:00", "0400"])
+def test_malformed_day_starts_at_rejected(tmp_path, bad):
+    """A bad value must not silently revert — it decides which day is shown."""
+    with pytest.raises(ConfigError, match="day_starts_at"):
+        _load(tmp_path, {"presentation": {"day_starts_at": bad}})
+
+
+def test_unquoted_sexagesimal_day_starts_at_rejected(tmp_path):
+    """YAML 1.1 reads an unquoted `4:00` as the integer 240.
+
+    Writing it without quotes is an easy mistake and `04:00` survives it, so the
+    trap only springs on single-digit hours. Rejecting the int is what stops a
+    listing quietly rolling over at some hour nobody chose.
+    """
+    config_file = tmp_path / "config.yaml"
+    data = _valid_location_data()
+    config_file.write_text(yaml.dump(data) + "presentation:\n  day_starts_at: 4:00\n")
+
+    with pytest.raises(ConfigError, match="quoted"):
+        load_config(config_path=config_file)

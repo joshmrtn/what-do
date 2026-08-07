@@ -88,6 +88,13 @@ sources:
     #   url: "https://example.com/"
     #   min_fetch_interval_hours: 6
 
+presentation:
+  # When one night's listing gives way to the next. Asking at 00:30 means the
+  # night you are still in, so the rollover is a small hour rather than midnight.
+  # Must be quoted: YAML reads an unquoted `4:00` as the number 240.
+  # Set to "00:00" for plain calendar-day behaviour.
+  day_starts_at: "04:00"
+
 models:
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"
