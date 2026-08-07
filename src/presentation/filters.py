@@ -11,7 +11,7 @@ events are selected by `undated()` and rendered under their own heading.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, tzinfo
 
 from src.models.event import Event
 from src.models.recommendation import Recommendation
@@ -75,6 +75,70 @@ def on_date(pairs: list[RankedPair], day: date) -> list[RankedPair]:
         for pair in pairs
         if pair[1].start_time is not None and pair[1].start_time.date() == day
     ]
+
+
+def night_of(moment: datetime, day_starts_at: time) -> date:
+    """Name the night a moment falls in.
+
+    Before the rollover hour the night is still the previous calendar day's:
+    someone asking at 00:30 means the evening they are standing in, not the one
+    that begins in three and a half hours.
+
+    Args:
+        moment: The current time, **already expressed in the view's timezone**.
+            Converting is the caller's job, since only it knows the zone.
+        day_starts_at: Local time of day at which one night gives way to the next.
+
+    Returns:
+        The date the night is named for.
+    """
+    if moment.time() < day_starts_at:
+        return moment.date() - timedelta(days=1)
+    return moment.date()
+
+
+def during_night(
+    pairs: list[RankedPair],
+    night: date,
+    day_starts_at: time,
+    zone: tzinfo,
+) -> list[RankedPair]:
+    """Select pairs whose event falls in the night named by `night`.
+
+    The window runs from `night` at `day_starts_at` to the same wall-clock time
+    the next day, half-open so two consecutive nights can never both claim the
+    same event. It is a wall-clock span, not a fixed 24 hours, so a night
+    crossing a DST boundary is honestly 23 or 25 hours long.
+
+    This cannot be expressed as a filter on the event's date: a 00:30 show
+    carries the *next* calendar date, and dropping it would empty the evening
+    still in progress.
+
+    Args:
+        pairs: Ranked pairs, in the batch's rank order.
+        night: The date the night is named for.
+        day_starts_at: Local time of day at which the night begins and ends.
+        zone: The view's timezone, which anchors the window.
+
+    Returns:
+        The pairs inside the window, order preserved.
+    """
+    window_from = datetime.combine(night, day_starts_at, tzinfo=zone)
+    window_to = window_from + timedelta(days=1)
+
+    kept = []
+    for pair in pairs:
+        start = pair[1].start_time
+        if start is None:
+            continue
+        if start.tzinfo is None:
+            # Normalization guarantees aware datetimes, so this is defensive.
+            # Comparing naive to aware raises, and one bad row must not take
+            # down every other event in the view.
+            start = start.replace(tzinfo=zone)
+        if window_from <= start < window_to:
+            kept.append(pair)
+    return kept
 
 
 def overlapping(pairs: list[RankedPair], window_start: time, window_end: time) -> list[RankedPair]:

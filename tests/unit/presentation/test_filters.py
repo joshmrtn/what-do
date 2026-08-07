@@ -1,6 +1,7 @@
 """Unit tests for the CLI's view filters."""
 
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -9,6 +10,8 @@ from src.models.recommendation import Recommendation
 from src.presentation.filters import (
     after_sunset,
     dated,
+    during_night,
+    night_of,
     on_date,
     overlapping,
     parse_time_window,
@@ -198,3 +201,89 @@ class TestAfterSunset:
         ]
 
         assert _ids(after_sunset(pairs)) == ["late-june"]
+
+
+ZONE = ZoneInfo("America/New_York")
+
+
+def _when(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
+    """A wall-clock moment in the view's own zone."""
+    return datetime(year, month, day, hour, minute, tzinfo=ZONE)
+
+
+def test_night_of_before_rollover_is_the_previous_day():
+    """00:30 belongs to the night still in progress, not the new calendar day."""
+    assert night_of(_when(2025, 6, 21, 0, 30), time(4, 0)) == date(2025, 6, 20)
+
+
+def test_night_of_at_the_rollover_starts_the_new_night():
+    """The boundary is inclusive at the start, so 04:00 is already the new night."""
+    assert night_of(_when(2025, 6, 21, 4, 0), time(4, 0)) == date(2025, 6, 21)
+
+
+def test_night_of_after_the_rollover_is_the_same_day():
+    assert night_of(_when(2025, 6, 21, 20, 0), time(4, 0)) == date(2025, 6, 21)
+
+
+def test_night_of_at_midnight_rollover_is_the_calendar_date():
+    """`00:00` restores plain calendar-day behaviour."""
+    assert night_of(_when(2025, 6, 21, 0, 30), time(0, 0)) == date(2025, 6, 21)
+
+
+def test_during_night_keeps_an_event_after_midnight():
+    """The reason the window exists.
+
+    A 00:30 show carries the *next* calendar date, so any filter keyed on the
+    date alone loses it from the evening it actually belongs to.
+    """
+    late = _pair("late", start=_when(2025, 6, 22, 0, 30))
+
+    assert during_night([late], date(2025, 6, 21), time(4, 0), ZONE) == [late]
+
+
+def test_during_night_excludes_the_previous_night():
+    early = _pair("early", start=_when(2025, 6, 21, 3, 0))
+
+    assert during_night([early], date(2025, 6, 21), time(4, 0), ZONE) == []
+
+
+def test_during_night_is_half_open_at_both_ends():
+    """Start inclusive, end exclusive, so consecutive nights cannot both claim one event."""
+    at_start = _pair("at-start", start=_when(2025, 6, 21, 4, 0))
+    at_end = _pair("at-end", start=_when(2025, 6, 22, 4, 0))
+
+    kept = during_night([at_start, at_end], date(2025, 6, 21), time(4, 0), ZONE)
+
+    assert kept == [at_start]
+
+
+def test_during_night_localises_a_naive_start_time():
+    """A naive start must not crash the whole view.
+
+    Normalization guarantees aware datetimes, but comparing naive to aware
+    raises TypeError, and one bad row taking down every event is the worse
+    failure. Assume the view's zone, which is what normalization would have.
+    """
+    naive = _pair("naive", start=datetime(2025, 6, 21, 20, 0))
+
+    assert during_night([naive], date(2025, 6, 21), time(4, 0), ZONE) == [naive]
+
+
+def test_during_night_excludes_undated_events():
+    """Undated events are selected by `undated()` and rendered separately."""
+    assert during_night([_pair("no-time")], date(2025, 6, 21), time(4, 0), ZONE) == []
+
+
+def test_during_night_compares_across_zones():
+    """An event stored in another offset is judged by the view's wall clock."""
+    utc_evening = _pair("utc", start=datetime(2025, 6, 22, 1, 0, tzinfo=timezone.utc))
+
+    assert during_night([utc_evening], date(2025, 6, 21), time(4, 0), ZONE) == [utc_evening]
+
+
+def test_during_night_preserves_order():
+    """Filters may drop a pair, never move one — rank order is the product."""
+    first = _pair("first", start=_when(2025, 6, 21, 22, 0))
+    second = _pair("second", start=_when(2025, 6, 21, 19, 0))
+
+    assert during_night([first, second], date(2025, 6, 21), time(4, 0), ZONE) == [first, second]
