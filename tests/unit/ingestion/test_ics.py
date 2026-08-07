@@ -231,3 +231,78 @@ def test_recurring_event_yields_the_base_occurrence_and_warns():
     assert len(events) == 1
     assert events[0].summary == "Weekly Trivia"
     assert "RRULE" in stream.getvalue() or "recurr" in stream.getvalue().lower()
+
+
+def _body(*lines: str) -> str:
+    """One VEVENT body, for `_calendar` to wrap."""
+    return "\r\n".join(lines)
+
+
+class TestRepeatedProperties:
+    """A flat last-wins dict silently drops all but one EXDATE.
+
+    Measured on a real feed: 405 events carry more than one EXDATE line and one
+    carries 123. Keeping only the last would invent screenings that were
+    cancelled.
+    """
+
+    def test_every_occurrence_of_a_repeated_property_is_kept(self):
+        event = parse_ics(
+            _calendar(
+                _body(
+                    "UID:e1",
+                    "DTSTART:20260807T190000Z",
+                    "EXDATE:20260814T190000Z",
+                    "EXDATE:20260821T190000Z",
+                    "EXDATE:20260828T190000Z",
+                )
+            )
+        )[0]
+
+        values = [p.value for p in event.repeated["EXDATE"]]
+
+        assert values == ["20260814T190000Z", "20260821T190000Z", "20260828T190000Z"]
+
+    def test_parameters_are_kept_alongside_each_value(self):
+        """TZID appears on 2,029 of 2,035 real EXDATE lines; dropping it loses the zone."""
+        event = parse_ics(
+            _calendar(
+                _body(
+                    "UID:e1",
+                    "DTSTART:20260807T190000Z",
+                    "EXDATE;TZID=America/New_York:20260814T190000",
+                )
+            )
+        )[0]
+
+        exdate = event.repeated["EXDATE"][0]
+
+        assert exdate.params["TZID"] == "America/New_York"
+
+    def test_a_single_valued_property_is_also_available_repeated(self):
+        event = parse_ics(_calendar(_body("UID:e1", "RRULE:FREQ=WEEKLY;BYDAY=TH")))[0]
+
+        assert [p.value for p in event.repeated["RRULE"]] == ["FREQ=WEEKLY;BYDAY=TH"]
+
+    def test_properties_still_holds_the_last_value(self):
+        """The existing flat view is unchanged, so current callers keep working."""
+        event = parse_ics(
+            _calendar(_body("UID:e1", "EXDATE:20260814T190000Z", "EXDATE:20260821T190000Z"))
+        )[0]
+
+        assert event.properties["EXDATE"] == "20260821T190000Z"
+
+    def test_repeated_properties_do_not_leak_between_events(self):
+        events = parse_ics(
+            _calendar(_body("UID:e1", "EXDATE:20260814T190000Z"), _body("UID:e2"))
+        )
+
+        assert "EXDATE" not in events[1].repeated
+
+    def test_a_nested_block_does_not_contribute_repeated_properties(self):
+        """VALARM carries its own TRIGGER; it must not land on the event."""
+        event = parse_ics(
+            _calendar(_body("UID:e1", "BEGIN:VALARM", "TRIGGER:-PT15M", "END:VALARM"))
+        )[0]
+
+        assert "TRIGGER" not in event.repeated

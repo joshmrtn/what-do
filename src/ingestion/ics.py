@@ -4,9 +4,11 @@ Deliberately hand-rolled rather than pulling in a dependency: public event
 calendars use a narrow slice of the format, and the parts that actually bite are
 small and pure — line unfolding, value unescaping, and timestamp forms.
 
-The parser's contract is to lose nothing. Every property a VEVENT declares is
-kept in `VEvent.properties`, so a source adapter can map new fields without the
-parser changing, and downstream LLM extraction sees whatever the feed sent.
+The parser's contract is to lose nothing, so a source adapter can map new fields
+without the parser changing and downstream LLM extraction sees whatever the feed
+sent. `VEvent.properties` is a convenience view keyed by name; because ICS lets
+properties repeat, it is `VEvent.repeated` that actually honours the contract —
+one real feed carries 123 `EXDATE` lines on a single event.
 """
 
 from __future__ import annotations
@@ -19,6 +21,19 @@ from typing import Any
 _UTC_FORMAT = "%Y%m%dT%H%M%SZ"
 _LOCAL_FORMAT = "%Y%m%dT%H%M%S"
 _DATE_FORMAT = "%Y%m%d"
+
+
+@dataclass(frozen=True)
+class Property:
+    """One occurrence of an ICS property: its value and the parameters it carried.
+
+    Attributes:
+        value: The unescaped property value.
+        params: Parameters declared on that line, such as `TZID`.
+    """
+
+    value: str
+    params: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -41,6 +56,10 @@ class VEvent:
     dtstart_tzid: str | None = None
     dtend_tzid: str | None = None
     properties: dict[str, str] = field(default_factory=dict)
+    #: Every occurrence of every property, in feed order, with its parameters.
+    #: `properties` keeps only the last value of each name and drops params,
+    #: which is lossy for the ones ICS allows to repeat — `EXDATE` above all.
+    repeated: dict[str, list[Property]] = field(default_factory=dict)
 
 
 def _unfold(text: str) -> list[str]:
@@ -118,7 +137,11 @@ def _parse_timestamp(value: str, params: dict[str, str]) -> tuple[datetime | Non
     return None, tzid
 
 
-def _build_event(properties: dict[str, str], raw: dict[str, dict[str, str]]) -> VEvent:
+def _build_event(
+    properties: dict[str, str],
+    raw: dict[str, dict[str, str]],
+    repeated: dict[str, list[Property]] | None = None,
+) -> VEvent:
     """Assemble a VEvent from the properties collected for one block."""
     dtstart, dtstart_tzid = (None, None)
     dtend, dtend_tzid = (None, None)
@@ -140,6 +163,7 @@ def _build_event(properties: dict[str, str], raw: dict[str, dict[str, str]]) -> 
         dtstart_tzid=dtstart_tzid,
         dtend_tzid=dtend_tzid,
         properties=properties,
+        repeated=repeated if repeated is not None else {},
     )
 
 
@@ -159,6 +183,7 @@ def parse_ics(text: str, logger: Any = None) -> list[VEvent]:
     events: list[VEvent] = []
     properties: dict[str, str] = {}
     params: dict[str, dict[str, str]] = {}
+    repeated: dict[str, list[Property]] = {}
 
     depth = 0  # nesting inside a VEVENT, so VALARM does not leak properties in
 
@@ -171,14 +196,14 @@ def parse_ics(text: str, logger: Any = None) -> list[VEvent]:
         if name == "BEGIN":
             if value.strip().upper() == "VEVENT" and depth == 0:
                 depth = 1
-                properties, params = {}, {}
+                properties, params, repeated = {}, {}, {}
             elif depth:
                 depth += 1
             continue
 
         if name == "END":
             if depth == 1 and value.strip().upper() == "VEVENT":
-                events.append(_build_event(properties, params))
+                events.append(_build_event(properties, params, repeated))
                 depth = 0
             elif depth > 1:
                 depth -= 1
@@ -189,6 +214,9 @@ def parse_ics(text: str, logger: Any = None) -> list[VEvent]:
 
         properties[name] = _unescape(value)
         params[name] = line_params
+        repeated.setdefault(name, []).append(
+            Property(value=_unescape(value), params=line_params)
+        )
 
         if name in ("RRULE", "RECURRENCE-ID") and logger is not None:
             logger.warning(

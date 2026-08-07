@@ -14,6 +14,7 @@ dependencies = [
     "rapidfuzz>=3.0",
     "astral>=3.0",
     "google-genai>=1.0",
+    "python-dateutil>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ dev = [
     "mypy>=1.9",
     "types-PyYAML",
     "types-requests",
+    "types-python-dateutil",
 ]
 
 [project.scripts]
