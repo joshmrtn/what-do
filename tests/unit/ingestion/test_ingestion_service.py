@@ -663,3 +663,39 @@ def test_persisting_run_still_writes(db, seeds_yaml):
     rows = _get_persisted_candidates(conn)
     conn.close()
     assert len(rows) == 1
+
+
+def test_a_description_mentioning_a_handle_does_not_deadlock(db, seeds_yaml):
+    """Handle discovery opens its own connection while candidates are uncommitted.
+
+    `_persist_candidate` writes on the outer connection, which holds a RESERVED
+    lock until the commit after the loop. `HandleExtractor` then opens a second
+    connection and writes, so it waits on a lock the same call stack is holding
+    and dies at the default five-second timeout.
+
+    It only bites when a description actually mentions an @handle, because the
+    extractor returns before connecting when it finds none.
+    """
+    candidate = _make_candidate(description="Tonight at @thejazzclub, doors at 8")
+
+    svc = IngestionService(
+        config=_make_config(),
+        db_path=db,
+        seeds_path=seeds_yaml,
+        failover_sources=[_mock_social_source([candidate])],
+        independent_sources=[],
+        logger=_make_logger(),
+    )
+
+    result = svc.run(get_now=lambda: FIXED_NOW)
+
+    assert result.accepted == 1
+    conn = sqlite3.connect(db)
+    try:
+        handles = {
+            row[0]
+            for row in conn.execute("SELECT handle FROM candidate_entities").fetchall()
+        }
+    finally:
+        conn.close()
+    assert "@thejazzclub" in handles

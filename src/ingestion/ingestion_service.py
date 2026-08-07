@@ -91,6 +91,7 @@ class IngestionService:
             candidates = self._collect_candidates()
 
             accepted: list[EventCandidate] = []
+            pending_discovery: list[tuple[str, str]] = []
             discarded = 0
             handles_discovered = 0
 
@@ -128,17 +129,25 @@ class IngestionService:
 
                 if conn is not None:
                     self._persist_candidate(conn, ec)
-
                     if ec.description:
-                        extractor.process(
-                            text=ec.description,
-                            source_handle=ec.source,
-                            source_depth=0,
-                        )
-                        handles_discovered += 1
+                        pending_discovery.append((ec.description, ec.source))
 
             if conn is not None:
+                # Commit before discovery, not after. HandleExtractor opens its
+                # own connection, while the inserts above hold a RESERVED lock
+                # until this commit — so running discovery inside the loop makes
+                # it wait on a lock this same call stack is holding, and it dies
+                # at SQLite's five-second timeout. It only bites when a
+                # description actually mentions an @handle, since the extractor
+                # returns before connecting when it finds none.
                 conn.commit()
+
+                for text, source_handle in pending_discovery:
+                    extractor.process(
+                        text=text, source_handle=source_handle, source_depth=0
+                    )
+                    handles_discovered += 1
+
                 self._evaluate_promotion(conn, seed_handles, get_now)
                 conn.commit()
         finally:
