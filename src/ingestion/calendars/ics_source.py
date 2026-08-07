@@ -13,7 +13,8 @@ misbehaves is a nightly job that gets blocked.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,7 +22,8 @@ import requests
 
 from src.config import FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
-from src.ingestion.ics import VEvent, parse_ics
+from src.ingestion.ics import parse_ics
+from src.ingestion.recurrence import Occurrence, expand_calendar
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.utils.html import html_to_text
@@ -43,25 +45,40 @@ class IcsCalendarSource(IngestionSource):
         session: requests.Session | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
+        timezone_name: str = "UTC",
+        horizon_days: int = 30,
     ) -> None:
         self._config = config
         self._db_path = db_path
         self._session = session or requests.Session()
         self._get_now = get_now
         self._logger = logger
+        self._zone = _zone_of(timezone_name)
+        self._horizon_days = horizon_days
 
     def fetch(self) -> list[EventCandidate]:
         """Fetch and parse the calendar, skipping the network when it is polite to.
 
+        Recurring events are expanded into one candidate per occurrence inside
+        the horizon. Without that a weekly event running since 2023 arrives as a
+        single candidate dated 2023, and every live occurrence is lost the
+        moment anything filters on event time.
+
         Returns:
-            One EventCandidate per usable VEVENT, in feed order.
+            One EventCandidate per occurrence, in chronological order.
         """
         body = self._read_feed()
         events = parse_ics(body, logger=self._logger)
 
+        window_start = self._get_now()
+        window_end = window_start + timedelta(days=self._horizon_days)
+        occurrences = expand_calendar(
+            events, window_start, window_end, self._zone, logger=self._logger
+        )
+
         candidates = []
-        for event in events:
-            candidate = self._to_candidate(event)
+        for occurrence in occurrences:
+            candidate = self._to_candidate(occurrence)
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -87,8 +104,10 @@ class IcsCalendarSource(IngestionSource):
     # Mapping
     # ------------------------------------------------------------------
 
-    def _to_candidate(self, event: VEvent) -> EventCandidate | None:
-        """Map one VEVENT, or None when it cannot be used."""
+    def _to_candidate(self, occurrence: Occurrence) -> EventCandidate | None:
+        """Map one occurrence, or None when it cannot be used."""
+        event = occurrence.event
+
         if (event.status or "").upper() == "CANCELLED":
             return None
 
@@ -103,7 +122,7 @@ class IcsCalendarSource(IngestionSource):
         title, venue, city, category = self._split_summary(event.summary)
 
         return EventCandidate(
-            id=f"{self._config.name}:{event.uid}",
+            id=self._candidate_id(occurrence, event.uid),
             source=self._config.name,
             source_type=self._config.source_type,
             title=title,
@@ -111,14 +130,39 @@ class IcsCalendarSource(IngestionSource):
             venue=venue,
             location=city,
             url=event.url,
-            start_time=event.dtstart,
-            end_time=event.dtend,
+            start_time=occurrence.start,
+            end_time=self._end_of(occurrence),
             # Deliberately unset. CREATED tracks when the calendar was last
             # rebuilt, not when the event was announced, and this field is what
             # the ingestion lookback discards on.
             raw_published_at=None,
             discovered_at=self._get_now(),
         )
+
+    def _candidate_id(self, occurrence: Occurrence, uid: str) -> str:
+        """Derive a stable id, adding the slot only when the UID is ambiguous.
+
+        Every occurrence of a series shares one UID, so a recurring event needs
+        its slot to tell tonight's showing from next week's. A one-off has
+        nothing to disambiguate, and appending its start would churn the id the
+        moment the feed corrected a time — so it keeps the bare UID.
+
+        The slot is the *original* one, not where a moved instance landed, so
+        rescheduling updates the stored event instead of orphaning it.
+        """
+        base = f"{self._config.name}:{uid}"
+        if not occurrence.from_series:
+            return base
+
+        return f"{base}:{occurrence.original_start.strftime('%Y%m%dT%H%M%S%z')}"
+
+    def _end_of(self, occurrence: Occurrence) -> datetime | None:
+        """The occurrence's end, holding the series' duration against its start."""
+        event = occurrence.event
+        if event.dtend is None or event.dtstart is None:
+            return None
+
+        return occurrence.start + (event.dtend - event.dtstart)
 
     def _split_summary(
         self, summary: str | None
@@ -168,3 +212,15 @@ class IcsCalendarSource(IngestionSource):
         if self._logger is None:
             return
         getattr(self._logger, level)(message, component="ics_source", duration_ms=0)
+
+
+def _zone_of(name: str) -> ZoneInfo:
+    """Resolve a zone name, falling back to UTC rather than failing the fetch.
+
+    Only reached for naive feed values that declare no TZID of their own, so a
+    fallback shifts a handful of timestamps rather than losing the source.
+    """
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")

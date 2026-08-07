@@ -77,9 +77,15 @@ def candidates(db):
     return source.fetch()
 
 
-def test_the_whole_feed_becomes_candidates(candidates):
+def test_the_feed_becomes_candidates_inside_the_horizon(candidates):
+    """The feed runs ~39 days out; the default horizon is 30.
 
-    assert len(candidates) == 144
+    Of 144 events, 117 fall inside the window. The rest are real and simply
+    beyond what this run is scoped to look at — raise `scraping.horizon_days`
+    to take them.
+    """
+
+    assert len(candidates) == 117
 
 
 def test_every_candidate_is_identifiable(candidates):
@@ -105,7 +111,7 @@ def test_most_candidates_carry_a_venue(candidates):
 
 def test_end_times_are_present_where_the_feed_declares_them(candidates):
 
-    assert sum(1 for c in candidates if c.end_time) == 126
+    assert sum(1 for c in candidates if c.end_time) == 100
 
 
 def test_no_candidate_claims_a_published_date(candidates):

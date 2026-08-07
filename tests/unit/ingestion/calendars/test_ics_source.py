@@ -55,7 +55,7 @@ def _session(response=None):
     return session
 
 
-def _make_source(db, session=None, now=FIXED_NOW, stream=None, **config_overrides):
+def _make_source(db, session=None, now=FIXED_NOW, stream=None, horizon_days=30, **config_overrides):
     settings = {
         "name": "northshorenightout",
         "url": URL,
@@ -70,6 +70,7 @@ def _make_source(db, session=None, now=FIXED_NOW, stream=None, **config_override
         session=session or _session(),
         get_now=lambda: now,
         logger=get_logger("test", stream=stream or io.StringIO()),
+        horizon_days=horizon_days,
     )
 
 
@@ -346,3 +347,119 @@ def test_http_error_propagates_without_retrying(db):
         _make_source(db, session=session).fetch()
 
     session.get.assert_called_once()
+
+
+_WEEKLY = _calendar(
+    "UID:weekly@google.com\r\n"
+    "SUMMARY:[The Rhumb Line\\, Gloucester\\, Music] Karaoke\r\n"
+    "DTSTART;TZID=America/New_York:20230105T200000\r\n"
+    "DTEND;TZID=America/New_York:20230105T230000\r\n"
+    "RRULE:FREQ=WEEKLY;BYDAY=TH"
+)
+
+
+def _weekly_source(db, now=FIXED_NOW, horizon_days=30, body=_WEEKLY, stream=None):
+    return _make_source(db, session=_session(_response(body)), now=now, stream=stream,
+                        horizon_days=horizon_days)
+
+
+class TestRecurringEvents:
+    """A weekly event running since 2023 must yield this month's occurrences.
+
+    Its base occurrence is two years old, so without expansion the adapter emits
+    one candidate dated 2023 and every live Thursday is lost.
+    """
+
+    def test_a_recurring_event_yields_one_candidate_per_occurrence(self, db):
+        results = _weekly_source(db).fetch()
+
+        assert len(results) == 5
+
+    def test_each_occurrence_lands_on_its_own_date(self, db):
+        starts = sorted(c.start_time for c in _weekly_source(db).fetch())
+
+        assert [s.date().isoformat() for s in starts] == [
+            "2026-08-06", "2026-08-13", "2026-08-20", "2026-08-27", "2026-09-03"
+        ]
+
+    def test_every_occurrence_gets_a_distinct_id(self, db):
+        results = _weekly_source(db).fetch()
+
+        assert len({c.id for c in results}) == len(results)
+
+    def test_an_occurrence_keeps_its_id_across_fetches(self, db):
+        """The whole cost model rests on this.
+
+        A stable id lets reconcile match tonight's occurrence to the event
+        stored last night, so the extraction hash skips it. Get it wrong and
+        every occurrence re-extracts nightly at ~3 min each.
+        """
+        first = {c.id for c in _weekly_source(db).fetch()}
+        later = {c.id for c in _weekly_source(db, now=FIXED_NOW + timedelta(hours=12)).fetch()}
+
+        assert first & later
+
+    def test_the_occurrence_id_carries_the_uid_and_its_slot(self, db):
+        results = sorted(_weekly_source(db).fetch(), key=lambda c: c.start_time)
+
+        assert "weekly@google.com" in results[0].id
+        assert results[0].id != results[1].id
+
+    def test_occurrences_beyond_the_horizon_are_not_emitted(self, db):
+        results = _weekly_source(db, horizon_days=7).fetch()
+
+        assert len(results) == 1
+
+    def test_the_shared_fields_carry_to_every_occurrence(self, db):
+        results = _weekly_source(db).fetch()
+
+        assert all(c.title == "Karaoke" for c in results)
+        assert all(c.venue == "The Rhumb Line" for c in results)
+
+    def test_a_non_recurring_event_keeps_a_uid_only_id(self, db):
+        """Nothing disambiguates a one-off, so its id should not churn."""
+        candidate = _make_source(db).fetch()[0]
+
+        assert candidate.id == "northshorenightout:abc123@google.com"
+
+    def test_an_expired_series_yields_nothing(self, db):
+        expired = _calendar(
+            "UID:old@google.com\r\n"
+            "SUMMARY:[A Venue\\, Salem] Old Run\r\n"
+            "DTSTART;TZID=America/New_York:20220301T190000\r\n"
+            "RRULE:FREQ=DAILY;COUNT=7"
+        )
+
+        assert _weekly_source(db, body=expired).fetch() == []
+
+    def test_an_excluded_occurrence_is_not_emitted(self, db):
+        with_exclusion = _calendar(
+            "UID:weekly@google.com\r\n"
+            "SUMMARY:[A Venue\\, Salem] Karaoke\r\n"
+            "DTSTART;TZID=America/New_York:20230105T200000\r\n"
+            "RRULE:FREQ=WEEKLY;BYDAY=TH\r\n"
+            "EXDATE;TZID=America/New_York:20260813T200000"
+        )
+
+        dates = {c.start_time.date().isoformat() for c in _weekly_source(db, body=with_exclusion).fetch()}
+
+        assert "2026-08-13" not in dates
+        assert "2026-08-20" in dates
+
+    def test_a_moved_occurrence_uses_the_override_fields(self, db):
+        with_override = _calendar(
+            "UID:weekly@google.com\r\n"
+            "SUMMARY:[A Venue\\, Salem] Karaoke\r\n"
+            "DTSTART;TZID=America/New_York:20230105T200000\r\n"
+            "RRULE:FREQ=WEEKLY;BYDAY=TH",
+            "UID:weekly@google.com\r\n"
+            "SUMMARY:[A Venue\\, Salem] Special Guest\r\n"
+            "DTSTART;TZID=America/New_York:20260813T213000\r\n"
+            "RECURRENCE-ID;TZID=America/New_York:20260813T200000",
+        )
+
+        results = _weekly_source(db, body=with_override).fetch()
+        titles = {c.title for c in results}
+
+        assert "Special Guest" in titles
+        assert len(results) == 5

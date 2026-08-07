@@ -142,7 +142,14 @@ def build_dependencies(
         )
     for feed in config.sources.ics_calendars:
         independent_sources.append(
-            IcsCalendarSource(feed, db_path, get_now=get_now, logger=logger)
+            IcsCalendarSource(
+                feed,
+                db_path,
+                get_now=get_now,
+                logger=logger,
+                timezone_name=config.location.timezone,
+                horizon_days=config.scraping.horizon_days,
+            )
         )
     for feed in config.sources.html_calendars:
         independent_sources.append(

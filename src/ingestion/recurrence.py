@@ -53,6 +53,17 @@ class Occurrence:
     original_start: datetime
     event: VEvent
 
+    @property
+    def from_series(self) -> bool:
+        """Whether this instance is one of many sharing a UID.
+
+        A caller deriving an identity needs the slot only when the UID alone
+        cannot tell tonight's occurrence from next week's.
+        """
+        return bool(
+            self.event.repeated.get("RRULE") or self.event.repeated.get("RECURRENCE-ID")
+        )
+
 
 def expand_calendar(
     events: list[VEvent],
