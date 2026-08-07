@@ -368,24 +368,27 @@ def test_real_extraction_produces_valid_result():
 
 
 @pytest.mark.slow
-def test_bypass_not_called_with_prepopulated_tags():
-    """Confirm Ollama is not called when event already has tags."""
+def test_bypass_not_called_when_the_input_is_unchanged():
+    """Confirm Ollama is not reached when the stored hash still matches."""
 
-    # Use a mock client that will raise if called
+    # A client that raises if it is called at all.
     client = MagicMock()
-    client.chat.side_effect = AssertionError("Ollama should not be called when tags exist")
+    client.chat.side_effect = AssertionError("Ollama should not be called when done")
 
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
     stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
 
     event = _make_event(
-        tags=["jazz", "live music", "evening", "venue", "weekend"],
+        tags=[Tag(text=t) for t in ["jazz", "live music", "evening", "venue", "weekend"]],
         summary="Pre-existing summary.",
     )
+    event.extraction_input_hash = extraction_input_hash(event)
     results = stage.process([event])
 
     # If we got here, Ollama was not called
-    assert results[0].tags == ["jazz", "live music", "evening", "venue", "weekend"]
+    assert [t.text for t in results[0].tags] == [
+        "jazz", "live music", "evening", "venue", "weekend"
+    ]
     assert results[0].summary == "Pre-existing summary."
 
 
