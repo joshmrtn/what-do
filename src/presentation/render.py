@@ -134,6 +134,13 @@ def _render_section(
         when = _format_time(event.start_time) if event.start_time else ""
         prefix = f"  {recommendation.rank}. "
         lines.append(f"{prefix}{when + '  ' if when else ''}{_describe(event)}")
+        # Directly under the title, ahead of the reasons. The reasons are the
+        # batch's justification; the link is what you want next once a title has
+        # caught your eye, so it should not sit below two lines of score
+        # narrative. Bare and unlabelled — a URL says what it is, and terminals
+        # make it clickable.
+        if event.url:
+            lines.append(_style(f"      {event.url}", _DIM, color))
         if verbose:
             lines.append(_style(f"      {_components(recommendation)}", _DIM, color))
         for reason in _visible_reasons(recommendation.reasons, verbose=verbose):

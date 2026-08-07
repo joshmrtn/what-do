@@ -35,6 +35,7 @@ def _event(
     venue: str | None = "The Dive Bar",
     start: datetime | None = None,
     source_type: str = "instagram",
+    url: str | None = None,
 ) -> Event:
     return Event(
         event_id=event_id,
@@ -45,6 +46,7 @@ def _event(
         title=title,
         venue=venue,
         start_time=start,
+        url=url,
     )
 
 
@@ -403,3 +405,73 @@ class TestRenderRaw:
 
     def test_empty_input_renders_a_friendly_message(self):
         assert "No events" in render_raw([])
+
+
+LINK = "https://coastalmassbrewing.com/our-events/2026/8/6/music-bingo"
+
+
+class TestEventUrl:
+    """#21: every source stores a URL and none of them were ever shown."""
+
+    def test_the_url_is_rendered(self):
+        out = render_recommendations([_pair("a", url=LINK)])
+
+        assert LINK in out
+
+    def test_the_url_precedes_the_reasons(self):
+        """The link is what you want next once a title catches your eye.
+
+        Putting it below the score narrative buries the one line that answers
+        "what is this actually?".
+        """
+        out = render_recommendations([_pair("a", url=LINK)])
+
+        assert out.index(LINK) < out.index("karaoke")
+
+    def test_the_url_follows_its_own_title(self):
+        out = render_recommendations([_pair("a", title="Music Bingo", url=LINK)])
+
+        assert out.index("Music Bingo") < out.index(LINK)
+
+    def test_an_event_without_a_url_is_unchanged(self):
+        """The whole no-URL path must render byte-identically to before."""
+        with_none = render_recommendations([_pair("a")])
+        explicitly_none = render_recommendations([_pair("a", url=None)])
+
+        assert with_none == explicitly_none
+        assert "http" not in with_none
+
+    def test_only_the_event_that_has_one_shows_a_url(self):
+        out = render_recommendations(
+            [_pair("a", title="Has Link", url=LINK), _pair("b", title="No Link", rank=2)]
+        )
+
+        assert out.count(LINK) == 1
+
+    def test_the_folded_count_is_unaffected(self):
+        """The bottom tier stays a count; a URL must not leak into it."""
+        out = render_recommendations(
+            [_pair("a"), _pair("b", tier="everything_else", rank=2, url=LINK)]
+        )
+
+        assert "+ 1 more event ranked lower (--all)" in out
+        assert LINK not in out
+
+    def test_the_url_shows_in_the_expanded_bottom_tier(self):
+        out = render_recommendations(
+            [_pair("b", tier="everything_else", url=LINK)], show_all=True
+        )
+
+        assert LINK in out
+
+    def test_the_url_shows_in_the_undated_section(self):
+        out = render_recommendations([_pair("a", start=None, url=LINK)])
+
+        assert "UNDATED" in out
+        assert LINK in out
+
+    def test_the_raw_view_stays_one_line_per_event(self):
+        """`--raw` is the terse escape hatch; a second line per event defeats it."""
+        out = render_raw([_event("a", url=LINK)])
+
+        assert LINK not in out
