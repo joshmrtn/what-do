@@ -9,14 +9,16 @@ import io
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as time_of_day
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
 
 from src.models.event import Event
 from src.models.recommendation import Recommendation, make_recommendation_id
-from src.presentation.cli import run
+from src.presentation.cli import ViewSettings, run
 from src.scoring.similarity import Reason
 from src.storage.db import init_db
 from src.storage.events import save_events
@@ -25,6 +27,11 @@ from src.storage.recommendations import save_recommendations
 TZ = timezone(timedelta(hours=-4))
 RUN_DATE = date(2025, 6, 21)
 NOW = datetime(2025, 6, 21, 17, 0, tzinfo=TZ)
+
+#: Pinned rather than read from `config/config.yaml`. The CLI falls back to the
+#: system timezone when no config exists, which would move the night under a
+#: fresh clone or a UTC machine and make these assertions environmental.
+VIEW = ViewSettings(zone=ZoneInfo("America/New_York"), day_starts_at=time_of_day(4, 0))
 TOMORROW = date(2025, 6, 22)
 
 
@@ -125,7 +132,9 @@ def db_path(tmp_path: Path) -> Path:
     return path
 
 
-def _invoke(db_path: Path, *argv: str) -> tuple[int, str, str]:
+def _invoke(
+    db_path: Path, *argv: str, now: datetime | None = None
+) -> tuple[int, str, str]:
     """Run the CLI as a user would.
 
     `--db` leads because argparse takes top-level options before a subcommand;
@@ -134,9 +143,10 @@ def _invoke(db_path: Path, *argv: str) -> tuple[int, str, str]:
     stdout, stderr = io.StringIO(), io.StringIO()
     code = run(
         ["--db", str(db_path), *argv],
-        get_now=lambda: NOW,
+        get_now=lambda: now if now is not None else NOW,
         stdout=stdout,
         stderr=stderr,
+        load_view_settings=lambda: VIEW,
     )
     return code, stdout.getvalue(), stderr.getvalue()
 
@@ -311,3 +321,12 @@ def test_raw_view_returns_in_under_a_second(db_path):
     elapsed = time.perf_counter() - started
 
     assert elapsed < 1.0, f"CLI took {elapsed:.3f}s; it reads precomputed rows only"
+
+
+def test_after_midnight_still_shows_the_evening_in_progress(db_path):
+    """End to end for #18: asking at 00:30 answers about the night in progress."""
+    _, out, _ = _invoke(db_path, now=datetime(2025, 6, 22, 0, 30, tzinfo=TZ))
+
+    assert "Karaoke Night" in out
+    assert "Tomorrow Gig" not in out
+    assert "Saturday 21 June" in out

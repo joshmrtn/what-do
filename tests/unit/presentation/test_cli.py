@@ -1,14 +1,15 @@
 """Unit tests for CLI argument handling and dispatch."""
 
 import io
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
 
 from src.models.event import Event
 from src.models.recommendation import Recommendation
-from src.presentation.cli import run
+from src.presentation.cli import ViewSettings, run
 from src.scoring.similarity import Reason
 
 TZ = timezone(timedelta(hours=-4))
@@ -81,14 +82,19 @@ PAIRS = [
 
 ALL_EVENTS = [e for _, e in PAIRS]
 
+ZONE = ZoneInfo("America/New_York")
+VIEW = ViewSettings(zone=ZONE, day_starts_at=time(4, 0))
+
 
 class _Harness:
     """Captures a CLI invocation's streams and what it asked the database for."""
 
-    def __init__(self, pairs=None, events=None, db_ready=True):
+    def __init__(self, pairs=None, events=None, db_ready=True, now=None, view=None):
         self.pairs = PAIRS if pairs is None else pairs
         self.events = ALL_EVENTS if events is None else events
         self.db_ready = db_ready
+        self.now = NOW if now is None else now
+        self.view = VIEW if view is None else view
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
         self.requested_run_date: date | None = None
@@ -107,7 +113,8 @@ class _Harness:
     def invoke(self, *argv: str) -> int:
         return run(
             list(argv),
-            get_now=lambda: NOW,
+            get_now=lambda: self.now,
+            load_view_settings=lambda: self.view,
             stdout=self.stdout,
             stderr=self.stderr,
             load_pairs=self._load_ranked,
@@ -378,3 +385,99 @@ class TestAddSource:
 
         assert harness.load_ranked_calls == 0
         assert harness.load_events_calls == 0
+
+
+class TestNightWindow:
+    """#18: the day comes from the configured zone, and rolls over at 04:00."""
+
+    def test_uses_the_configured_zone_not_the_system_date(self):
+        """22:00 in New York is already tomorrow in UTC.
+
+        Taking the date from the machine would show tomorrow's listing while
+        the user is still in tonight.
+        """
+        harness = _Harness(now=datetime(2025, 6, 22, 2, 0, tzinfo=timezone.utc))
+
+        harness.invoke()
+
+        assert "Tonight Early" in harness.out
+        assert "Tomorrow" not in harness.out
+
+    def test_after_midnight_still_shows_the_evening_in_progress(self):
+        """The defect in #18: at 00:30 the calendar flipped and the answer emptied."""
+        harness = _Harness(now=datetime(2025, 6, 22, 0, 30, tzinfo=ZONE))
+
+        harness.invoke()
+
+        assert "Tonight Early" in harness.out
+        assert "Tonight Late" in harness.out
+        assert "Tomorrow" not in harness.out
+
+    def test_heading_names_the_night_not_the_calendar_date(self):
+        harness = _Harness(now=datetime(2025, 6, 22, 0, 30, tzinfo=ZONE))
+
+        harness.invoke()
+
+        assert "Saturday 21 June" in harness.out
+
+    def test_after_the_rollover_the_next_night_begins(self):
+        harness = _Harness(now=datetime(2025, 6, 22, 4, 30, tzinfo=ZONE))
+
+        harness.invoke()
+
+        assert "Tomorrow" in harness.out
+        assert "Tonight Early" not in harness.out
+
+    def test_a_midnight_rollover_restores_calendar_days(self):
+        harness = _Harness(
+            now=datetime(2025, 6, 22, 0, 30, tzinfo=ZONE),
+            view=ViewSettings(zone=ZONE, day_starts_at=time(0, 0)),
+        )
+
+        harness.invoke()
+
+        assert "Tonight Early" not in harness.out
+
+    def test_undated_events_survive_the_window(self):
+        """A missing start time is a gap in what we know, not evidence about when."""
+        harness = _Harness()
+
+        harness.invoke()
+
+        assert "Undated" in harness.out
+
+
+class TestViewSettingsFallback:
+    """The CLI must stay usable when there is no config to read."""
+
+    def test_warning_goes_to_stderr_and_leaves_stdout_clean(self):
+        harness = _Harness(
+            view=ViewSettings(
+                zone=ZONE, day_starts_at=time(4, 0), warning="Warning: no usable config"
+            )
+        )
+
+        exit_code = harness.invoke()
+
+        assert exit_code == 0
+        assert "Warning: no usable config" in harness.err
+        assert "Warning" not in harness.out
+
+    def test_no_warning_emitted_when_config_loaded(self):
+        harness = _Harness()
+
+        harness.invoke()
+
+        assert harness.err == ""
+
+    def test_no_warning_when_the_fallback_changed_nothing(self):
+        """`--raw` never consults the zone, so a guess there is not worth saying."""
+        harness = _Harness(
+            view=ViewSettings(
+                zone=ZONE, day_starts_at=time(4, 0), warning="Warning: no usable config"
+            )
+        )
+
+        harness.invoke("--raw")
+
+        assert harness.err == ""
