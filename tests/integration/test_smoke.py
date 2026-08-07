@@ -205,8 +205,8 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
         config=cfg,
         db_path=db_path,
         seeds_path=seeds_path,
-        social_sources=[good_source],
-        movie_sources=[],
+        failover_sources=[good_source],
+        independent_sources=[],
         logger=get_logger("smoke3", stream=io.StringIO()),
     )
     result = svc.run(get_now=lambda: now)
@@ -226,8 +226,8 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
         config=cfg,
         db_path=db2,
         seeds_path=seeds_path,
-        social_sources=[failing, fallback],
-        movie_sources=[],
+        failover_sources=[failing, fallback],
+        independent_sources=[],
         logger=get_logger("smoke3b", stream=io.StringIO()),
     )
     result2 = svc2.run(get_now=lambda: now)

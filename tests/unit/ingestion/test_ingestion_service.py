@@ -120,8 +120,8 @@ def test_seed_handles_loaded_as_active(db, seeds_yaml, tmp_path):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[],
-        movie_sources=[],
+        failover_sources=[],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -141,8 +141,8 @@ def test_seed_load_is_idempotent(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[],
-        movie_sources=[],
+        failover_sources=[],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -183,8 +183,8 @@ def test_probationary_handle_in_seeds_promoted_to_active(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[],
-        movie_sources=[],
+        failover_sources=[],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -208,8 +208,8 @@ def test_recent_post_retained(db, seeds_yaml):
         config=_make_config(lookback_days=30),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([recent])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([recent])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     result = svc.run(get_now=lambda: FIXED_NOW)
@@ -228,8 +228,8 @@ def test_old_post_discarded(db, seeds_yaml):
         config=_make_config(lookback_days=30),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([old])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([old])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -247,8 +247,8 @@ def _run_with(candidate, db, seeds_yaml, lookback_days=30):
         config=_make_config(lookback_days=lookback_days),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([candidate])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([candidate])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -305,8 +305,8 @@ def test_none_published_at_bypasses_lookback(db, seeds_yaml):
         config=_make_config(lookback_days=30),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[],
-        movie_sources=[_mock_social_source([movie])],
+        failover_sources=[],
+        independent_sources=[_mock_social_source([movie])],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -327,8 +327,8 @@ def test_lookback_reads_from_config(db, seeds_yaml):
         config=_make_config(lookback_days=30),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([ec])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([ec])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc_30.run(get_now=lambda: FIXED_NOW)
@@ -346,8 +346,8 @@ def test_lookback_reads_from_config(db, seeds_yaml):
         config=_make_config(lookback_days=10),
         db_path=db2_path,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([ec2])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([ec2])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc_10.run(get_now=lambda: FIXED_NOW)
@@ -376,8 +376,8 @@ def test_malformed_record_all_key_fields_absent_discarded(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([malformed])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([malformed])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     result = svc.run(get_now=lambda: FIXED_NOW)
@@ -404,8 +404,8 @@ def test_record_missing_only_title_retained(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([ec])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([ec])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -432,8 +432,8 @@ def test_one_malformed_does_not_stop_ingestion(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([malformed, good1, good2])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([malformed, good1, good2])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     result = svc.run(get_now=lambda: FIXED_NOW)
@@ -458,8 +458,8 @@ def test_event_candidates_persisted_to_db(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source([ec])],
-        movie_sources=[],
+        failover_sources=[_mock_social_source([ec])],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -507,8 +507,8 @@ def test_handle_promoted_when_threshold_met_with_seed_source(db, seeds_yaml):
         config=_make_config(promotion_threshold=3),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[],
-        movie_sources=[],
+        failover_sources=[],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -547,8 +547,8 @@ def test_handle_not_promoted_without_seed_source(db, seeds_yaml):
         config=_make_config(promotion_threshold=3),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[],
-        movie_sources=[],
+        failover_sources=[],
+        independent_sources=[],
         logger=_make_logger(),
     )
     svc.run(get_now=lambda: FIXED_NOW)
@@ -576,8 +576,8 @@ def test_social_source_failure_pipeline_continues(db, seeds_yaml):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[failing, good],
-        movie_sources=[],
+        failover_sources=[failing, good],
+        independent_sources=[],
         logger=_make_logger(),
     )
     # Must not raise; failover handles it
@@ -600,8 +600,8 @@ def _svc_with(db, seeds_yaml, candidates):
         config=_make_config(),
         db_path=db,
         seeds_path=seeds_yaml,
-        social_sources=[_mock_social_source(candidates)],
-        movie_sources=[],
+        failover_sources=[_mock_social_source(candidates)],
+        independent_sources=[],
         logger=_make_logger(),
     )
 

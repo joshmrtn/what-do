@@ -38,16 +38,29 @@ class IngestionService:
         config: AppConfig,
         db_path: Path,
         seeds_path: Path,
-        social_sources: list[IngestionSource],
-        movie_sources: list[IngestionSource],
+        failover_sources: list[IngestionSource],
+        independent_sources: list[IngestionSource],
         logger: Any,
         blocklist: list[str] | None = None,
     ) -> None:
+        """
+        Args:
+            config: Application config.
+            db_path: Path to the SQLite database.
+            seeds_path: Path to seeds.yaml.
+            failover_sources: Alternative routes to the *same* data, tried in
+                order until one succeeds — Instagram via Apify, then Picuki,
+                then Dumpor. Only the first success is used.
+            independent_sources: Sources each covering different events, all of
+                them fetched, one failing never stopping the others.
+            logger: Structured logger.
+            blocklist: Raw entries from data/blocklist.json.
+        """
         self._config = config
         self._db_path = db_path
         self._seeds_path = seeds_path
-        self._social_sources = social_sources
-        self._movie_sources = movie_sources
+        self._failover_sources = failover_sources
+        self._independent_sources = independent_sources
         self._logger = logger
         self._blocklist = blocklist or []
 
@@ -173,18 +186,24 @@ class IngestionService:
     # ------------------------------------------------------------------
 
     def _collect_candidates(self) -> list[EventCandidate]:
-        """Run social failover chain + all movie sources, combining results."""
+        """Run the failover chain plus every independent source, combined.
+
+        The two lists differ by fetch policy, not by subject matter. Putting a
+        source in the failover list means "only fetch this if the ones before
+        it failed", which would silently starve any source that is not an
+        alternative route to the same data.
+        """
         candidates: list[EventCandidate] = []
 
-        social_chain = FailoverChain(sources=self._social_sources, logger=self._logger)
-        candidates.extend(social_chain.fetch_all())
+        chain = FailoverChain(sources=self._failover_sources, logger=self._logger)
+        candidates.extend(chain.fetch_all())
 
-        for source in self._movie_sources:
+        for source in self._independent_sources:
             try:
                 candidates.extend(source.fetch())
             except Exception as exc:
                 self._logger.error(
-                    f"Movie source {source.__class__.__name__} failed: {exc}",
+                    f"Source {source.__class__.__name__} failed: {exc}",
                     component="ingestion",
                     duration_ms=0,
                 )

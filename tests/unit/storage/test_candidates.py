@@ -217,8 +217,8 @@ def test_loads_what_the_ingestion_service_wrote(db, tmp_path):
         ),
         db_path=db,
         seeds_path=seeds,
-        social_sources=[_StubSource()],
-        movie_sources=[],
+        failover_sources=[_StubSource()],
+        independent_sources=[],
         logger=get_logger("test_candidates", stream=io.StringIO()),
     ).run(get_now=lambda: NOW)
 
