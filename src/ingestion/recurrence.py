@@ -18,6 +18,7 @@ than vanish.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -32,6 +33,127 @@ _DATE_ONLY = "YYYYMMDD"
 #: What a malformed rule or exclusion may raise. `rrulestr` reports bad grammar
 #: as ValueError, but a nonsensical INTERVAL can surface as either of the others.
 _RULE_ERRORS = (ValueError, TypeError, OverflowError, KeyError)
+
+
+@dataclass(frozen=True)
+class Occurrence:
+    """One concrete instance of an event, and what describes it.
+
+    Attributes:
+        start: When it actually happens.
+        original_start: The slot it occupies in its series — its own start for
+            an ordinary occurrence, and the replaced slot for a moved one. This
+            is the stable identity: keying on `start` instead would orphan the
+            stored event every time a showing moved again.
+        event: The VEVENT supplying this instance's fields. For a moved
+            occurrence that is the override, not the series master.
+    """
+
+    start: datetime
+    original_start: datetime
+    event: VEvent
+
+
+def expand_calendar(
+    events: list[VEvent],
+    window_start: datetime,
+    window_end: datetime,
+    zone: tzinfo,
+    logger: Any = None,
+) -> list[Occurrence]:
+    """Expand a whole calendar, resolving modified instances against their series.
+
+    ICS expresses a changed instance as a *separate* VEVENT sharing the series
+    UID and naming the slot it replaces in `RECURRENCE-ID`. Expanding the two
+    independently double-books the showing at both its old and new time, so they
+    have to be resolved together.
+
+    Args:
+        events: Every VEVENT in the document.
+        window_start: Inclusive start of the window.
+        window_end: Exclusive end.
+        zone: Timezone assumed for naive values declaring no TZID.
+        logger: Structured logger for degraded rules. Optional.
+
+    Returns:
+        Occurrences in chronological order.
+    """
+    overrides: dict[tuple[str, datetime], VEvent] = {}
+    masters: list[VEvent] = []
+    series_uids: set[str] = set()
+
+    for event in events:
+        slot = _replaced_slot(event, zone)
+        if slot is None:
+            masters.append(event)
+            if event.uid:
+                series_uids.add(event.uid)
+        elif event.uid:
+            overrides[(event.uid, slot)] = event
+        else:
+            # No UID means no series to join. Still an event, so keep it.
+            masters.append(event)
+
+    occurrences: list[Occurrence] = []
+    claimed: set[tuple[str, datetime]] = set()
+
+    for event in masters:
+        for start in expand(event, window_start, window_end, zone, logger):
+            key = (event.uid or "", start)
+            replacement = overrides.get(key)
+            if replacement is None:
+                occurrences.append(Occurrence(start=start, original_start=start, event=event))
+                continue
+            claimed.add(key)
+            moved = _resolve(replacement, window_start, window_end, zone)
+            if moved is not None:
+                occurrences.append(
+                    Occurrence(start=moved, original_start=start, event=replacement)
+                )
+
+    # Two kinds of override remain. One replaces a slot that fell outside the
+    # window and moves it *in*, so no master occurrence ever claimed it. The
+    # other is an orphan whose series is not in this document at all — a feed
+    # is free to ship one without the master.
+    for (uid, slot), replacement in overrides.items():
+        if (uid, slot) in claimed:
+            continue
+        if uid in series_uids and window_start <= slot < window_end:
+            # Its master expanded over this slot and declined it, which only
+            # happens when the override was cancelled or moved away.
+            continue
+        moved = _resolve(replacement, window_start, window_end, zone)
+        if moved is not None:
+            occurrences.append(Occurrence(start=moved, original_start=slot, event=replacement))
+
+    return sorted(occurrences, key=lambda occurrence: occurrence.start)
+
+
+def _resolve(override: VEvent, window_start: datetime, window_end: datetime, zone: tzinfo) -> datetime | None:
+    """Where a modified instance actually lands, or None if it no longer applies."""
+    if _is_cancelled(override) or override.dtstart is None:
+        return None
+
+    moved = _localise(override.dtstart, override.dtstart_tzid, zone)
+
+    return moved if window_start <= moved < window_end else None
+
+
+def _replaced_slot(event: VEvent, zone: tzinfo) -> datetime | None:
+    """The occurrence this VEVENT replaces, or None when it replaces nothing."""
+    entries = event.repeated.get("RECURRENCE-ID")
+    if not entries:
+        return None
+
+    parsed, tzid = parse_timestamp(entries[0].value, entries[0].params)
+    if parsed is None:
+        return None
+
+    return _localise(parsed, tzid, zone)
+
+
+def _is_cancelled(event: VEvent) -> bool:
+    return (event.status or "").upper() == "CANCELLED"
 
 
 def expand(

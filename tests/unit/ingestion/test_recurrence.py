@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from src.ingestion.ics import Property, VEvent
-from src.ingestion.recurrence import expand
+from src.ingestion.recurrence import expand, expand_calendar
 
 ZONE = ZoneInfo("America/New_York")
 UTC = timezone.utc
@@ -301,3 +301,145 @@ class TestNonConformantUntil:
         expand(event, WINDOW_START, WINDOW_END, ZONE, logger=logger)
 
         assert logger.warnings == []
+
+
+def _override(
+    uid: str,
+    recurrence_id: str,
+    dtstart: datetime,
+    summary: str = "Moved",
+    status: str | None = None,
+    tzid: str = "America/New_York",
+) -> VEvent:
+    """A VEVENT that replaces one occurrence of its series."""
+    return VEvent(
+        uid=uid,
+        summary=summary,
+        status=status,
+        dtstart=dtstart,
+        repeated={"RECURRENCE-ID": [Property(value=recurrence_id, params={"TZID": tzid})]},
+    )
+
+
+def _series(uid: str, dtstart: datetime, rrule: str, summary: str = "Weekly") -> VEvent:
+    return VEvent(
+        uid=uid, summary=summary, dtstart=dtstart, repeated={"RRULE": [Property(value=rrule)]}
+    )
+
+
+class TestRecurrenceOverrides:
+    """2,357 real events carry a RECURRENCE-ID.
+
+    Ignoring them double-books a moved showing at both its old and new slot.
+    """
+
+    def test_a_moved_occurrence_uses_its_new_time(self):
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        moved = _override("s1", "20260813T190000", datetime(2026, 8, 13, 21, 30, tzinfo=ZONE))
+
+        starts = [o.start for o in expand_calendar([master, moved], WINDOW_START, WINDOW_END, ZONE)]
+
+        assert datetime(2026, 8, 13, 21, 30, tzinfo=ZONE) in starts
+        assert datetime(2026, 8, 13, 19, 0, tzinfo=ZONE) not in starts
+
+    def test_a_moved_occurrence_is_not_also_emitted_at_its_old_slot(self):
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        moved = _override("s1", "20260813T190000", datetime(2026, 8, 13, 21, 30, tzinfo=ZONE))
+
+        occurrences = expand_calendar([master, moved], WINDOW_START, WINDOW_END, ZONE)
+
+        assert len(occurrences) == 4
+
+    def test_the_override_supplies_the_fields_for_its_occurrence(self):
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        moved = _override(
+            "s1", "20260813T190000", datetime(2026, 8, 13, 21, 30, tzinfo=ZONE), summary="Special"
+        )
+
+        by_start = {o.start: o for o in expand_calendar([master, moved], WINDOW_START, WINDOW_END, ZONE)}
+
+        assert by_start[datetime(2026, 8, 13, 21, 30, tzinfo=ZONE)].event.summary == "Special"
+        assert by_start[datetime(2026, 8, 20, 19, 0, tzinfo=ZONE)].event.summary == "Weekly"
+
+    def test_identity_follows_the_original_slot_not_the_new_time(self):
+        """A moved instance is still the same instance, so it keeps its slot.
+
+        Keying on the new time would orphan the stored event every time the
+        showing moved again.
+        """
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        moved = _override("s1", "20260813T190000", datetime(2026, 8, 13, 21, 30, tzinfo=ZONE))
+
+        by_start = {o.start: o for o in expand_calendar([master, moved], WINDOW_START, WINDOW_END, ZONE)}
+
+        assert by_start[datetime(2026, 8, 13, 21, 30, tzinfo=ZONE)].original_start == datetime(
+            2026, 8, 13, 19, 0, tzinfo=ZONE
+        )
+
+    def test_a_cancelled_override_removes_the_occurrence(self):
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        cancelled = _override(
+            "s1", "20260813T190000", datetime(2026, 8, 13, 19, 0, tzinfo=ZONE), status="CANCELLED"
+        )
+
+        starts = [o.start for o in expand_calendar([master, cancelled], WINDOW_START, WINDOW_END, ZONE)]
+
+        assert datetime(2026, 8, 13, 19, 0, tzinfo=ZONE) not in starts
+        assert len(starts) == 3
+
+    def test_an_override_can_move_an_occurrence_out_of_the_window(self):
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        pushed = _override("s1", "20260813T190000", datetime(2027, 1, 5, 19, 0, tzinfo=ZONE))
+
+        starts = [o.start for o in expand_calendar([master, pushed], WINDOW_START, WINDOW_END, ZONE)]
+
+        assert len(starts) == 3
+
+    def test_an_override_can_move_an_occurrence_into_the_window(self):
+        """The replaced slot is outside; the new time is inside."""
+        master = _series("s1", datetime(2026, 6, 4, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH;UNTIL=20260701T000000Z")
+        pulled = _override("s1", "20260611T190000", datetime(2026, 8, 12, 19, 0, tzinfo=ZONE))
+
+        starts = [o.start for o in expand_calendar([master, pulled], WINDOW_START, WINDOW_END, ZONE)]
+
+        assert starts == [datetime(2026, 8, 12, 19, 0, tzinfo=ZONE)]
+
+    def test_an_orphan_override_still_yields_its_occurrence(self):
+        """A feed can ship an override whose master is outside the document."""
+        orphan = _override("gone", "20260813T190000", datetime(2026, 8, 13, 21, 0, tzinfo=ZONE))
+
+        starts = [o.start for o in expand_calendar([orphan], WINDOW_START, WINDOW_END, ZONE)]
+
+        assert starts == [datetime(2026, 8, 13, 21, 0, tzinfo=ZONE)]
+
+    def test_overrides_do_not_leak_between_series(self):
+        first = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        second = _series("s2", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH", summary="Other")
+        moved = _override("s1", "20260813T190000", datetime(2026, 8, 13, 21, 30, tzinfo=ZONE))
+
+        occurrences = expand_calendar([first, second, moved], WINDOW_START, WINDOW_END, ZONE)
+        others = [o for o in occurrences if o.event.summary == "Other"]
+
+        assert len(others) == 4
+
+    def test_a_plain_event_reports_itself_as_its_own_slot(self):
+        start = datetime(2026, 8, 10, 19, 0, tzinfo=ZONE)
+        plain = VEvent(uid="p1", dtstart=start)
+
+        occurrence = expand_calendar([plain], WINDOW_START, WINDOW_END, ZONE)[0]
+
+        assert occurrence.start == occurrence.original_start == start
+
+    def test_an_event_without_a_uid_is_still_expanded(self):
+        """No UID means no series to join, not a reason to lose the event."""
+        start = datetime(2026, 8, 10, 19, 0, tzinfo=ZONE)
+
+        assert len(expand_calendar([VEvent(dtstart=start)], WINDOW_START, WINDOW_END, ZONE)) == 1
+
+    def test_occurrences_come_back_in_chronological_order(self):
+        master = _series("s1", datetime(2026, 8, 6, 19, 0, tzinfo=ZONE), "FREQ=WEEKLY;BYDAY=TH")
+        moved = _override("s1", "20260813T190000", datetime(2026, 8, 11, 21, 30, tzinfo=ZONE))
+
+        starts = [o.start for o in expand_calendar([master, moved], WINDOW_START, WINDOW_END, ZONE)]
+
+        assert starts == sorted(starts)
