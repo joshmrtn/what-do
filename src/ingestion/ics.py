@@ -117,8 +117,19 @@ def _split_property(line: str) -> tuple[str, dict[str, str], str] | None:
     return name, params, value
 
 
-def _parse_timestamp(value: str, params: dict[str, str]) -> tuple[datetime | None, str | None]:
-    """Parse a DATE-TIME or DATE value, reporting any declared timezone."""
+def parse_timestamp(value: str, params: dict[str, str]) -> tuple[datetime | None, str | None]:
+    """Parse a DATE-TIME or DATE value, reporting any declared timezone.
+
+    Args:
+        value: The raw property value.
+        params: The parameters declared on that line, read for `TZID`.
+
+    Returns:
+        The parsed datetime and the zone it declared, if any. A zoned or
+        all-day value stays naive so the caller localises deliberately. Both
+        are None-tolerant: an unparseable value yields `(None, tzid)` rather
+        than raising, because one bad line must not lose the whole event.
+    """
     tzid = params.get("TZID")
     raw = value.strip()
 
@@ -147,9 +158,9 @@ def _build_event(
     dtend, dtend_tzid = (None, None)
 
     if "DTSTART" in properties:
-        dtstart, dtstart_tzid = _parse_timestamp(properties["DTSTART"], raw["DTSTART"])
+        dtstart, dtstart_tzid = parse_timestamp(properties["DTSTART"], raw["DTSTART"])
     if "DTEND" in properties:
-        dtend, dtend_tzid = _parse_timestamp(properties["DTEND"], raw["DTEND"])
+        dtend, dtend_tzid = parse_timestamp(properties["DTEND"], raw["DTEND"])
 
     return VEvent(
         uid=properties.get("UID"),
