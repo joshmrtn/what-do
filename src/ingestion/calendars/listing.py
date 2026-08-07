@@ -92,11 +92,23 @@ class _ParagraphCollector(HTMLParser):
             self._saw_plain_text = True
 
 
-def _resolve_year(month: int, day: int, weekday: str, today: date) -> date | None:
+def resolve_year(month: int, day: int, weekday: str, today: date) -> date | None:
     """Choose the year a bare `Weekday, Month Day` heading refers to.
 
     The weekday name is a checksum: only one nearby year usually matches it. Ties
     are broken forward, because a listing page advertises what is coming up.
+
+    Shared with the Veezi sessions parser, whose headings omit the year for the
+    same reason and are resolved the same way.
+
+    Args:
+        month: Month number from the heading.
+        day: Day of month from the heading.
+        weekday: Weekday name the heading claims.
+        today: Reference date.
+
+    Returns:
+        The resolved date, or None when no nearby year agrees with the weekday.
     """
     wanted = weekday.strip().lower()
     candidates: list[date] = []
@@ -129,7 +141,7 @@ def _parse_date_heading(text: str, today: date) -> date | None:
     except ValueError:
         return None
 
-    return _resolve_year(month, int(match.group("day")), match.group("weekday"), today)
+    return resolve_year(month, int(match.group("day")), match.group("weekday"), today)
 
 
 def _split_event(rest: str) -> tuple[str, str | None, str | None]:
