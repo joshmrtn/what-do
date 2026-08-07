@@ -463,3 +463,53 @@ class TestRecurringEvents:
 
         assert "Special Guest" in titles
         assert len(results) == 5
+
+
+class TestNoLowerBoundOnAnnouncementAge:
+    """The only time bound is the event's own, never how long ago it was announced.
+
+    A concert announced four months ahead is exactly the kind of thing worth
+    knowing about — often the kind you must book early. The window is on event
+    time in both directions: nothing is too old to have been *announced*, and
+    anything already over is gone.
+    """
+
+    def test_a_long_announced_event_is_still_ingested(self, db):
+        long_announced = _calendar(
+            "UID:early@google.com\r\n"
+            "SUMMARY:[The Cabot\\, Beverly\\, Music] Booked Months Ago\r\n"
+            "CREATED:20260101T000000Z\r\n"
+            "DTSTAMP:20260101T000000Z\r\n"
+            "LAST-MODIFIED:20260101T000000Z\r\n"
+            "DTSTART:20260810T230000Z"
+        )
+
+        results = _weekly_source(db, body=long_announced).fetch()
+
+        assert len(results) == 1
+        assert results[0].title == "Booked Months Ago"
+
+    def test_an_event_that_has_already_happened_is_dropped(self, db):
+        """Dated 8/6 is of no interest on 8/7, however recently it was announced."""
+        yesterday = _calendar(
+            "UID:gone@google.com\r\n"
+            "SUMMARY:[A Venue\\, Salem] Last Night\r\n"
+            "DTSTART:20260804T230000Z"
+        )
+
+        assert _weekly_source(db, body=yesterday).fetch() == []
+
+    def test_announcement_age_never_reaches_the_lookback(self, db):
+        """`raw_published_at` stays unset, which is what the lookback discards on.
+
+        Setting it from CREATED would make a forward-looking calendar expire
+        against a rule written for stale social posts.
+        """
+        long_announced = _calendar(
+            "UID:early@google.com\r\n"
+            "SUMMARY:[A Venue\\, Salem] Booked Months Ago\r\n"
+            "CREATED:20260101T000000Z\r\n"
+            "DTSTART:20260810T230000Z"
+        )
+
+        assert _weekly_source(db, body=long_announced).fetch()[0].raw_published_at is None

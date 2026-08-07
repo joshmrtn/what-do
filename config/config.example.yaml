@@ -12,10 +12,17 @@ venue_discovery:
 
 scraping:
   lookback_days: 30
-  # How far ahead an event may start and still be ranked. The forward half of
-  # the window whose backward half is lookback_days — a calendar feed reaching
-  # further out than this discovers events the batch will not yet rank.
-  horizon_days: 30
+  # How far ahead an event may start and still be ingested and ranked. Calendar
+  # sources expand recurring events over exactly this window, so raising it
+  # takes in more and costs more LLM extraction; lowering it truncates feeds
+  # that publish further out. Measured: northshorenightout reaches ~39 days, so
+  # 30 was cutting it short.
+  #
+  # There is no matching bound on how long ago an event was *announced*. A
+  # concert booked four months ahead is exactly the kind worth knowing about.
+  # lookback_days applies to a post's publication date, which calendar sources
+  # deliberately never set. The only lower bound is the event being over.
+  horizon_days: 45
   max_discovery_depth: 2
   candidate_promotion_threshold: 3
 
