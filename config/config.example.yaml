@@ -80,11 +80,19 @@ deduplication:
 # source_type defaults to name, and is what domain_map above keys off.
 # min_fetch_interval_hours is a politeness floor — re-running the batch by hand
 # inside that window reuses the cached feed instead of refetching.
+#
+# venue/city are for single-venue feeds. An aggregator names the venue in each
+# entry; a cinema's own calendar just names the film, so without these every
+# event arrives venue-less — costing blocklist matching, dedup, and the CLI's
+# `Title — Venue` line. They fill a gap only: an entry that names its own venue
+# is more specific and wins.
 sources:
   ics_calendars: []
     # - name: example_calendar
     #   url: "https://calendar.google.com/calendar/ical/<id>/public/basic.ics"
     #   min_fetch_interval_hours: 6
+    #   venue: "The Example Cinema"
+    #   city: "Gloucester"
 
   # Date-grouped listing pages, parsed as `TIME - TITLE - VENUE - CITY` lines
   # under `Weekday, Month Day` headings. A site may appear in both lists: a feed

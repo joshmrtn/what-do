@@ -895,3 +895,40 @@ def test_unquoted_sexagesimal_day_starts_at_rejected(tmp_path):
 
     with pytest.raises(ConfigError, match="quoted"):
         load_config(config_path=config_file)
+
+
+def _feed(tmp_path, **overrides):
+    """Load a config carrying one ICS feed entry, and return that feed."""
+    entry = {"name": "capeann", "url": "https://x/f.ics"}
+    entry.update(overrides)
+    loaded = _load(tmp_path, {"sources": {"ics_calendars": [entry]}})
+    return loaded.sources.ics_calendars[0]
+
+
+class TestFeedVenueDefaults:
+    """A single-venue feed has nowhere to declare its venue.
+
+    The `[Venue, City]` summary convention is one aggregator's; a cinema's own
+    calendar just names the film. Every event then arrives venue-less, which
+    costs blocklist matching, dedup, and the CLI's `Title — Venue` line.
+    """
+
+    def test_venue_defaults_to_none(self, tmp_path):
+        assert _feed(tmp_path).venue is None
+
+    def test_city_defaults_to_none(self, tmp_path):
+        assert _feed(tmp_path).city is None
+
+    def test_a_declared_venue_loads(self, tmp_path):
+        assert (
+            _feed(tmp_path, venue="Cape Ann Community Cinema").venue
+            == "Cape Ann Community Cinema"
+        )
+
+    def test_a_declared_city_loads(self, tmp_path):
+        assert _feed(tmp_path, city="Gloucester").city == "Gloucester"
+
+    def test_a_blank_venue_is_rejected(self, tmp_path):
+        """A blank is a typo, not a choice — it would silently attribute nothing."""
+        with pytest.raises(ConfigError, match="venue"):
+            _feed(tmp_path, venue="   ")

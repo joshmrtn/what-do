@@ -363,9 +363,10 @@ _WEEKLY = _calendar(
 
 
 def _weekly_source(db, now=FIXED_NOW, horizon_days=30, body=_WEEKLY, stream=None,
-                   timezone_name="UTC"):
+                   timezone_name="UTC", **config_overrides):
     return _make_source(db, session=_session(_response(body)), now=now, stream=stream,
-                        horizon_days=horizon_days, timezone_name=timezone_name)
+                        horizon_days=horizon_days, timezone_name=timezone_name,
+                        **config_overrides)
 
 
 class TestRecurringEvents:
@@ -558,3 +559,64 @@ class TestWindowFloorIsTheNight:
     def test_the_previous_night_is_still_dropped(self, db):
         """Dated 8/7 is of no interest once 8/8 has begun."""
         assert self._at(db, datetime(2026, 8, 8, 10, 0, tzinfo=EASTERN)) == []
+
+
+_BARE_TITLE = _calendar(
+    "UID:film@google.com\r\n"
+    "SUMMARY:BROOKLYN\r\n"
+    "DTSTART:20260809T010000Z"
+)
+
+_WITH_PREFIX = _calendar(
+    "UID:gig@google.com\r\n"
+    "SUMMARY:[The Rhumb Line\\, Gloucester] Three Ply\r\n"
+    "DTSTART:20260809T010000Z"
+)
+
+
+class TestFeedVenueDefaults:
+    """A cinema's own calendar names the film, not the venue.
+
+    Every event then arrives venue-less, which costs blocklist matching, dedup,
+    and the CLI's `Title — Venue` line.
+    """
+
+    def test_the_feed_venue_fills_in_when_the_summary_declares_none(self, db):
+        candidate = _weekly_source(
+            db, body=_BARE_TITLE, venue="Cape Ann Community Cinema"
+        ).fetch()[0]
+
+        assert candidate.venue == "Cape Ann Community Cinema"
+        assert candidate.title == "BROOKLYN"
+
+    def test_the_feed_city_fills_in_too(self, db):
+        candidate = _weekly_source(db, body=_BARE_TITLE, city="Gloucester").fetch()[0]
+
+        assert candidate.location == "Gloucester"
+
+    def test_a_declared_venue_wins_over_the_feed_default(self, db):
+        """The summary is more specific, so an aggregator's attribution stands."""
+        candidate = _weekly_source(
+            db, body=_WITH_PREFIX, venue="Wrong Venue", city="Wrong City"
+        ).fetch()[0]
+
+        assert candidate.venue == "The Rhumb Line"
+        assert candidate.location == "Gloucester"
+
+    def test_without_a_default_the_venue_stays_none(self, db):
+        candidate = _weekly_source(db, body=_BARE_TITLE).fetch()[0]
+
+        assert candidate.venue is None
+
+    def test_the_default_reaches_every_occurrence_of_a_series(self, db):
+        recurring = _calendar(
+            "UID:weekly@google.com\r\n"
+            "SUMMARY:Karaoke\r\n"
+            "DTSTART;TZID=America/New_York:20230105T200000\r\n"
+            "RRULE:FREQ=WEEKLY;BYDAY=TH"
+        )
+
+        results = _weekly_source(db, body=recurring, venue="The Rhumb Line").fetch()
+
+        assert results
+        assert all(c.venue == "The Rhumb Line" for c in results)

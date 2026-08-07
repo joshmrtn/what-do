@@ -85,12 +85,19 @@ class FeedConfig:
         source_type: Provenance label on every candidate. Defaults to `name`.
         min_fetch_interval_hours: Politeness floor. Re-running the batch by hand
             within this window reuses the cached copy rather than refetching.
+        venue: Venue every event in this feed belongs to, for single-venue
+            sources whose entries do not name it. Filled in only where the feed
+            itself declares none — a summary that names a venue is more specific
+            and wins.
+        city: City for the same, on the same terms.
     """
 
     name: str
     url: str
     source_type: str
     min_fetch_interval_hours: float = 6.0
+    venue: str | None = None
+    city: str | None = None
 
 
 @dataclass
@@ -344,6 +351,22 @@ def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
     )
 
 
+def _optional_text(entry: dict[str, Any], key: str, kind: str, name: str) -> str | None:
+    """Read an optional string, rejecting a blank rather than accepting it.
+
+    A blank is a typo, not a choice: it reads as "declared" while attributing
+    nothing, which is harder to notice than leaving the key out.
+    """
+    if key not in entry or entry[key] is None:
+        return None
+
+    value = str(entry[key]).strip()
+    if not value:
+        raise ConfigError(f"{kind} '{name}' has a blank {key}")
+
+    return value
+
+
 def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
     """Build one list of fetched sources, rejecting entries that cannot be used.
 
@@ -367,6 +390,9 @@ def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
                 f"min_fetch_interval_hours: {interval}"
             )
 
+        venue = _optional_text(entry, "venue", kind, name)
+        city = _optional_text(entry, "city", kind, name)
+
         source_type = str(entry.get("source_type", name))
         if source_type in RESERVED:
             raise ConfigError(
@@ -381,6 +407,8 @@ def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
                 url=str(entry["url"]),
                 source_type=source_type,
                 min_fetch_interval_hours=interval,
+                venue=venue,
+                city=city,
             )
         )
 

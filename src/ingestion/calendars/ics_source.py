@@ -133,8 +133,10 @@ class IcsCalendarSource(IngestionSource):
             source_type=self._config.source_type,
             title=title,
             description=self._build_description(event.description, category),
-            venue=venue,
-            location=city,
+            # A summary that names a venue is more specific than the feed's
+            # blanket attribution, so the configured default only fills a gap.
+            venue=venue or self._config.venue,
+            location=city or self._config.city,
             url=event.url,
             start_time=occurrence.start,
             end_time=self._end_of(occurrence),
