@@ -244,3 +244,38 @@ def test_summary_failure_does_not_discard_tag_embeddings():
     assert len(event.tag_embeddings) == 1
     assert event.summary_embedding is None
     assert event.metadata["embedding_failed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Input-hash skip rule
+# ---------------------------------------------------------------------------
+
+
+def test_re_extracted_tags_are_re_embedded():
+    """Vectors describing tags the event no longer has would silently misrank it."""
+    provider = _FakeProvider()
+    stage = EmbeddingStage(provider, get_logger("t", stream=io.StringIO()))
+    event = _event(tags=[Tag(text="karaoke", weight=1.0)], summary="Karaoke night.")
+
+    stage.process([event])
+    first = len(provider.calls)
+
+    event.tags = [Tag(text="punk", weight=1.0)]
+    event.summary = "A punk show."
+    stage.process([event])
+
+    assert len(provider.calls) > first
+    assert "punk" in provider.calls
+    assert len(event.tag_embeddings) == 1
+
+
+def test_unchanged_tags_are_not_re_embedded():
+    provider = _FakeProvider()
+    stage = EmbeddingStage(provider, get_logger("t", stream=io.StringIO()))
+    event = _event(tags=[Tag(text="karaoke", weight=1.0)], summary="Karaoke night.")
+
+    stage.process([event])
+    first = len(provider.calls)
+    stage.process([event])
+
+    assert len(provider.calls) == first

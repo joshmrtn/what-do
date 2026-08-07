@@ -52,6 +52,11 @@ class Event:
     #: conflated: set means done, absent means never ran, and a failure leaves
     #: it absent so the next run retries.
     extraction_input_hash: str | None = None
+    #: Hash of the tags and summary the vectors were last built from. Because
+    #: those are extraction's output, a re-extraction that changes them changes
+    #: this too, so embeddings follow automatically rather than leaving vectors
+    #: describing tags the event no longer has.
+    embedding_input_hash: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     similarity: "SimilarityResult | None" = None
 

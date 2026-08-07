@@ -6,10 +6,22 @@ deduplication and similarity scoring.
 
 from __future__ import annotations
 
+import hashlib
+
 from src.models.event import Event
 from src.scoring.embeddings import EmbeddingError, EmbeddingProvider
 from src.utils.logging import StructuredLogger
 from src.utils.vectors import encode_vector
+
+
+def embedding_input_hash(event: Event) -> str:
+    """Digest of the tags and summary the vectors are built from.
+
+    Both are extraction's output, so a re-extraction that changes them changes
+    this, and the embeddings follow without needing to know extraction ran.
+    """
+    text = "\n".join([*(tag.text for tag in event.tags), event.summary or ""])
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class EmbeddingStage:
@@ -18,6 +30,11 @@ class EmbeddingStage:
     Vectors for identical text are generated once per run — tags like
     "live music" recur across many events, and each embedding is a round trip
     to the model.
+
+    An event is re-embedded when its tags or summary have changed since the
+    vectors were built. Skipping on "has vectors" alone would leave an event
+    re-extracted into different tags still carrying the old ones' vectors,
+    which misranks it silently.
 
     Unlike preference embeddings, a failure here is not fatal: one unscorable
     event costs one recommendation, whereas a missing preference silently
@@ -51,8 +68,9 @@ class EmbeddingStage:
 
     def _embed_event(self, event: Event, memo: dict[str, bytes]) -> None:
         """Embed one event's tags and summary, updating it in place."""
-        if event.tag_embeddings:
-            return  # already embedded on a previous pass
+        digest = embedding_input_hash(event)
+        if event.tag_embeddings and event.embedding_input_hash == digest:
+            return  # already embedded, from these exact tags and summary
 
         if not event.tags:
             event.metadata["embedding_skipped"] = True
@@ -70,14 +88,20 @@ class EmbeddingStage:
         event.tag_embeddings = vectors
 
         if not event.summary or not event.summary.strip():
+            event.embedding_input_hash = digest
             return
 
         try:
             event.summary_embedding = self._vector(event.summary, memo)
         except EmbeddingError as exc:
             # Tag embeddings are kept — they are the primary signal, and the
-            # summary is only a weighted supporting term.
+            # summary is only a weighted supporting term. The hash stays unset
+            # so the next run retries the summary rather than treating a
+            # half-embedded event as done.
             self._fail(event, f"summary: {exc}")
+            return
+
+        event.embedding_input_hash = digest
 
     def _vector(self, text: str, memo: dict[str, bytes]) -> bytes:
         """Return the encoded vector for text, reusing it across the run."""

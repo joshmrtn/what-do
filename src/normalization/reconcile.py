@@ -34,6 +34,7 @@ _CARRIED_FIELDS = (
     # every stored event re-extracts on the very next run — the exact cost the
     # rest of this module exists to avoid.
     "extraction_input_hash",
+    "embedding_input_hash",
 )
 
 

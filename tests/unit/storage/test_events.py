@@ -11,7 +11,7 @@ import pytest
 from src.models.event import Event
 from src.models.tag import Tag
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
-from src.scoring.embedding_stage import EmbeddingStage
+from src.scoring.embedding_stage import EmbeddingStage, embedding_input_hash
 from src.scoring.similarity import SimilarityResult
 from src.storage.db import init_db
 from src.storage.events import delete_events, load_events, save_events
@@ -58,6 +58,7 @@ def _full_event() -> Event:
     event.tag_embeddings = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
     event.summary_embedding = encode_vector([7.0, 8.0, 9.0])
     event.extraction_input_hash = extraction_input_hash(event)
+    event.embedding_input_hash = embedding_input_hash(event)
     return event
 
 

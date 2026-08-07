@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS events (
     astronomical_data TEXT,
     metadata TEXT,
     extraction_input_hash TEXT,
+    embedding_input_hash TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
