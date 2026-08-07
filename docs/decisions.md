@@ -1308,3 +1308,47 @@ written by venue discovery.
 
 **Cheap because the database is empty.** Pre-v1 the schema is changed and the database deleted, so
 dropping a table costs nothing today and would cost a migration later.
+
+---
+
+## Extraction and embedding are gated on a hash of their input
+
+**Decision:** `ExtractionStage` runs when `sha256(title + description)` differs from the hash stored
+on the event, and `EmbeddingStage` runs when `sha256(tags + summary)` differs from its own. Both are
+written **only on success**. Synthetic events are exempt from extraction entirely, by provenance.
+
+**Rationale:** `if event.tags` was doing three jobs and could only tell them apart by accident:
+
+1. *Already extracted* — the incremental case, which it handled.
+2. *Authored, never extract* — synthetic activities, which it handled only because their tags happen
+   to be non-empty.
+3. *Failed, retry* — which it could not distinguish from a valid empty-tag result, so an event the
+   model legitimately found no tags for re-extracted every night forever at ~3 minutes a go.
+
+It also could not see an **edited description**: a corrected event kept its stale tags for the life
+of the database. A hash separates all three states cleanly — set means done, absent means never ran,
+and a failure leaves it absent so the next run retries.
+
+**No cache table.** The event row is already the cache for its own content. A separate
+content-addressed table would only buy reuse across *distinct* events with byte-identical text,
+which is too rare to pay for. This is the small half of the plan's rejected "Option C"; the identity
+half — content-derived `event_id` — stays rejected.
+
+**Embeddings need their own hash, and it was verified before being fixed.** Their input is tags and
+summary, both extraction's output, so hashing them makes the chain automatic. Without it, an event
+re-extracted from `karaoke` into `punk` kept its `karaoke` vectors — measured, not theorised — and
+went on being scored against tags it no longer had. A silent misranking rather than a visible
+failure.
+
+**The synthetic exemption is provenance, not state**, so it reads `Event.is_synthetic` rather than
+anything a stage stores. A hash rule alone would have been *destructive* here: synthetic events
+carry a title and hand-authored tags, so on their first run the hash would mismatch, extraction
+would run, and the LLM would overwrite what a person wrote in `config.yaml`.
+
+**Rejected: a persisted `extraction_exempt` boolean.** It reads well at the call site, but it is a
+second encoding of a fact `source_type` already carries, and two encodings can disagree. A derived
+property costs no schema and cannot fall out of sync. It also reverses CLAUDE.md's recorded "no
+special flag", where a property does not.
+
+**Cost of deferring, for the record:** ~16 hours of re-extraction over ~328 events had this landed
+after the first live run instead of before it.
