@@ -1352,3 +1352,38 @@ special flag", where a property does not.
 
 **Cost of deferring, for the record:** ~16 hours of re-extraction over ~328 events had this landed
 after the first live run instead of before it.
+
+## Cinema showtimes come from Veezi's public page, not its API
+
+**Decision:** Showtimes are read from a cinema's **public Veezi ticketing page**
+(`ticketing.useast.veezi.com/sessions/?siteToken=<token>`) by `VeeziSessionsSource`. The
+API-key adapter specified from the outset — `CinemaVeeziAdapter`, `VEEZI_API_KEY` — is deleted.
+
+**Rationale: the API was never obtainable.** The design assumed a Veezi key could be acquired the
+way a TMDb key can. It cannot. Veezi is *exhibitor* software, and its API key is issued from the
+cinema's own back office — you get one by operating the cinema, not by asking. The adapter was
+therefore dead code from the day it was written, permanently skipped for a missing credential and
+warning about it nightly. Nothing surfaced this until someone tried to obtain the key.
+
+**The public page is a better source anyway**, which is the part worth remembering:
+
+- **No credentials at all.** The `siteToken` appears in the cinema's own booking links.
+- **Server-rendered.** 200 OK and complete HTML, unlike `cinemasalem.com` itself, which is a
+  Next.js shell serving 3.4 KB and an empty `__NEXT_DATA__`.
+- **One adapter covers every Veezi cinema.** The token is part of the configured URL, so
+  CinemaSalem and Warwick both landed from one implementation, and a third is a config entry.
+- **It carries a per-showing id.** `/purchase/38750` is the cinema's own key, measured 1:1 against
+  distinct showings with no collisions — a stable candidate id for free, which the API response
+  would also have supplied but which scraping usually does not.
+
+**The page lists each showing more than once** — 60 of 144 rows on the measured capture — so the
+parser deduplicates on that session id. Counting rows would have overstated the schedule by 70%.
+
+**`source_type` stays `cinema_veezi`.** It is still Veezi, and the label already drives the
+`movies` preference domain and TMDb enrichment. Renaming it would have churned config, `domain_map`
+and stored rows to record nothing but which door we came in by.
+
+**The general lesson, since it cost a source:** an integration whose credential nobody has tried to
+obtain is unvalidated, however well specified. AMC failed the same test at the same time and had no
+public fallback — its API is a partner catalog program, and its site answers automated clients with
+a 403. Veezi had one, and only because the public page was looked for after the API closed.

@@ -26,7 +26,6 @@ FULL_ENV = {
     "APIFY_API_KEY": "apify-key",
     "TMDB_API_KEY": "tmdb-key",
     "AMC_API_KEY": "amc-key",
-    "VEEZI_API_KEY": "veezi-key",
 }
 
 
@@ -104,7 +103,7 @@ def test_no_credentials_at_all_still_builds(paths):
     deps = _build(paths, env={})
 
     assert deps.ingestion_service is not None
-    assert sorted(deps.skipped_sources) == ["amc", "apify", "cinema_veezi", "tmdb"]
+    assert sorted(deps.skipped_sources) == ["amc", "apify", "tmdb"]
 
 
 def test_a_missing_tmdb_key_leaves_enrichment_without_a_movie_provider(paths):

@@ -21,7 +21,7 @@ for the full specification.
 - SQLite — all storage, embedding vectors stored as BLOB (float32)
 - Open-Meteo — weather (free, no API key)
 - Apify → Picuki → Dumpor — social media failover chain
-- Veezi/Vista API — Cinema Salem schedules
+- Veezi public ticketing pages — independent cinema showtimes, no credentials
 - AMC Showtime API — AMC schedules
 - TMDb API — movie metadata enrichment
 
@@ -252,7 +252,6 @@ Secrets (in `.env`):
 APIFY_API_KEY=
 TMDB_API_KEY=
 AMC_API_KEY=
-VEEZI_API_KEY=
 OLLAMA_HOST=http://localhost:11434
 ```
 
