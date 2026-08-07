@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS events (
     tags TEXT,
     summary TEXT,
     setting TEXT NOT NULL DEFAULT 'unknown',
+    timing TEXT NOT NULL DEFAULT 'exact',
     tag_embeddings BLOB,
     summary_embedding BLOB,
     weather TEXT,

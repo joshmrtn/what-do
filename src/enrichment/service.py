@@ -85,7 +85,13 @@ class EnrichmentService:
             if event_date not in _aqi_cache:
                 _aqi_cache[event_date] = self._fetch_air_quality(event_date, lat, lng)
             event.weather = self._weather_for(
-                _weather_cache[event_date], event.start_time, _aqi_cache[event_date]
+                _weather_cache[event_date],
+                # A placed start is not a published one. Sampling 04:00 for an
+                # all-day event would score it on the coldest, darkest hour of
+                # its day; `default_hour` is the evening the rest of the system
+                # judges an unknown time by.
+                event.start_time if event.states_a_time else None,
+                _aqi_cache[event_date],
             )
 
         # --- Movie metadata ---

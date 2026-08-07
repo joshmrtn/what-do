@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
+from src.models.timing import EXACT
 
 if TYPE_CHECKING:
     from src.scoring.similarity import SimilarityResult
@@ -37,6 +38,12 @@ class Event:
     #: "indoor", "outdoor", or "unknown". Decides whether weather can adjust the
     #: score at all; "unknown" earns no adjustment in either direction.
     setting: str = "unknown"
+    #: How much is known about *when*. "exact" is a stated clock time,
+    #: "all_day" is a date the source declared as all-day, and "unknown" is a
+    #: date whose hour was never published. The last two share a placed start
+    #: so the night window can position them, which is exactly why the
+    #: distinction has to be recorded rather than inferred from the clock.
+    timing: str = "exact"
     tag_embeddings: list[bytes] = field(default_factory=list)
     summary_embedding: bytes | None = None
     weather: dict[str, Any] | None = None
@@ -52,6 +59,11 @@ class Event:
     #: describing tags the event no longer has.
     embedding_input_hash: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def states_a_time(self) -> bool:
+        """Whether `start_time` is a time the source actually gave."""
+        return self.timing == EXACT
     similarity: "SimilarityResult | None" = None
 
     @property

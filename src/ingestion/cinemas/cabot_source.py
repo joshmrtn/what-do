@@ -24,6 +24,7 @@ from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.cinemas.cabot_listing import CabotEvent, parse_cabot
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.timing import EXACT, UNKNOWN
 from src.utils.nights import night_start
 
 #: The listing's fixed page size. `?posts_per_page` and `?per_page` are both
@@ -141,8 +142,17 @@ class CabotListingSource(IngestionSource):
             venue=_venue_of(event) or self._config.venue,
             location=self._config.city,
             url=event.url,
-            start_time=self._localise(event.start),
+            start_time=self._localise(
+                event.start
+                if event.time_known
+                else event.start.replace(
+                    hour=self._day_starts_at.hour, minute=self._day_starts_at.minute
+                )
+            ),
             end_time=self._localise(event.end) if event.end else None,
+            # The listing gave a date but no hour. Not the same as all day —
+            # a drop-in has a start, nobody has published it.
+            timing=EXACT if event.time_known else UNKNOWN,
             # Deliberately unset, as for the calendar sources: a listing carries
             # no announcement date, and that field is what the lookback discards on.
             raw_published_at=None,
@@ -160,10 +170,21 @@ def _describe(event: CabotEvent) -> str | None:
     which extraction cannot infer from a title like `In Focus: Improv Lab`.
     """
     parts = [", ".join(event.genres)] if event.genres else []
-    if event.subtitle and not event.off_site:
-        parts.append(event.subtitle)
+    if event.subtitle:
+        # Off-site subtitles carry the venue *and* its address. The name is
+        # already the venue, so what is left is the street — worth keeping,
+        # since Off Cabot is a different building a few streets from the
+        # theatre and "which building" decides whether you go.
+        parts.append(_address_of(event) if event.off_site else event.subtitle)
 
     return " — ".join(p for p in parts if p) or None
+
+
+def _address_of(event: CabotEvent) -> str:
+    """The street part of an off-site subtitle, or the whole of it if unsplit."""
+    _, separator, address = (event.subtitle or "").partition(" - ")
+
+    return address.strip() if separator else (event.subtitle or "").strip()
 
 
 def _venue_of(event: CabotEvent) -> str | None:

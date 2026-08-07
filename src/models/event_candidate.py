@@ -23,3 +23,7 @@ class EventCandidate:
     location: str | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
+    #: How much is known about *when* — see `TIMINGS`. A source that gives a
+    #: date but no hour says so here rather than letting a placed start read as
+    #: a real one.
+    timing: str = "exact"

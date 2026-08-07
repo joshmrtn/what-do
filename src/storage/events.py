@@ -26,7 +26,7 @@ EVENT_COLUMNS = (
     "id, source_event_candidates, source_type, url, image_url, title, venue, "
     "description, location, start_time, end_time, tags, summary, "
     "tag_embeddings, summary_embedding, weather, astronomical_data, metadata, "
-    "created_at, updated_at, setting, extraction_input_hash, "
+    "created_at, updated_at, setting, timing, extraction_input_hash, "
     "embedding_input_hash"
 )
 
@@ -60,6 +60,7 @@ def event_to_row(event: Event) -> tuple[Any, ...]:
         event.created_at.isoformat(),
         event.updated_at.isoformat(),
         event.setting,
+        event.timing,
         event.extraction_input_hash,
         event.embedding_input_hash,
     )
@@ -92,8 +93,9 @@ def row_to_event(row: tuple[Any, ...]) -> Event:
         created_at=_require_dt(row[18]),
         updated_at=_require_dt(row[19]),
         setting=row[20] or "unknown",
-        extraction_input_hash=row[21],
-        embedding_input_hash=row[22],
+        timing=row[21] or "exact",
+        extraction_input_hash=row[22],
+        embedding_input_hash=row[23],
     )
 
 

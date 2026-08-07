@@ -118,6 +118,19 @@ class TestMapping:
 
         assert source.fetch()[0].venue == "Off Cabot"
 
+    def test_an_off_site_address_is_kept_in_the_description(self, db):
+        """Off Cabot is a different building a few streets from the theatre."""
+        body = _page(
+            _item("1", 7, subtitle="Off Cabot - 9 Wallis St, Beverly", off_site=True),
+            total=1,
+        )
+        source, _ = _make_source(db, {URL: body})
+
+        candidate = source.fetch()[0]
+
+        assert candidate.venue == "Off Cabot"
+        assert "9 Wallis St, Beverly" in candidate.description
+
     def test_a_tour_name_is_not_mistaken_for_a_venue(self, db):
         """The subtitle is overloaded; only the off-site marker tells which it is."""
         body = _page(_item("1", 7, subtitle="INDIGO PARK TOUR"), total=1)

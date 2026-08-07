@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.models.event import Event
+from src.models.timing import ALL_DAY, EXACT, TIMINGS, UNKNOWN
 from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
 
@@ -189,3 +190,43 @@ def test_a_scraped_event_is_not_synthetic():
     )
 
     assert event.is_synthetic is False
+
+
+def _timed(**overrides) -> Event:
+    return Event(
+        event_id="evt-1",
+        source_event_candidates=[],
+        source_type="northshorenightout",
+        created_at=_now(),
+        updated_at=_now(),
+        **overrides,
+    )
+
+
+class TestTiming:
+    """A date with no time is two different facts, and they read differently.
+
+    `VALUE=DATE` in a calendar genuinely means all day. A listing that omits the
+    hour means nobody has said yet. Collapsing them makes one label a lie.
+    """
+
+    def test_timing_defaults_to_exact(self):
+        assert _timed().timing == EXACT
+
+    def test_an_all_day_event_records_that(self):
+        assert _timed(timing=ALL_DAY).timing == "all_day"
+
+    def test_an_unpublished_time_records_that(self):
+        assert _timed(timing=UNKNOWN).timing == "unknown"
+
+    def test_only_an_exact_timing_states_a_clock_time(self):
+        """A placed start exists so the night window can position the event.
+
+        Everything downstream has to know it was placed, not published.
+        """
+        assert _timed().states_a_time is True
+        assert _timed(timing=ALL_DAY).states_a_time is False
+        assert _timed(timing=UNKNOWN).states_a_time is False
+
+    def test_every_timing_is_a_declared_value(self):
+        assert set(TIMINGS) == {"exact", "all_day", "unknown"}

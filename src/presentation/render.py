@@ -15,6 +15,7 @@ from datetime import datetime
 
 from src.models.event import Event
 from src.models.recommendation import Recommendation
+from src.models.timing import ALL_DAY, UNKNOWN
 from src.presentation.filters import RankedPair
 from src.scoring.ranking import (
     CONFIDENCE_FACTOR,
@@ -52,6 +53,11 @@ _FACTOR_LABELS = {
 }
 
 _UNTITLED = "(untitled)"
+
+#: Shown in the time column instead of a clock time nobody published. Padded to
+#: the width of `HH:MM` so the titles beside them stay in one column.
+_ALL_DAY_LABEL = "all day"
+_UNKNOWN_TIME_LABEL = "time TBC"
 
 
 def render_recommendations(
@@ -116,7 +122,7 @@ def render_raw(events: list[Event]) -> str:
     ordered = sorted(events, key=_start_sort_key)
     lines = [f"{len(events)} event{'' if len(events) == 1 else 's'}", ""]
     for event in ordered:
-        when = _format_time(event.start_time) if event.start_time else "  --  "
+        when = _when_of(event) or "  --  "
         lines.append(f"  {when}  {_describe(event)}  [{event.source_type}]")
 
     return _join(lines)
@@ -131,7 +137,7 @@ def _render_section(
 
     lines = [_style(title, _BOLD, color), ""]
     for recommendation, event in pairs:
-        when = _format_time(event.start_time) if event.start_time else ""
+        when = _when_of(event)
         prefix = f"  {recommendation.rank}. "
         lines.append(f"{prefix}{when + '  ' if when else ''}{_describe(event)}")
         # Directly under the title, ahead of the reasons. The reasons are the
@@ -203,6 +209,24 @@ def _describe(event: Event) -> str:
     title = event.title or _UNTITLED
 
     return f"{title} — {event.venue}" if event.venue else title
+
+
+def _when_of(event: Event) -> str:
+    """What to print in the time column.
+
+    A placed start exists so the night window can position an event whose hour
+    was never published. Printing it as a clock time would be the most
+    convincing kind of wrong, so the label says which it is: a source that
+    declared a whole day reads differently from one that simply has not said.
+    """
+    if event.start_time is None:
+        return ""
+    if event.timing == ALL_DAY:
+        return _ALL_DAY_LABEL
+    if event.timing == UNKNOWN:
+        return _UNKNOWN_TIME_LABEL
+
+    return _format_time(event.start_time)
 
 
 def _format_time(when: datetime) -> str:

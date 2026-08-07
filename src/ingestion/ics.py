@@ -55,6 +55,9 @@ class VEvent:
     dtend: datetime | None = None
     dtstart_tzid: str | None = None
     dtend_tzid: str | None = None
+    #: DTSTART carried `VALUE=DATE`, so the feed declared a whole day rather
+    #: than a moment. Indistinguishable from a real midnight once parsed.
+    dtstart_is_date: bool = False
     properties: dict[str, str] = field(default_factory=dict)
     #: Every occurrence of every property, in feed order, with its parameters.
     #: `properties` keeps only the last value of each name and drops params,
@@ -157,8 +160,10 @@ def _build_event(
     dtstart, dtstart_tzid = (None, None)
     dtend, dtend_tzid = (None, None)
 
+    dtstart_is_date = False
     if "DTSTART" in properties:
         dtstart, dtstart_tzid = parse_timestamp(properties["DTSTART"], raw["DTSTART"])
+        dtstart_is_date = (raw["DTSTART"].get("VALUE") or "").upper() == "DATE"
     if "DTEND" in properties:
         dtend, dtend_tzid = parse_timestamp(properties["DTEND"], raw["DTEND"])
 
@@ -173,6 +178,7 @@ def _build_event(
         dtend=dtend,
         dtstart_tzid=dtstart_tzid,
         dtend_tzid=dtend_tzid,
+        dtstart_is_date=dtstart_is_date,
         properties=properties,
         repeated=repeated if repeated is not None else {},
     )

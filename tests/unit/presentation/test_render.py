@@ -36,6 +36,7 @@ def _event(
     start: datetime | None = None,
     source_type: str = "instagram",
     url: str | None = None,
+    timing: str = "exact",
 ) -> Event:
     return Event(
         event_id=event_id,
@@ -47,6 +48,7 @@ def _event(
         venue=venue,
         start_time=start,
         url=url,
+        timing=timing,
     )
 
 
@@ -475,3 +477,44 @@ class TestEventUrl:
         out = render_raw([_event("a", url=LINK)])
 
         assert LINK not in out
+
+
+class TestUnpublishedTimes:
+    """A placed start exists so the night window can position the event.
+
+    Printing it as a clock time is the most convincing kind of wrong, so the
+    label says which kind of not-knowing it is.
+    """
+
+    def test_an_all_day_event_says_so(self):
+        out = render_recommendations([_pair("a", title="Open Studio", timing="all_day")])
+
+        assert "all day" in out
+        assert "20:00" not in out
+
+    def test_an_unpublished_time_says_so(self):
+        out = render_recommendations([_pair("a", title="Drop-In", timing="unknown")])
+
+        assert "time TBC" in out
+        assert "20:00" not in out
+
+    def test_the_two_are_not_collapsed(self):
+        """A calendar declaring all day and a listing omitting the hour differ."""
+        out = render_recommendations(
+            [_pair("a", title="Exhibition", timing="all_day"),
+             _pair("b", title="Drop-In", rank=2, timing="unknown")]
+        )
+
+        assert "all day" in out and "time TBC" in out
+
+    def test_a_stated_time_still_prints_as_a_clock(self):
+        out = render_recommendations([_pair("a", title="Gig")])
+
+        assert "20:00" in out
+
+    def test_the_raw_view_agrees(self):
+        out = render_raw([_event("a", start=datetime(2025, 6, 21, 20, 0, tzinfo=TZ),
+                                 timing="all_day")])
+
+        assert "all day" in out
+        assert "20:00" not in out

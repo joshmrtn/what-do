@@ -27,6 +27,7 @@ from src.ingestion.recurrence import Occurrence, expand_calendar
 from src.ingestion.source import IngestionSource
 from src.utils.nights import night_start
 from src.models.event_candidate import EventCandidate
+from src.models.timing import ALL_DAY, EXACT
 from src.utils.html import html_to_text
 
 #: `[Venue, City]` or `[Venue, City, Category]` leading a summary.
@@ -162,8 +163,9 @@ class IcsCalendarSource(IngestionSource):
             venue=venue or self._config.venue,
             location=city or self._config.city,
             url=event.url,
-            start_time=occurrence.start,
+            start_time=_place_start(occurrence.start, event.dtstart_is_date, self._day_starts_at),
             end_time=self._end_of(occurrence),
+            timing=ALL_DAY if event.dtstart_is_date else EXACT,
             # Deliberately unset. CREATED tracks when the calendar was last
             # rebuilt, not when the event was announced, and this field is what
             # the ingestion lookback discards on.
@@ -252,3 +254,17 @@ def _zone_of(name: str) -> ZoneInfo:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError):
         return ZoneInfo("UTC")
+
+
+def _place_start(start: datetime, is_all_day: bool, day_starts_at: time) -> datetime:
+    """Move an all-day start off midnight and onto its own night.
+
+    A date-only value parses to 00:00, which falls *before* the rollover and so
+    lands the event on the previous night — off by one, every time. Placing it
+    at the rollover hour puts it in the night it belongs to. Nothing reads this
+    as a published time, because `timing` says it is not.
+    """
+    if not is_all_day:
+        return start
+
+    return start.replace(hour=day_starts_at.hour, minute=day_starts_at.minute)

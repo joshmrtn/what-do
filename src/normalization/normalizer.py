@@ -131,6 +131,7 @@ class NormalizationEngine:
             description=_normalize_text(candidate.description),
             location=_normalize_text(candidate.location),
             start_time=start_time,
+            timing=candidate.timing,
             end_time=_normalize_timestamp(candidate.end_time, self._tz),
             metadata=metadata,
             created_at=now,
