@@ -115,6 +115,16 @@ sources:
     #   city: "Salem"
     #   min_fetch_interval_hours: 6
 
+  # Paginated `whats-on` listings in The Cabot's markup. Ten events per page,
+  # ascending, so paging stops as soon as a page opens past horizon_days rather
+  # than walking the whole listing.
+  cabot_listings: []
+    # - name: example_theatre
+    #   url: "https://example.org/whats-on/"
+    #   venue: "The Example Theatre"
+    #   city: "Beverly"
+    #   min_fetch_interval_hours: 6
+
 models:
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"

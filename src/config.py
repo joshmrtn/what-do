@@ -114,6 +114,8 @@ class SourcesConfig:
     #: Veezi public ticketing pages. One entry per cinema; the siteToken that
     #: identifies it is part of the URL, so no code changes to add another.
     veezi_cinemas: list[FeedConfig] = field(default_factory=list)
+    #: Paginated `whats-on` listings in The Cabot's markup.
+    cabot_listings: list[FeedConfig] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -456,6 +458,7 @@ def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
         ics_calendars=_load_feeds(raw.get("ics_calendars"), "ICS calendar"),
         html_calendars=_load_feeds(raw.get("html_calendars"), "HTML calendar"),
         veezi_cinemas=_load_feeds(raw.get("veezi_cinemas"), "Veezi cinema"),
+        cabot_listings=_load_feeds(raw.get("cabot_listings"), "Cabot listing"),
     )
 
 
