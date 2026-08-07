@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS run_history (
     duration_ms INTEGER,
     steps_completed TEXT,
     errors TEXT,
+    skipped_sources TEXT,
     outcome TEXT
 );
 

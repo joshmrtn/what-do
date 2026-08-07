@@ -247,13 +247,18 @@ data/seeds.yaml              — starting handles/venues for discovery
 .env.example                 — copy to .env and fill in secrets (gitignored)
 ```
 
-Required secrets (in `.env`):
+Secrets (in `.env`):
 ```
 APIFY_API_KEY=
 TMDB_API_KEY=
 AMC_API_KEY=
+VEEZI_API_KEY=
 OLLAMA_HOST=http://localhost:11434
 ```
+
+Only `OLLAMA_HOST` is genuinely required. Every API key is optional: the composition root skips
+a source whose key is absent, warning with the exact variable name it looked for, and records
+the skip in the run summary. A skip never sets `outcome = partial` — that is for stage failures.
 
 ---
 

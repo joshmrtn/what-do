@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import io
+import json
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -604,3 +606,93 @@ def test_a_fresh_event_with_no_start_time_is_never_scoped_out_early(db):
     )
 
     assert fakes["enrichment_service"].seen[0] == ["fresh-undated"]
+
+
+# ----------------------------------------------------------------------
+# Run history
+# ----------------------------------------------------------------------
+
+
+def _runs(db) -> list[dict]:
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM run_history")]
+    finally:
+        conn.close()
+
+
+def test_a_run_is_recorded_in_history(db):
+    _run(db)
+
+    assert len(_runs(db)) == 1
+
+
+def test_the_recorded_outcome_matches_the_result(db):
+    _run(db, deps={"enrichment_service": _FakeEnrichment(error=RuntimeError("boom"))})
+
+    assert _runs(db)[0]["outcome"] == "partial"
+
+
+def test_stage_counts_and_errors_reach_the_history(db):
+    _run(db, deps={"enrichment_service": _FakeEnrichment(error=RuntimeError("boom"))})
+
+    row = _runs(db)[0]
+    assert "enrichment failed: boom" in json.loads(row["errors"])
+    assert json.loads(row["steps_completed"])["ranked"] == 1
+
+
+def test_skipped_sources_reach_the_history(db):
+    _run(db, skipped_sources=["apify"])
+
+    assert json.loads(_runs(db)[0]["skipped_sources"]) == ["apify"]
+
+
+def test_a_run_that_stops_before_ranking_is_still_recorded(db):
+    """The early return is exactly the run whose record matters most."""
+    _run(db, deps={"embedding_stage": _FakeEmbedding(error=RuntimeError("ollama down"))})
+
+    row = _runs(db)[0]
+    assert row["outcome"] == "failed"
+    assert row["completed_at"] is not None
+
+
+def test_a_dry_run_records_no_history(db):
+    """A dry run did not do a batch; recording one would pollute the only record."""
+    _run(db, dry_run=True)
+
+    assert _runs(db) == []
+
+
+def test_a_hard_crash_leaves_the_run_unfinished(db):
+    """A row with a started_at and no completed_at is what a crash looks like.
+
+    `load_events` is deliberately not wrapped as a stage: without stored events
+    reconcile treats everything as new, so failing loudly beats duplicating the
+    whole database quietly.
+    """
+    def _boom(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError):
+        run_batch(
+            config=_config(),
+            db_path=db,
+            logger=get_logger("batch_test", stream=io.StringIO()),
+            get_now=lambda: NOW,
+            run_date=RUN_DATE,
+            ingestion_service=_FakeIngestion(),
+            normalization_service=_FakeNormalization([]),
+            enrichment_service=_FakeEnrichment(),
+            extraction_stage=_FakeExtraction(),
+            embedding_stage=_FakeEmbedding(),
+            semantic_deduplicator=_FakeSemanticDedup(),
+            similarity_stage=_FakeSimilarity(),
+            ranking_engine=_FakeRanking(),
+            load_events_fn=_boom,
+        )
+
+    row = _runs(db)[0]
+    assert row["started_at"] is not None
+    assert row["completed_at"] is None
+    assert row["outcome"] is None

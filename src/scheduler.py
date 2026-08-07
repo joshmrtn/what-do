@@ -38,6 +38,7 @@ from src.storage.candidates import load_candidates
 from src.storage.db import DEFAULT_DB_PATH, init_db
 from src.storage.events import delete_events, load_events, save_events
 from src.storage.recommendations import save_recommendations
+from src.storage.runs import finish_run, start_run
 from src.utils.logging import StructuredLogger, get_logger
 
 DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
@@ -80,6 +81,8 @@ def run_batch(
     save_events_fn: Callable[..., None] = save_events,
     delete_events_fn: Callable[..., None] = delete_events,
     save_recommendations_fn: Callable[..., None] = save_recommendations,
+    start_run_fn: Callable[..., str] = start_run,
+    finish_run_fn: Callable[..., None] = finish_run,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -108,12 +111,39 @@ def run_batch(
         save_events_fn: Injected for testing.
         delete_events_fn: Injected for testing.
         save_recommendations_fn: Injected for testing.
+        start_run_fn: Injected for testing.
+        finish_run_fn: Injected for testing.
 
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
     """
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
+
+    # A dry run did not do a batch, so recording one would pollute the only
+    # durable record of what the nightly runs actually did.
+    run_id = None if dry_run else start_run_fn(db_path, now)
+
+    def _finish() -> BatchResult:
+        """Complete the history row and hand back the result.
+
+        Deliberately not a `finally`: a run that dies outside the stage
+        wrappers should leave its row with a `started_at` and no
+        `completed_at`, because that is what a crash looks like. Marking it
+        finished on the way out would erase the one signal the start-row
+        exists to give.
+        """
+        if run_id is not None:
+            finish_run_fn(
+                db_path,
+                run_id,
+                outcome=result.outcome,
+                completed_at=get_now(),
+                stage_counts=result.stage_counts,
+                errors=result.errors,
+                skipped_sources=result.skipped_sources,
+            )
+        return result
 
     def _stage(name: str, fn: Callable[[], Any], default: Any = None) -> Any:
         """Run one stage, recording failure rather than ending the batch.
@@ -194,7 +224,7 @@ def run_batch(
             component="batch",
             duration_ms=0,
         )
-        return result
+        return _finish()
     events = embedded
     _save(events)
 
@@ -218,7 +248,7 @@ def run_batch(
     if not dry_run and recommendations:
         _stage("save_recommendations", lambda: save_recommendations_fn(recommendations, db_path))
 
-    return result
+    return _finish()
 
 
 def _merge_candidates(
