@@ -107,6 +107,12 @@ def during_night(
     carries the *next* calendar date, and dropping it would empty the evening
     still in progress.
 
+    An event is matched on whether it *overlaps* the night, not on whether it
+    starts in it. A month-long exhibition is on every night it is open, and
+    asking only about its start would show it on opening night and then never
+    again. It stays one stored event either way — this decides which nights it
+    appears on, never how many times.
+
     Args:
         pairs: Ranked pairs, in the batch's rank order.
         night: The date the night is named for.
@@ -114,7 +120,7 @@ def during_night(
         zone: The view's timezone, which anchors the window.
 
     Returns:
-        The pairs inside the window, order preserved.
+        The pairs overlapping the window, order preserved, each at most once.
     """
     window_from = datetime.combine(night, day_starts_at, tzinfo=zone)
     window_to = window_from + timedelta(days=1)
@@ -129,7 +135,12 @@ def during_night(
             # Comparing naive to aware raises, and one bad row must not take
             # down every other event in the view.
             start = start.replace(tzinfo=zone)
-        if window_from <= start < window_to:
+        # No end time means instantaneous rather than an invented duration,
+        # matching `overlapping`.
+        end = pair[1].end_time or start
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=zone)
+        if start < window_to and end >= window_from:
             kept.append(pair)
     return kept
 

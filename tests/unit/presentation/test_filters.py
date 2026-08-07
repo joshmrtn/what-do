@@ -287,3 +287,44 @@ def test_during_night_preserves_order():
     second = _pair("second", start=_when(2025, 6, 21, 19, 0))
 
     assert during_night([first, second], date(2025, 6, 21), time(4, 0), ZONE) == [first, second]
+
+
+class TestMultiNightEvents:
+    """An exhibition open all month is on every night, not just its first.
+
+    It stays one stored event — the CLI shows it once per night it is actually
+    open, rather than the batch minting thirty copies.
+    """
+
+    def _run(self, start, end, night):
+        pair = _pair("run", start=start, end=end)
+        return during_night([pair], night, time(4, 0), ZONE) == [pair]
+
+    def test_shown_on_its_opening_night(self):
+        assert self._run(_when(2026, 8, 1, 10), _when(2026, 8, 30, 18), date(2026, 8, 1))
+
+    def test_shown_on_a_night_in_the_middle(self):
+        assert self._run(_when(2026, 8, 1, 10), _when(2026, 8, 30, 18), date(2026, 8, 15))
+
+    def test_shown_on_its_final_night(self):
+        assert self._run(_when(2026, 8, 1, 10), _when(2026, 8, 30, 18), date(2026, 8, 30))
+
+    def test_not_shown_the_night_after_it_closes(self):
+        assert not self._run(_when(2026, 8, 1, 10), _when(2026, 8, 30, 18), date(2026, 8, 31))
+
+    def test_not_shown_the_night_before_it_opens(self):
+        assert not self._run(_when(2026, 8, 5, 10), _when(2026, 8, 30, 18), date(2026, 8, 4))
+
+    def test_an_evening_event_is_unaffected(self):
+        assert self._run(_when(2026, 8, 7, 19), _when(2026, 8, 7, 23), date(2026, 8, 7))
+        assert not self._run(_when(2026, 8, 7, 19), _when(2026, 8, 7, 23), date(2026, 8, 8))
+
+    def test_an_event_with_no_end_is_still_instantaneous(self):
+        assert self._run(_when(2026, 8, 7, 19), None, date(2026, 8, 7))
+        assert not self._run(_when(2026, 8, 7, 19), None, date(2026, 8, 8))
+
+    def test_a_run_appears_once_per_night_not_once_per_day_of_its_length(self):
+        """One row in, one row out — the CLI never multiplies an event."""
+        pair = _pair("run", start=_when(2026, 8, 1, 10), end=_when(2026, 8, 30, 18))
+
+        assert during_night([pair], date(2026, 8, 15), time(4, 0), ZONE) == [pair]
