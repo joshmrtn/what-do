@@ -157,7 +157,11 @@ def test_description_keeps_its_own_text_below_the_category(db):
 
 
 def test_unconventional_summary_keeps_the_event_and_warns(db):
-    """A convention change must cost venue attribution, never the event."""
+    """A convention change must cost venue attribution, never the event.
+
+    The warning counts rather than naming: one feed does this on all 12,038 of
+    its events, so quoting each title buries the rest of the run.
+    """
 
     stream = io.StringIO()
     ics = _calendar("UID:a@x\r\nSUMMARY:Just A Title\r\nDTSTART:20260806T230000Z")
@@ -169,7 +173,7 @@ def test_unconventional_summary_keeps_the_event_and_warns(db):
     assert len(candidates) == 1
     assert candidates[0].title == "Just A Title"
     assert candidates[0].venue is None
-    assert "Just A Title" in stream.getvalue()
+    assert "1 of 1 summaries" in stream.getvalue()
 
 
 def test_timestamps_map_to_start_and_end(db):
@@ -620,3 +624,39 @@ class TestFeedVenueDefaults:
 
         assert results
         assert all(c.venue == "The Rhumb Line" for c in results)
+
+
+class TestSummaryWarningVolume:
+    """One real feed names the film and nothing else, on all 12,038 events.
+
+    Warning per event buries every other line in the run.
+    """
+
+    _THREE_BARE = _calendar(
+        "UID:a@x\r\nSUMMARY:BROOKLYN\r\nDTSTART:20260809T010000Z",
+        "UID:b@x\r\nSUMMARY:Restrepo\r\nDTSTART:20260809T020000Z",
+        "UID:c@x\r\nSUMMARY:Leaving\r\nDTSTART:20260809T030000Z",
+    )
+
+    def _warnings(self, db, **overrides):
+        stream = io.StringIO()
+        _weekly_source(db, body=self._THREE_BARE, stream=stream, **overrides).fetch()
+        return [ln for ln in stream.getvalue().splitlines() if "convention" in ln]
+
+    def test_a_feed_with_a_venue_does_not_warn_at_all(self, db):
+        """Nothing is missing: the feed declared its venue, so there is no gap."""
+        assert self._warnings(db, venue="Cape Ann Community Cinema") == []
+
+    def test_without_a_venue_the_warning_is_summarised_not_repeated(self, db):
+        warnings = self._warnings(db)
+
+        assert len(warnings) == 1
+
+    def test_the_summary_reports_how_many(self, db):
+        assert "3" in self._warnings(db)[0]
+
+    def test_a_conforming_feed_stays_silent(self, db):
+        stream = io.StringIO()
+        _weekly_source(db, body=_WITH_PREFIX, stream=stream).fetch()
+
+        assert "convention" not in stream.getvalue()

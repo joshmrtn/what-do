@@ -217,8 +217,13 @@ def test_tzid_timestamp_is_naive_and_reports_its_zone():
     assert event.dtstart_tzid == "America/New_York"
 
 
-def test_recurring_event_yields_the_base_occurrence_and_warns():
-    """No recurrence engine exists; a silent mis-expansion would be worse."""
+def test_a_recurring_event_parses_without_warning():
+    """The parser reports the rule; expanding it is `recurrence.expand`'s job.
+
+    It used to warn that recurrences were not expanded. They are now, so the
+    warning was not merely noisy — it was false, and one real feed emitted
+    3,163 of them per fetch.
+    """
 
     stream = io.StringIO()
     ics = _calendar(
@@ -229,8 +234,8 @@ def test_recurring_event_yields_the_base_occurrence_and_warns():
     events = parse_ics(ics, logger=get_logger("test", stream=stream))
 
     assert len(events) == 1
-    assert events[0].summary == "Weekly Trivia"
-    assert "RRULE" in stream.getvalue() or "recurr" in stream.getvalue().lower()
+    assert events[0].repeated["RRULE"][0].value == "FREQ=WEEKLY;COUNT=10"
+    assert stream.getvalue() == ""
 
 
 def _body(*lines: str) -> str:

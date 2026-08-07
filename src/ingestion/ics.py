@@ -186,7 +186,9 @@ def parse_ics(text: str, logger: Any = None) -> list[VEvent]:
 
     Args:
         text: Raw ICS document.
-        logger: Structured logger for recurrence warnings. Optional.
+        logger: Accepted for interface symmetry; the parser reports what a
+            VEVENT declared and judges none of it. Recurrence rules are carried
+            in `repeated` for `recurrence.expand` to act on.
 
     Returns:
         One VEvent per VEVENT block, in document order.
@@ -228,13 +230,5 @@ def parse_ics(text: str, logger: Any = None) -> list[VEvent]:
         repeated.setdefault(name, []).append(
             Property(value=_unescape(value), params=line_params)
         )
-
-        if name in ("RRULE", "RECURRENCE-ID") and logger is not None:
-            logger.warning(
-                f"Recurring event is not expanded, using its base occurrence: "
-                f"{name}={value}",
-                component="ics",
-                duration_ms=0,
-            )
 
     return events

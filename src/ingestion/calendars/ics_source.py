@@ -58,6 +58,9 @@ class IcsCalendarSource(IngestionSource):
         self._zone = _zone_of(timezone_name)
         self._horizon_days = horizon_days
         self._day_starts_at = day_starts_at
+        #: Summaries in the current fetch that ignored the [Venue, City]
+        #: convention, reported once at the end rather than one line each.
+        self._unconventional = 0
 
     def fetch(self) -> list[EventCandidate]:
         """Fetch and parse the calendar, skipping the network when it is polite to.
@@ -82,13 +85,34 @@ class IcsCalendarSource(IngestionSource):
             events, window_start, window_end, self._zone, logger=self._logger
         )
 
+        self._unconventional = 0
         candidates = []
         for occurrence in occurrences:
             candidate = self._to_candidate(occurrence)
             if candidate is not None:
                 candidates.append(candidate)
 
+        self._report_unconventional(len(occurrences))
+
         return candidates
+
+    def _report_unconventional(self, total: int) -> None:
+        """Report summaries that ignored the convention, once rather than each.
+
+        Silent when the feed declares its own venue: a cinema's calendar names
+        the film, and nothing is missing once config has said where it plays.
+        Otherwise one line — a feed measured at 12,038 such events would
+        otherwise bury every other line in the run.
+        """
+        if not self._unconventional or self._config.venue:
+            return
+
+        self._log(
+            f"{self._unconventional} of {total} summaries from "
+            f"{self._config.name} did not follow the [Venue, City] convention, "
+            "so they have no venue. Set `venue:` on the feed if it has only one.",
+            level="warning",
+        )
 
     # ------------------------------------------------------------------
     # Fetching
@@ -186,11 +210,7 @@ class IcsCalendarSource(IngestionSource):
         cleaned = _INVISIBLE_RE.sub("", summary).strip()
         match = _PREFIX_RE.match(cleaned)
         if match is None:
-            self._log(
-                f"Summary from {self._config.name} does not follow the "
-                f"[Venue, City] convention, keeping it as the title: {cleaned!r}",
-                level="warning",
-            )
+            self._unconventional += 1
             return cleaned, None, None, None
 
         parts = [p.strip() for p in match.group("prefix").split(",")]
