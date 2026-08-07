@@ -540,3 +540,67 @@ def test_dry_run_deletes_no_superseded_events(db):
     _run(db, dry_run=True, fresh=[_event("fresh-1", ["c1", "c2"])])
 
     assert sorted(e.event_id for e in load_events(db)) == ["stored-a", "stored-b"]
+
+
+# ----------------------------------------------------------------------
+# Carry-forward scope
+# ----------------------------------------------------------------------
+
+
+def test_a_stored_event_that_has_already_happened_never_enters_the_pipeline(db):
+    """It would ride enrichment, dedup and similarity only to be dropped before ranking."""
+    save_events([_event("past", ["c99"], start_time=NOW - timedelta(days=2))], db)
+
+    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+
+    assert fakes["enrichment_service"].seen[0] == ["fresh-1"]
+    assert fakes["ranking_engine"].ranked == [["fresh-1"]]
+
+
+def test_a_stored_event_that_has_already_happened_is_not_deleted(db):
+    """Scoping the carry-forward is not a purge; #17 owns retention."""
+    save_events([_event("past", ["c99"], start_time=NOW - timedelta(days=2))], db)
+
+    _run(db, fresh=[_event("fresh-1", ["c1"])])
+
+    assert "past" in {e.event_id for e in load_events(db)}
+
+
+def test_a_stored_event_beyond_the_horizon_is_not_carried(db):
+    """The carry-forward scope matches the ranking scope, so nothing is enriched in vain."""
+    save_events([_event("far", ["c99"], start_time=NOW + timedelta(days=400))], db)
+
+    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+
+    assert fakes["enrichment_service"].seen[0] == ["fresh-1"]
+
+
+def test_a_stored_undated_event_older_than_the_lookback_is_not_carried(db):
+    """Undated events are held on discovery age, the same rule ranking applies."""
+    stale = _event(
+        "stale-undated", ["c99"], start_time=None, created_at=NOW - timedelta(days=400)
+    )
+    save_events([stale], db)
+
+    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+
+    assert fakes["enrichment_service"].seen[0] == ["fresh-1"]
+
+
+def test_a_stored_undated_event_inside_the_lookback_is_still_carried(db):
+    """The CLI has a labelled UNDATED section; a recent one must not be dropped."""
+    save_events([_event("undated", ["c99"], start_time=None)], db)
+
+    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+
+    assert sorted(fakes["enrichment_service"].seen[0]) == ["fresh-1", "undated"]
+
+
+def test_a_fresh_event_with_no_start_time_is_never_scoped_out_early(db):
+    """Extraction has not run yet, so a fresh event's start_time is not knowable here."""
+    _, fakes, _, _ = _run(
+        db,
+        fresh=[_event("fresh-undated", ["c1"], start_time=None, created_at=NOW - timedelta(days=400))],
+    )
+
+    assert fakes["enrichment_service"].seen[0] == ["fresh-undated"]

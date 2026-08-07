@@ -165,7 +165,8 @@ def run_batch(
     if stale_ids and not dry_run:
         delete_events_fn(stale_ids, db_path)
 
-    events = _carry_forward(reconciled, stored, stale_ids)
+    in_scope = _scope_filter(config, run_date, now)
+    events = _carry_forward(reconciled, stored, stale_ids, in_scope)
     result.stage_counts["events"] = len(events)
 
     events = _stage(
@@ -197,7 +198,7 @@ def run_batch(
 
     events = _stage("similarity", lambda: similarity_stage.process(events), default=events)
 
-    rankable = _in_scope(events, config, run_date, now)
+    rankable = [e for e in events if in_scope(e)]
     result.stage_counts["ranked"] = len(rankable)
 
     recommendations = _stage(
@@ -229,23 +230,37 @@ def _merge_candidates(
 
 
 def _carry_forward(
-    reconciled: list[Event], stored: list[Event], stale_ids: list[str]
+    reconciled: list[Event],
+    stored: list[Event],
+    stale_ids: list[str],
+    in_scope: Callable[[Event], bool],
 ) -> list[Event]:
-    """Add stored events that no fresh event claimed.
+    """Add the stored events that no fresh event claimed and are still rankable.
 
     Their candidates have aged out of the window, but the events have not: a
     calendar event found three weeks ago is still happening, and a night when
     every source is down should still re-rank what we already know about
     against tonight's forecast.
+
+    Only the stored side is scoped, and only here. A stored event that has
+    already happened would otherwise ride enrichment, dedup and similarity in
+    full, just to be dropped by the same predicate immediately before ranking.
+    Nothing is deleted — retention is #17's job, and a future feedback feature
+    still wants the rows.
+
+    Fresh events are never scoped here: extraction has not run yet, so their
+    `start_time` is not knowable until later in the batch.
     """
     claimed = {e.event_id for e in reconciled} | set(stale_ids)
-    return reconciled + [e for e in stored if e.event_id not in claimed]
+    return reconciled + [
+        e for e in stored if e.event_id not in claimed and in_scope(e)
+    ]
 
 
-def _in_scope(
-    events: list[Event], config: AppConfig, run_date: date, now: datetime
-) -> list[Event]:
-    """Select the events this run should rank.
+def _scope_filter(
+    config: AppConfig, run_date: date, now: datetime
+) -> Callable[[Event], bool]:
+    """Build the predicate for whether an event is worth ranking this run.
 
     Ranking everything ever stored grows without bound; ranking only tonight
     discards the lookahead the calendar feeds exist for. Undated events are kept
@@ -256,16 +271,12 @@ def _in_scope(
     lookback_cutoff = now - timedelta(days=config.scraping.lookback_days)
     tz = zoneinfo.ZoneInfo(config.location.timezone)
 
-    in_scope = []
-    for event in events:
+    def in_scope(event: Event) -> bool:
         if event.start_time is None:
-            if event.created_at >= lookback_cutoff:
-                in_scope.append(event)
-            continue
+            return event.created_at >= lookback_cutoff
         # Local date, not UTC: an event at 11pm local is tomorrow in UTC, and
         # filtering on that would misfile exactly the evening events we rank.
         start = event.start_time.astimezone(tz).date()
-        if run_date <= start <= horizon:
-            in_scope.append(event)
+        return run_date <= start <= horizon
 
     return in_scope
