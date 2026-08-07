@@ -277,7 +277,13 @@ the skip in the run summary. A skip never sets `outcome = partial` — that is f
 | 8 | Weather comfort enrichment | ✅ complete |
 | 9 | Deterministic ranking engine | ✅ complete |
 | 10 | CLI interface | ✅ complete |
+| — | Batch orchestrator (issue #12) | ✅ complete |
 | 11 | Maintenance utilities | ⬜ not started |
 | 12 | Hardening & reliability | ⬜ not started |
 
 Update status here as phases complete.
+
+The batch orchestrator is not one of the numbered phases — it is the sequencer and composition
+root that makes phases 3–10 actually run. `src/scheduler.py` holds `run_batch` and the
+`what-do-run-batch` entry point; `src/composition.py` is the only place real providers are built.
+Note that issue **#12** is the orchestrator, unrelated to **phase 12** above.
