@@ -23,7 +23,6 @@ def test_all_tables_exist(tmp_path):
         "weather_cache",
         "run_history",
         "feedback",
-        "blocklist",
     }
     assert expected.issubset(tables)
 

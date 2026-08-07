@@ -1285,3 +1285,26 @@ ranking would receive an empty list.
 non-fatal and the batch continues with what it has, but ordering computed without vectors is
 meaningless and would be persisted as though it meant something. Everything already saved stays
 saved.
+
+---
+
+## The blocklist has no database table
+
+**Decision:** the `blocklist` table is removed from the schema. `data/blocklist.json` is the only
+source, read once by the composition root and handed to `IngestionService` and `RankingEngine`.
+
+**Rationale:** the table had **zero readers and zero writers** — not "written but unread", entirely
+inert. The intent recorded in CLAUDE.md was that it be "overwritten from file at each batch start",
+but no consumer ever appeared, and the composition root has since made the in-memory path the
+working one.
+
+Asked the other way round — if we were building this from nothing, would we add it? — the answer is
+no. It would be a cache of a file already read at startup, invalidated by nothing and queried by no
+one. Dead schema is worse than no schema, because the next person to see it may reasonably query
+it, get zero rows, and silently block nothing.
+
+**Not affected:** `venues.blocklisted` is a different column on a different table and is genuinely
+written by venue discovery.
+
+**Cheap because the database is empty.** Pre-v1 the schema is changed and the database deleted, so
+dropping a table costs nothing today and would cost a migration later.

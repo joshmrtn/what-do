@@ -141,12 +141,6 @@ CREATE TABLE IF NOT EXISTS feedback (
     submitted_at TEXT NOT NULL,
     FOREIGN KEY (event_id) REFERENCES events(id)
 );
-
-CREATE TABLE IF NOT EXISTS blocklist (
-    id TEXT PRIMARY KEY,
-    value TEXT NOT NULL UNIQUE,
-    loaded_at TEXT NOT NULL
-);
 """
 
 

@@ -206,7 +206,7 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Embedding precision | Store as float32 BLOB, not float64. Use `encode_vector`/`decode_vector` utilities everywhere |
 | LLM Pass 1 bypass | If `event.tags` already populated, skip extraction. No special flag. Handles synthetic events |
 | Synthetic activities | Enter pipeline as pre-structured `Events` (not `EventCandidates`), after dedup, before Stage 1 |
-| Blocklist source of truth | `data/blocklist.json` is authoritative. DB table overwritten from file at each batch start |
+| Blocklist source of truth | `data/blocklist.json` is the *only* source. The composition root reads it once and hands it to ingestion and ranking; there is no DB table, by decision (#16) |
 | LLM Pass 2 | Deferred to post-v1. Slot reserved between steps 11 and 13. Do not implement in v1 |
 | Async in v1 | v1 is deliberately single-threaded. No asyncio. Parallelism is post-v1 only |
 | `base × match_multiplier` on a negative score | Inverts intent — `no` at 0.5 turns -0.40 into -0.20, *rewarding* the clearest rejections. Divide instead when the base is negative |
