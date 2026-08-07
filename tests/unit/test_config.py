@@ -3,7 +3,7 @@ import os
 import pytest
 import yaml
 
-from src.config import ConfigError, load_config
+from src.config import ConfigError, _timezone_finder, load_config
 
 
 def _write_config(tmp_path, data):
@@ -770,3 +770,28 @@ def test_horizon_days_defaults(tmp_path):
 def test_non_positive_horizon_rejected(tmp_path, bad):
     with pytest.raises(ConfigError, match="horizon_days"):
         _load(tmp_path, {"scraping": {"horizon_days": bad}})
+
+
+def test_timezone_finder_is_reused_across_calls():
+    """Building a TimezoneFinder costs ~0.7s; load_config must not pay it every call."""
+    assert _timezone_finder() is _timezone_finder()
+
+
+def test_repeated_loads_build_one_timezone_finder(tmp_path, monkeypatch):
+    """Pins the call site, not just the helper: N loads must construct one finder."""
+    real = _timezone_finder()
+    built = []
+
+    def _counting_finder():
+        built.append(1)
+        return real
+
+    _timezone_finder.cache_clear()
+    monkeypatch.setattr("src.config.TimezoneFinder", _counting_finder)
+    try:
+        _load(tmp_path, {})
+        _load(tmp_path, {})
+    finally:
+        _timezone_finder.cache_clear()
+
+    assert len(built) == 1

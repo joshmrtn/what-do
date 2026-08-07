@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
@@ -12,6 +13,17 @@ from timezonefinder import TimezoneFinder
 
 class ConfigError(ValueError):
     """Raised when config.yaml is missing required fields or is malformed."""
+
+
+@lru_cache(maxsize=1)
+def _timezone_finder() -> TimezoneFinder:
+    """Return the process-wide TimezoneFinder, building it on first use.
+
+    Constructing one loads its bundled boundary data and measures ~0.68s, while
+    the lookup itself is ~0.004s and the data is static. Building it per call
+    made `load_config` cost more than everything it parses.
+    """
+    return TimezoneFinder()
 
 
 @dataclass
@@ -423,7 +435,7 @@ def load_config(
     if search_radius <= 0:
         raise ConfigError(f"Invalid search_radius_miles {search_radius}: must be positive")
 
-    tz_name = TimezoneFinder().timezone_at(lat=latitude, lng=longitude)
+    tz_name = _timezone_finder().timezone_at(lat=latitude, lng=longitude)
     if tz_name is None:
         raise ConfigError(
             f"Could not derive timezone from coordinates ({latitude}, {longitude})"
