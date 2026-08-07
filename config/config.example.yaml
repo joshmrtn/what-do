@@ -115,6 +115,17 @@ sources:
     #   city: "Salem"
     #   min_fetch_interval_hours: 6
 
+  # The Events Calendar (WordPress) iCal exports. Its export is capped at 30
+  # events and ignores `paged`, so these are walked with `tribe-bar-date`.
+  # A busy calendar configured under `ics_calendars` instead would silently
+  # contribute its first 30 events and look complete.
+  tribe_calendars: []
+    # - name: example_theatre
+    #   url: "https://example.org/events/?ical=1"
+    #   venue: "The Example Theatre"
+    #   city: "Salem"
+    #   min_fetch_interval_hours: 6
+
   # Paginated `whats-on` listings in The Cabot's markup. Ten events per page,
   # ascending, so paging stops as soon as a page opens past horizon_days rather
   # than walking the whole listing.

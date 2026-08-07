@@ -116,6 +116,9 @@ class SourcesConfig:
     veezi_cinemas: list[FeedConfig] = field(default_factory=list)
     #: Paginated `whats-on` listings in The Cabot's markup.
     cabot_listings: list[FeedConfig] = field(default_factory=list)
+    #: The Events Calendar (WordPress) iCal exports, whose 30-event cap is
+    #: walked with `tribe-bar-date` rather than paged.
+    tribe_calendars: list[FeedConfig] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -459,6 +462,7 @@ def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
         html_calendars=_load_feeds(raw.get("html_calendars"), "HTML calendar"),
         veezi_cinemas=_load_feeds(raw.get("veezi_cinemas"), "Veezi cinema"),
         cabot_listings=_load_feeds(raw.get("cabot_listings"), "Cabot listing"),
+        tribe_calendars=_load_feeds(raw.get("tribe_calendars"), "Tribe calendar"),
     )
 
 

@@ -22,7 +22,7 @@ import requests
 
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
-from src.ingestion.ics import parse_ics
+from src.ingestion.ics import VEvent, parse_ics
 from src.ingestion.recurrence import Occurrence, expand_calendar
 from src.ingestion.source import IngestionSource
 from src.utils.nights import night_start
@@ -74,8 +74,7 @@ class IcsCalendarSource(IngestionSource):
         Returns:
             One EventCandidate per occurrence, in chronological order.
         """
-        body = self._read_feed()
-        events = parse_ics(body, logger=self._logger)
+        events = self._read_events()
 
         # Floored at the night, not the instant: an event under way has not
         # stopped being tonight's just because the job looking at it started
@@ -119,10 +118,31 @@ class IcsCalendarSource(IngestionSource):
     # Fetching
     # ------------------------------------------------------------------
 
-    def _read_feed(self) -> str:
-        """Return the feed body, from cache when refetching would be impolite."""
+    def _read_events(self) -> list[VEvent]:
+        """Every VEVENT this source can reach, deduplicated by identity.
+
+        One document for an ordinary feed. A subclass may return several — the
+        events are merged here rather than at the parser, because two documents
+        from the same calendar overlap and a duplicated master would expand into
+        duplicated occurrences.
+        """
+        merged: dict[tuple[str | None, str | None], VEvent] = {}
+        for body in self._read_documents():
+            for event in parse_ics(body, logger=self._logger):
+                recurrence = event.repeated.get("RECURRENCE-ID")
+                key = (event.uid, recurrence[0].value if recurrence else None)
+                merged.setdefault(key, event)
+
+        return list(merged.values())
+
+    def _read_documents(self) -> list[str]:
+        """The documents making up this calendar. One, unless a subclass says otherwise."""
+        return [self._read_feed(self._config.url)]
+
+    def _read_feed(self, url: str) -> str:
+        """Return a feed body, from cache when refetching would be impolite."""
         return fetch_document(
-            self._config.url,
+            url,
             session=self._session,
             db_path=self._db_path,
             get_now=self._get_now,

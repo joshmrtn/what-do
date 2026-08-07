@@ -33,6 +33,7 @@ from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import OpenMeteoProvider
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.ingestion.calendars.tribe_source import TribeCalendarSource
 from src.ingestion.cinemas.cabot_source import CabotListingSource
 from src.ingestion.cinemas.veezi_source import VeeziSessionsSource
 from src.ingestion.ingestion_service import IngestionService
@@ -158,6 +159,18 @@ def build_dependencies(
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
+            )
+        )
+    for feed in config.sources.tribe_calendars:
+        independent_sources.append(
+            TribeCalendarSource(
+                feed,
+                db_path,
+                get_now=get_now,
+                logger=logger,
+                timezone_name=config.location.timezone,
+                horizon_days=config.scraping.horizon_days,
+                day_starts_at=config.day_starts_at,
             )
         )
     for feed in config.sources.cabot_listings:
