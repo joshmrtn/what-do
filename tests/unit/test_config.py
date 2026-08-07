@@ -836,10 +836,16 @@ def test_an_ordinary_source_type_is_accepted(tmp_path):
     assert cfg.sources.ics_calendars[0].source_type == "nsno_cal"
 
 
-def test_day_starts_at_loads(tmp_path):
-    cfg = _load(tmp_path, {"presentation": {"day_starts_at": "05:30"}})
+def test_day_starts_at_is_a_top_level_key(tmp_path):
+    """One key, one concept.
 
-    assert cfg.presentation.day_starts_at == time(5, 30)
+    Ingestion and the CLI must agree on which day it is, or a re-run late in
+    the evening discards the events the CLI is still showing. That makes the
+    rollover a system-wide fact, not a rendering preference.
+    """
+    cfg = _load(tmp_path, {"day_starts_at": "05:30"})
+
+    assert cfg.day_starts_at == time(5, 30)
 
 
 def test_day_starts_at_defaults_to_four_am(tmp_path):
@@ -850,21 +856,21 @@ def test_day_starts_at_defaults_to_four_am(tmp_path):
     """
     cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
 
-    assert cfg.presentation.day_starts_at == time(4, 0)
+    assert cfg.day_starts_at == time(4, 0)
 
 
 def test_day_starts_at_midnight_is_accepted(tmp_path):
     """`00:00` is a real choice: it restores plain calendar-day semantics."""
-    cfg = _load(tmp_path, {"presentation": {"day_starts_at": "00:00"}})
+    cfg = _load(tmp_path, {"day_starts_at": "00:00"})
 
-    assert cfg.presentation.day_starts_at == time(0, 0)
+    assert cfg.day_starts_at == time(0, 0)
 
 
 @pytest.mark.parametrize("bad", ["25:00", "tea time", "4", "", "04:00:00:00", "0400"])
 def test_malformed_day_starts_at_rejected(tmp_path, bad):
     """A bad value must not silently revert — it decides which day is shown."""
     with pytest.raises(ConfigError, match="day_starts_at"):
-        _load(tmp_path, {"presentation": {"day_starts_at": bad}})
+        _load(tmp_path, {"day_starts_at": bad})
 
 
 def test_unquoted_sexagesimal_day_starts_at_rejected(tmp_path):
@@ -876,7 +882,7 @@ def test_unquoted_sexagesimal_day_starts_at_rejected(tmp_path):
     """
     config_file = tmp_path / "config.yaml"
     data = _valid_location_data()
-    config_file.write_text(yaml.dump(data) + "presentation:\n  day_starts_at: 4:00\n")
+    config_file.write_text(yaml.dump(data) + "day_starts_at: 4:00\n")
 
     with pytest.raises(ConfigError, match="quoted"):
         load_config(config_path=config_file)

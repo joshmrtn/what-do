@@ -75,7 +75,7 @@ def default_view_settings() -> ViewSettings:
         config = load_config()
         return ViewSettings(
             zone=ZoneInfo(config.location.timezone),
-            day_starts_at=config.presentation.day_starts_at,
+            day_starts_at=config.day_starts_at,
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
         system_zone = datetime.now().astimezone().tzinfo
