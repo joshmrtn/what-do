@@ -6,8 +6,9 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass, field as dataclass_field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, tzinfo, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Callable
 
 from src.config import AppConfig
@@ -16,6 +17,7 @@ from src.ingestion.handle_extractor import HandleExtractor
 from src.ingestion.seeds import load_seeds
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.utils.nights import night_start
 
 
 @dataclass
@@ -104,8 +106,21 @@ class IngestionService:
 
             now = get_now()
             cutoff = now - timedelta(days=self._config.scraping.lookback_days)
+            zone = _zone_of(self._config.location.timezone)
+            floor = night_start(now, self._config.day_starts_at, zone)
+            ceiling = floor + timedelta(days=self._config.scraping.horizon_days)
 
             for ec in candidates:
+                if not self._within_event_window(ec, floor, ceiling, zone):
+                    self._logger.info(
+                        f"Discarding out-of-window event from {ec.source}: "
+                        f"start_time={ec.start_time}",
+                        component="ingestion",
+                        duration_ms=0,
+                    )
+                    discarded += 1
+                    continue
+
                 if not self._passes_lookback(ec, cutoff, now):
                     self._logger.info(
                         f"Discarding old post from {ec.source}: raw_published_at={ec.raw_published_at}",
@@ -239,6 +254,36 @@ class IngestionService:
         return ec.raw_published_at >= cutoff
 
     @staticmethod
+    def _within_event_window(
+        ec: EventCandidate, floor: datetime, ceiling: datetime, zone: tzinfo
+    ) -> bool:
+        """Decide whether a candidate's own event time is worth ingesting.
+
+        Two bounds, both on the event rather than the announcement. An event
+        that is over cannot be attended, so keeping it is pure cost; an event
+        past the horizon is beyond what this run is scoped to rank.
+
+        A candidate with no start time is kept. A missing time is a gap in what
+        we know rather than evidence about when, and the CLI renders those under
+        their own heading — the window must not quietly take them.
+
+        The lower bound uses `end_time` when there is one, so a run still under
+        way is not discarded for having begun before tonight.
+        """
+        if ec.start_time is None:
+            return True
+
+        start = ec.start_time
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=zone)
+
+        finish = ec.end_time or start
+        if finish.tzinfo is None:
+            finish = finish.replace(tzinfo=zone)
+
+        return finish >= floor and start < ceiling
+
+    @staticmethod
     def _is_malformed(ec: EventCandidate) -> bool:
         return ec.title is None and ec.description is None and ec.start_time is None
 
@@ -304,3 +349,15 @@ class IngestionService:
                     component="ingestion",
                     duration_ms=0,
                 )
+
+
+def _zone_of(name: str) -> ZoneInfo:
+    """Resolve the configured zone, falling back to UTC rather than failing a run.
+
+    Only used to place the night boundary and to localise a naive candidate, so
+    a fallback shifts a boundary by hours rather than losing the batch.
+    """
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")

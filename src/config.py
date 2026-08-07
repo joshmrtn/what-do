@@ -38,12 +38,19 @@ class LocationConfig:
     timezone: str
 
 
+#: How many whole nights ahead an event may start and still be ingested and
+#: ranked. Measured: northshorenightout publishes ~39 days out, so the earlier
+#: 30 truncated it. Adapters import this for their constructor fallbacks, so the
+#: default cannot drift between `config.yaml` and a call site.
+DEFAULT_HORIZON_DAYS = 45
+
+
 @dataclass
 class ScrapingConfig:
     lookback_days: int = 30
     #: How far ahead of the run date an event may start and still be ranked.
-    #: The forward half of the window whose backward half is `lookback_days`.
-    horizon_days: int = 30
+    #: There is no matching bound on how long ago it was *announced*.
+    horizon_days: int = DEFAULT_HORIZON_DAYS
     max_discovery_depth: int = 2
     candidate_promotion_threshold: int = 3
 
@@ -500,7 +507,7 @@ def load_config(
     )
 
     scraping_data = data.get("scraping", {})
-    horizon_days = int(scraping_data.get("horizon_days", 30))
+    horizon_days = int(scraping_data.get("horizon_days", DEFAULT_HORIZON_DAYS))
     if horizon_days <= 0:
         raise ConfigError(f"Invalid horizon_days: {horizon_days} — must be positive")
 

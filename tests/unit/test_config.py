@@ -4,7 +4,12 @@ from datetime import time
 import pytest
 import yaml
 
-from src.config import ConfigError, _timezone_finder, load_config
+from src.config import (
+    DEFAULT_HORIZON_DAYS,
+    ConfigError,
+    _timezone_finder,
+    load_config,
+)
 
 
 def _write_config(tmp_path, data):
@@ -763,8 +768,12 @@ def test_horizon_days_loads(tmp_path):
 
 
 def test_horizon_days_defaults(tmp_path):
-    """Defaults to the reach of the calendar feeds the lookahead exists for."""
-    assert _load(tmp_path, {}).scraping.horizon_days == 30
+    """Defaults to the reach of the calendar feeds the lookahead exists for.
+
+    Measured: northshorenightout publishes ~39 days out, so 30 truncated it.
+    """
+    assert _load(tmp_path, {}).scraping.horizon_days == DEFAULT_HORIZON_DAYS
+    assert DEFAULT_HORIZON_DAYS == 45
 
 
 @pytest.mark.parametrize("bad", [0, -1])

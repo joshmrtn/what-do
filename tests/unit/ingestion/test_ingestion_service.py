@@ -699,3 +699,97 @@ def test_a_description_mentioning_a_handle_does_not_deadlock(db, seeds_yaml):
     finally:
         conn.close()
     assert "@thejazzclub" in handles
+
+
+def _accepted(db, seeds_yaml, candidates, horizon_days=30):
+    """Run ingestion over `candidates` and return what survived."""
+    config = _make_config()
+    config.scraping.horizon_days = horizon_days
+    svc = IngestionService(
+        config=config,
+        db_path=db,
+        seeds_path=seeds_yaml,
+        failover_sources=[_mock_social_source(candidates)],
+        independent_sources=[],
+        logger=_make_logger(),
+    )
+    return svc.run(get_now=lambda: FIXED_NOW).candidates
+
+
+class TestEventTimeWindow:
+    """Nothing bounded candidates by their *event* time outside the ICS adapter.
+
+    `_passes_lookback` judges how old an announcement is, which is the wrong
+    question for anything forward-looking, and it lets a past-dated event
+    straight through.
+    """
+
+    def test_an_event_that_has_already_happened_is_discarded(self, db, seeds_yaml):
+        stale = _make_candidate(
+            title="Last Week", days_ago=1, start_time=FIXED_NOW - timedelta(days=7)
+        )
+
+        assert _accepted(db, seeds_yaml, [stale]) == []
+
+    def test_an_event_beyond_the_horizon_is_discarded(self, db, seeds_yaml):
+        far = _make_candidate(
+            title="Next Year", days_ago=1, start_time=FIXED_NOW + timedelta(days=200)
+        )
+
+        assert _accepted(db, seeds_yaml, [far]) == []
+
+    def test_an_event_inside_the_window_is_kept(self, db, seeds_yaml):
+        soon = _make_candidate(
+            title="Next Week", days_ago=1, start_time=FIXED_NOW + timedelta(days=7)
+        )
+
+        assert len(_accepted(db, seeds_yaml, [soon])) == 1
+
+    def test_the_horizon_is_configurable(self, db, seeds_yaml):
+        far = _make_candidate(
+            title="Six Weeks Out", days_ago=1, start_time=FIXED_NOW + timedelta(days=40)
+        )
+
+        assert _accepted(db, seeds_yaml, [far], horizon_days=30) == []
+        assert len(_accepted(db, seeds_yaml, [far], horizon_days=45)) == 1
+
+    def test_an_undated_candidate_survives(self, db, seeds_yaml):
+        """A missing start time is a gap in what we know, not evidence about when.
+
+        The CLI renders these under `UNDATED — timing unconfirmed`, so the
+        window must not quietly take them.
+        """
+        undated = _make_candidate(title="No Date", days_ago=1, start_time=None)
+
+        assert len(_accepted(db, seeds_yaml, [undated])) == 1
+
+    def test_an_event_under_way_tonight_survives(self, db, seeds_yaml):
+        """Floored at the night, so a batch run late does not drop the evening."""
+        earlier_tonight = _make_candidate(
+            title="Doors At Seven", days_ago=1, start_time=FIXED_NOW - timedelta(hours=2)
+        )
+
+        assert len(_accepted(db, seeds_yaml, [earlier_tonight])) == 1
+
+    def test_a_long_run_still_under_way_survives(self, db, seeds_yaml):
+        """An exhibition that opened last month has not finished."""
+        running = EventCandidate(
+            id=str(uuid.uuid4()),
+            source="@seedvenue",
+            source_type="apify",
+            title="Open Studio",
+            raw_published_at=FIXED_NOW - timedelta(days=1),
+            start_time=FIXED_NOW - timedelta(days=20),
+            end_time=FIXED_NOW + timedelta(days=5),
+            discovered_at=FIXED_NOW,
+        )
+
+        assert len(_accepted(db, seeds_yaml, [running])) == 1
+
+    def test_a_long_announced_event_still_survives(self, db, seeds_yaml):
+        """No lower bound on announcement age, only on the event being over."""
+        booked_early = _make_candidate(
+            title="Booked Months Ago", days_ago=120, start_time=FIXED_NOW + timedelta(days=3)
+        )
+
+        assert len(_accepted(db, seeds_yaml, [booked_early])) == 1

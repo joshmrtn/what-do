@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import requests
 
-from src.config import DEFAULT_DAY_STARTS_AT, FeedConfig
+from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.ics import parse_ics
 from src.ingestion.recurrence import Occurrence, expand_calendar
@@ -47,7 +47,7 @@ class IcsCalendarSource(IngestionSource):
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
         timezone_name: str = "UTC",
-        horizon_days: int = 30,
+        horizon_days: int = DEFAULT_HORIZON_DAYS,
         day_starts_at: time = DEFAULT_DAY_STARTS_AT,
     ) -> None:
         self._config = config
