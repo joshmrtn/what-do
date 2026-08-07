@@ -149,6 +149,7 @@ def build_dependencies(
                 logger=logger,
                 timezone_name=config.location.timezone,
                 horizon_days=config.scraping.horizon_days,
+                day_starts_at=config.day_starts_at,
             )
         )
     for feed in config.sources.html_calendars:

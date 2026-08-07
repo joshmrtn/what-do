@@ -14,7 +14,20 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, tzinfo
 
 from src.models.event import Event
+from src.utils.nights import night_of
 from src.models.recommendation import Recommendation
+
+__all__ = [
+    "RankedPair",
+    "after_sunset",
+    "dated",
+    "during_night",
+    "night_of",
+    "on_date",
+    "overlapping",
+    "parse_time_window",
+    "undated",
+]
 
 #: One ranked event as the CLI reads it: the run's decision, plus what it decided about.
 RankedPair = tuple[Recommendation, Event]
@@ -75,26 +88,6 @@ def on_date(pairs: list[RankedPair], day: date) -> list[RankedPair]:
         for pair in pairs
         if pair[1].start_time is not None and pair[1].start_time.date() == day
     ]
-
-
-def night_of(moment: datetime, day_starts_at: time) -> date:
-    """Name the night a moment falls in.
-
-    Before the rollover hour the night is still the previous calendar day's:
-    someone asking at 00:30 means the evening they are standing in, not the one
-    that begins in three and a half hours.
-
-    Args:
-        moment: The current time, **already expressed in the view's timezone**.
-            Converting is the caller's job, since only it knows the zone.
-        day_starts_at: Local time of day at which one night gives way to the next.
-
-    Returns:
-        The date the night is named for.
-    """
-    if moment.time() < day_starts_at:
-        return moment.date() - timedelta(days=1)
-    return moment.date()
 
 
 def during_night(

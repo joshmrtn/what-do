@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock
 import io
 
@@ -17,6 +18,7 @@ from src.utils.logging import get_logger
 
 FIXED_NOW = datetime(2026, 8, 5, 2, 0, tzinfo=timezone.utc)
 URL = "https://calendar.example.com/public/basic.ics"
+EASTERN = ZoneInfo("America/New_York")
 
 
 @pytest.fixture
@@ -55,7 +57,8 @@ def _session(response=None):
     return session
 
 
-def _make_source(db, session=None, now=FIXED_NOW, stream=None, horizon_days=30, **config_overrides):
+def _make_source(db, session=None, now=FIXED_NOW, stream=None, horizon_days=30,
+                 timezone_name="UTC", **config_overrides):
     settings = {
         "name": "northshorenightout",
         "url": URL,
@@ -71,6 +74,7 @@ def _make_source(db, session=None, now=FIXED_NOW, stream=None, horizon_days=30, 
         get_now=lambda: now,
         logger=get_logger("test", stream=stream or io.StringIO()),
         horizon_days=horizon_days,
+        timezone_name=timezone_name,
     )
 
 
@@ -358,9 +362,10 @@ _WEEKLY = _calendar(
 )
 
 
-def _weekly_source(db, now=FIXED_NOW, horizon_days=30, body=_WEEKLY, stream=None):
+def _weekly_source(db, now=FIXED_NOW, horizon_days=30, body=_WEEKLY, stream=None,
+                   timezone_name="UTC"):
     return _make_source(db, session=_session(_response(body)), now=now, stream=stream,
-                        horizon_days=horizon_days)
+                        horizon_days=horizon_days, timezone_name=timezone_name)
 
 
 class TestRecurringEvents:
@@ -373,13 +378,15 @@ class TestRecurringEvents:
     def test_a_recurring_event_yields_one_candidate_per_occurrence(self, db):
         results = _weekly_source(db).fetch()
 
-        assert len(results) == 5
+        assert len(results) == 4
 
     def test_each_occurrence_lands_on_its_own_date(self, db):
         starts = sorted(c.start_time for c in _weekly_source(db).fetch())
 
+        # The horizon runs from the start of tonight, so 30 days is 30 whole
+        # nights: the 3 September occurrence is night 31.
         assert [s.date().isoformat() for s in starts] == [
-            "2026-08-06", "2026-08-13", "2026-08-20", "2026-08-27", "2026-09-03"
+            "2026-08-06", "2026-08-13", "2026-08-20", "2026-08-27"
         ]
 
     def test_every_occurrence_gets_a_distinct_id(self, db):
@@ -462,7 +469,7 @@ class TestRecurringEvents:
         titles = {c.title for c in results}
 
         assert "Special Guest" in titles
-        assert len(results) == 5
+        assert len(results) == 4
 
 
 class TestNoLowerBoundOnAnnouncementAge:
@@ -490,11 +497,15 @@ class TestNoLowerBoundOnAnnouncementAge:
         assert results[0].title == "Booked Months Ago"
 
     def test_an_event_that_has_already_happened_is_dropped(self, db):
-        """Dated 8/6 is of no interest on 8/7, however recently it was announced."""
+        """A previous night is of no interest, however recently it was announced.
+
+        Dated for the night now in progress it would be kept — an event three
+        hours ago has not stopped being tonight's.
+        """
         yesterday = _calendar(
             "UID:gone@google.com\r\n"
-            "SUMMARY:[A Venue\\, Salem] Last Night\r\n"
-            "DTSTART:20260804T230000Z"
+            "SUMMARY:[A Venue\\, Salem] Two Nights Ago\r\n"
+            "DTSTART:20260802T230000Z"
         )
 
         assert _weekly_source(db, body=yesterday).fetch() == []
@@ -513,3 +524,37 @@ class TestNoLowerBoundOnAnnouncementAge:
         )
 
         assert _weekly_source(db, body=long_announced).fetch()[0].raw_published_at is None
+
+
+class TestWindowFloorIsTheNight:
+    """A re-run must not discard the evening it is being run during.
+
+    Flooring the window at `now` means an 20:00 re-run drops a 19:00 event that
+    has not finished, and a 00:30 re-run drops the whole evening the CLI is
+    still showing.
+    """
+
+    _TONIGHT = _calendar(
+        "UID:tonight@google.com\r\n"
+        "SUMMARY:[A Venue\\, Salem] Doors At Seven\r\n"
+        "DTSTART;TZID=America/New_York:20260807T190000"
+    )
+
+    def _at(self, db, now):
+        """The night boundary is local, so these must run in the venue's zone."""
+        return _weekly_source(
+            db, now=now, body=self._TONIGHT, timezone_name="America/New_York"
+        ).fetch()
+
+    def test_the_overnight_batch_ingests_tonight(self, db):
+        assert self._at(db, datetime(2026, 8, 7, 2, 0, tzinfo=EASTERN))
+
+    def test_a_re_run_during_the_event_still_ingests_it(self, db):
+        assert self._at(db, datetime(2026, 8, 7, 20, 0, tzinfo=EASTERN))
+
+    def test_a_re_run_after_midnight_still_ingests_that_evening(self, db):
+        assert self._at(db, datetime(2026, 8, 8, 0, 30, tzinfo=EASTERN))
+
+    def test_the_previous_night_is_still_dropped(self, db):
+        """Dated 8/7 is of no interest once 8/8 has begun."""
+        assert self._at(db, datetime(2026, 8, 8, 10, 0, tzinfo=EASTERN)) == []

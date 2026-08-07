@@ -13,18 +13,19 @@ misbehaves is a nightly job that gets blocked.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Any, Callable
 
 import requests
 
-from src.config import FeedConfig
+from src.config import DEFAULT_DAY_STARTS_AT, FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.ics import parse_ics
 from src.ingestion.recurrence import Occurrence, expand_calendar
 from src.ingestion.source import IngestionSource
+from src.utils.nights import night_start
 from src.models.event_candidate import EventCandidate
 from src.utils.html import html_to_text
 
@@ -47,6 +48,7 @@ class IcsCalendarSource(IngestionSource):
         logger: Any = None,
         timezone_name: str = "UTC",
         horizon_days: int = 30,
+        day_starts_at: time = DEFAULT_DAY_STARTS_AT,
     ) -> None:
         self._config = config
         self._db_path = db_path
@@ -55,6 +57,7 @@ class IcsCalendarSource(IngestionSource):
         self._logger = logger
         self._zone = _zone_of(timezone_name)
         self._horizon_days = horizon_days
+        self._day_starts_at = day_starts_at
 
     def fetch(self) -> list[EventCandidate]:
         """Fetch and parse the calendar, skipping the network when it is polite to.
@@ -70,7 +73,10 @@ class IcsCalendarSource(IngestionSource):
         body = self._read_feed()
         events = parse_ics(body, logger=self._logger)
 
-        window_start = self._get_now()
+        # Floored at the night, not the instant: an event under way has not
+        # stopped being tonight's just because the job looking at it started
+        # afterwards.
+        window_start = night_start(self._get_now(), self._day_starts_at, self._zone)
         window_end = window_start + timedelta(days=self._horizon_days)
         occurrences = expand_calendar(
             events, window_start, window_end, self._zone, logger=self._logger

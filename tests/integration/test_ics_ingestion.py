@@ -80,12 +80,13 @@ def candidates(db):
 def test_the_feed_becomes_candidates_inside_the_horizon(candidates):
     """The feed runs ~39 days out; the default horizon is 30.
 
-    Of 144 events, 117 fall inside the window. The rest are real and simply
-    beyond what this run is scoped to look at — raise `scraping.horizon_days`
-    to take them.
+    Of 144 events, 116 fall inside the window: the rest have already happened
+    or are beyond what this run is scoped to look at. The window is aligned to
+    the night rather than the run instant, so `horizon_days` counts whole
+    nights from the start of this one — raise it to reach further.
     """
 
-    assert len(candidates) == 117
+    assert len(candidates) == 116
 
 
 def test_every_candidate_is_identifiable(candidates):
