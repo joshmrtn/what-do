@@ -49,6 +49,12 @@ from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import EVERYTHING_ELSE, TOP_PICK, WORTH_CONSIDERING, RankingEngine
 from src.presentation.cli import run
+from src.config import FeedConfig
+from src.ingestion.calendars.html_source import HtmlListingSource
+from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.processing.extraction import ExtractionResult
+from src.processing.extraction_stage import ExtractionStage
+from src.scheduler import run_batch
 from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.db import init_db
@@ -951,3 +957,219 @@ def test_cli_smoke(tmp_path: Path) -> None:
     _invoke("add-source", "@smoketest", "--seeds-file", str(seeds))
     _invoke("add-source", "@smoketest", "--seeds-file", str(seeds))
     assert yaml.safe_load(seeds.read_text())["handles"] == ["@smoketest"]
+
+
+# ---------------------------------------------------------------------------
+# Batch orchestrator
+# ---------------------------------------------------------------------------
+
+
+ICS_FIXTURE = Path("tests/fixtures/northshorenightout.ics")
+HTML_FIXTURE = Path("tests/fixtures/northshorenightout.html")
+#: Both fixtures were captured on 2026-08-05, so their contents resolve
+#: against that day.
+BATCH_NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+
+
+class _FixtureSession:
+    """Serves one captured document, counting how often it is fetched."""
+
+    def __init__(self, body: str) -> None:
+        self._body = body
+        self.calls = 0
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls += 1
+        return MagicMock(status_code=200, headers={}, text=self._body, raise_for_status=lambda: None)
+
+
+class _StubWeather(WeatherProvider):
+    """A clear 70F day for whatever date is asked for."""
+
+    def fetch(self, date, lat, lng):
+        return {
+            "date": date.isoformat(),
+            "hours": [
+                {
+                    "hour": hour,
+                    "temperature_f": 70.0,
+                    "relative_humidity": 45.0,
+                    "dew_point_f": 48.0,
+                    "precipitation_mm": 0.0,
+                    "wind_speed_mph": 5.0,
+                    "condition": "clear",
+                }
+                for hour in range(24)
+            ],
+        }
+
+
+class _CountingExtraction:
+    """Stands in for LLM Pass 1, recording every text it was asked to extract."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def extract(self, text, image_bytes=None, reference_date=None):
+        self.texts.append(text)
+        return ExtractionResult(
+            title=None,
+            venue=None,
+            start_time=None,
+            end_time=None,
+            tags=[Tag(text="live music", weight=1.0), Tag(text="bar", weight=0.4)],
+            summary="An evening of live music at a local bar.",
+            setting="indoor",
+        )
+
+
+class _StubEmbeddings:
+    """Deterministic vectors, so ordering is stable without Ollama."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def embed(self, text: str) -> list[float]:
+        self.calls += 1
+        rng = random.Random(text)
+        return [rng.uniform(-1.0, 1.0) for _ in range(16)]
+
+
+def _batch_config(tmp_path: Path) -> AppConfig:
+    example = yaml.safe_load(Path("config/config.example.yaml").read_text())
+    example["location"] = {
+        "latitude": 42.52,
+        "longitude": -70.89,
+        "postal_code": "01970",
+        "search_radius_miles": 10,
+    }
+    config_file = tmp_path / "batch_config.yaml"
+    config_file.write_text(yaml.dump(example))
+    return load_config(config_path=config_file)
+
+
+def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger):
+    """Wire the real pipeline over both fixtures, faking only what leaves the box."""
+    seeds = tmp_path / "seeds.yaml"
+    seeds.write_text(yaml.dump({"handles": [], "venues": []}))
+    likes = tmp_path / "likes.txt"
+    likes.write_text("live music\nkaraoke\n")
+    dislikes = tmp_path / "dislikes.txt"
+    dislikes.write_text("nightclubs\n")
+
+    ics = IcsCalendarSource(
+        config=FeedConfig("nsno_cal", "https://cal.example.com/basic.ics", "nsno_cal"),
+        db_path=db_path,
+        session=_FixtureSession(ICS_FIXTURE.read_text(encoding="utf-8")),
+        get_now=lambda: BATCH_NOW,
+        logger=logger,
+    )
+    html = HtmlListingSource(
+        config=FeedConfig("nsno_list", "https://listings.example.com/", "nsno_list"),
+        db_path=db_path,
+        tzname="America/New_York",
+        session=_FixtureSession(HTML_FIXTURE.read_text(encoding="utf-8")),
+        get_now=lambda: BATCH_NOW,
+        logger=logger,
+    )
+
+    embeddings = _StubEmbeddings()
+    extraction = _CountingExtraction()
+
+    return {
+        "ingestion_service": IngestionService(
+            config=config,
+            db_path=db_path,
+            seeds_path=seeds,
+            failover_sources=[],
+            independent_sources=[ics, html],
+            logger=logger,
+        ),
+        "normalization_service": NormalizationService(config, logger),
+        "enrichment_service": EnrichmentService(
+            weather_provider=_StubWeather(),
+            movie_provider=None,
+            astronomical_calculator=AstronomicalCalculator(),
+            synthetic_rules=[],
+            config=config,
+            db_path=db_path,
+            get_now=lambda: BATCH_NOW,
+            logger=logger,
+        ),
+        "extraction_stage": ExtractionStage(
+            provider=extraction,
+            image_fetcher=None,
+            logger=logger,
+            get_now=lambda: BATCH_NOW,
+        ),
+        "embedding_stage": EmbeddingStage(embeddings, logger),
+        "semantic_deduplicator": SemanticDeduplicationEngine(),
+        "similarity_stage": SimilarityStage(
+            PreferenceRepository(embeddings, db_path, logger).load(likes, dislikes),
+            config.scoring,
+        ),
+        "ranking_engine": RankingEngine(config, [], logger),
+    }, extraction
+
+
+def test_batch_smoke(tmp_path: Path) -> None:
+    """The whole batch over both captured feeds, then again to prove it is incremental.
+
+    Only what leaves the box is faked: the HTTP sessions serve fixtures, and the
+    LLM and weather providers are stubs. Everything between them is the real
+    pipeline, running through real SQLite.
+    """
+    config = _batch_config(tmp_path)
+    db_path = tmp_path / "batch_smoke.db"
+    init_db(db_path)
+    logger = get_logger("batch_smoke", stream=io.StringIO())
+    run_date = date(2026, 8, 5)
+
+    deps, extraction = _batch_dependencies(tmp_path, db_path, config, logger)
+    result = run_batch(
+        config=config,
+        db_path=db_path,
+        logger=logger,
+        run_date=run_date,
+        get_now=lambda: BATCH_NOW,
+        **deps,
+    )
+
+    assert result.outcome == "success", result.errors
+    assert result.stage_counts["ingested"] > 0
+    assert result.recommendations, "the batch produced no recommendations"
+
+    first_pass_extractions = len(extraction.texts)
+    assert first_pass_extractions > 0
+
+    # Recommendations reached the database, not just the return value.
+    conn = sqlite3.connect(db_path)
+    try:
+        persisted = conn.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0]
+        runs = conn.execute(
+            "SELECT outcome, completed_at FROM run_history"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert persisted == len(result.recommendations)
+    assert runs == [("success", BATCH_NOW.isoformat())]
+
+    # --- second run, same night -------------------------------------------
+    second_deps, second_extraction = _batch_dependencies(
+        tmp_path, db_path, config, logger
+    )
+    second = run_batch(
+        config=config,
+        db_path=db_path,
+        logger=logger,
+        run_date=run_date,
+        get_now=lambda: BATCH_NOW,
+        **second_deps,
+    )
+
+    assert second.outcome == "success", second.errors
+    assert second_extraction.texts == [], (
+        "the second run re-extracted; the save-after-extraction design is broken"
+    )
+    assert second.recommendations
