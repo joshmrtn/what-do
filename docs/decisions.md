@@ -1387,3 +1387,82 @@ and stored rows to record nothing but which door we came in by.
 obtain is unvalidated, however well specified. AMC failed the same test at the same time and had no
 public fallback — its API is a partner catalog program, and its site answers automated clients with
 a 403. Veezi had one, and only because the public page was looked for after the API closed.
+
+## Do617 is read one venue page at a time, not by crawling its date listings
+
+**Decision:** `Do617VenueSource` fetches `do617.com/venues/{slug}` for each configured venue. The
+date listings at `/events/YYYY/M/D` are real and were left unused.
+
+**Rationale: cost and scope both favour the venue page.** A date crawl needs one request per day of
+the horizon — about 45 — to reach the same events, and returns everything in Greater Boston to get
+there. A venue page is one request, naturally scoped to a venue the user chose, and paginates only
+when that venue has more than 25 upcoming events. Four or five venues cost four or five requests.
+
+**Do617 is the only source in the project that states its own UTC offset.** `startDate` is ISO 8601
+with the offset applied, so nothing is inferred — no year reconstructed from context, no wall clock
+localised into a zone. Every other HTML source here does at least one of those. `timing` is
+therefore always `exact`.
+
+**Identity is `data-permalink`, not `data-ds-id`.** The numeric id also appears on upvote controls;
+measured, a 25-event page carried 27 of them. The permalink is 1:1 with the cards and is the site's
+own canonical path.
+
+**The pagination walk stops on the page's *last* event, not its first.** Listings ascend by date, so
+a page whose last event is past the horizon has already crossed it and every later page is beyond.
+Testing the first event — which is what The Cabot's walker does, correctly, because it also knows
+the total — keeps walking whenever a page merely straddles the boundary, and page one usually does.
+An integration test over the real capture caught this: a 14-day horizon fetched page 2 for nothing.
+
+**A venue page with no listings is a normal state.** Koto and Bit Bar return 200 with valid venue
+metadata and zero event cards. They are configured anyway: one request each, and both are otherwise
+reachable only through Facebook. The same reasoning does *not* extend to PEM, whose page holds a
+deep archive of past events — a walk there spends the whole page cap without reaching anything
+upcoming.
+
+## An RSS adapter splits fetching from interpreting, because RSS has no event date
+
+**Decision:** `RssFeedSource` handles fetching, parsing, windowing and candidate mapping.
+Subclasses implement one method, `interpret(item) -> RssEvent | None`.
+
+**Rationale: the format guarantees nothing about when an event happens.** An item has a title, a
+body and a *publication* date. Where the event's date lives is a convention each site invents, so
+there is no generic RSS event source to write — only generic RSS plumbing under a per-site rule.
+
+Two configured sources prove the split rather than justifying it in the abstract:
+
+- **MOON** puts the date in the item title and uses `pubDate` for the announcement, weeks earlier.
+- **Salem Public Library** (Assabet Interactive, ready but not yet built) uses `pubDate` *as the
+  event start*.
+
+Same field, opposite meanings, one format. A shared adapter that read `pubDate` as a start would be
+right for one and file every MOON show a month early.
+
+**An item that cannot be placed is dropped, not guessed at.** `interpret` returning `None` is a
+normal outcome and is logged as a count.
+
+## MOON's conventions were measured across the whole feed, not inferred from one item
+
+**Decision:** the date is `M/D/YY` or `M/D/YYYY` matched **anywhere in the item title**; the hour
+comes from the description's own `at 6pm` phrasing; the venue is taken only from the description's
+template; cancelled items are dropped.
+
+**Rationale: the obvious rule was wrong, and only reading all twenty items showed it.** A leading
+`M/D/YY:` prefix looks like the convention from the first three items and matches **5 of 20**.
+Searching the whole title matches **17** — titles carry markers first, like
+`*** Moved to Faces Brewery *** 4/17/26 Shiver.`. The remaining three carry no date anywhere and are
+refused.
+
+**The venue is the part that had to be made stricter than planned.** Reading the trailing ` at X`
+was the agreed design; measured, it produces `Gulu Gulu Cafe: Tiny the Bear, Dylan Patrick Ward,
+Yes, Chef!` from one title and `Faces Malden - ALL AGES | $15 Day of Show` from one description. A
+venue is now accepted only from the description's templated tail, and only when it still looks like
+a place. No venue beats a wrong one, which dedup would then treat as a distinct location.
+
+**Cancelled shows keep their date.** `*** CANCELED*** 6/14/2026 NAGLY Benefit Show` parses perfectly
+and must not. They are dropped on the marker.
+
+**MOON yields nothing today and is configured anyway.** The venue has paused new bookings during a
+City of Salem Building Department dispute and is relocating scheduled shows, so every item in the
+feed is already past. Adopting it now means shows appear the night booking resumes, with no session
+needed. A test pins both halves: run against the capture's own June it yields six shows, run against
+August it yields none.
