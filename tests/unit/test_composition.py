@@ -240,3 +240,12 @@ def test_an_absent_blocklist_file_is_not_an_error(paths, tmp_path):
     deps = _build(dict(paths, blocklist_path=tmp_path / "nope.json"))
 
     assert deps.ranking_engine._blocklist == []
+
+
+def test_the_llm_timeout_reaches_the_ollama_client(paths):
+    """A 60-second default failed every extraction on the batch VM."""
+    config = _config(models=ModelsConfig(request_timeout_seconds=900))
+
+    deps = _build(paths, config=config)
+
+    assert deps.extraction_stage._provider._client._timeout == 900

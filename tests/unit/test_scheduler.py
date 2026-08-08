@@ -101,6 +101,10 @@ class _FakeExtraction:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.extracted: list[list[str]] = []
+        self.save_fn = None
+
+    def set_save_fn(self, save_fn):
+        self.save_fn = save_fn
 
     def process(self, events):
         if self.error:
@@ -795,3 +799,36 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
     assert row["started_at"] is not None
     assert row["completed_at"] is None
     assert row["outcome"] is None
+
+
+# ----------------------------------------------------------------------
+# Extraction checkpointing
+# ----------------------------------------------------------------------
+
+
+def test_extraction_is_given_a_way_to_save_as_it_goes(db):
+    """Extraction runs for hours; a run that dies must not lose all of it."""
+    extraction = _FakeExtraction()
+
+    _run(db, deps={"extraction_stage": extraction})
+
+    assert extraction.save_fn is not None
+
+
+def test_a_dry_run_gives_extraction_no_saver(db):
+    """A dry run promises to persist nothing, checkpoints included."""
+    extraction = _FakeExtraction()
+
+    _run(db, dry_run=True, deps={"extraction_stage": extraction})
+
+    assert extraction.save_fn is None
+
+
+def test_an_extraction_checkpoint_persists_the_events(db):
+    extraction = _FakeExtraction()
+
+    _, _, save_spy, _ = _run(db, deps={"extraction_stage": extraction})
+    before = save_spy.calls
+    extraction.save_fn([_event("checkpointed", ["c1"])])
+
+    assert save_spy.calls == before + 1

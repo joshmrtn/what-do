@@ -248,7 +248,7 @@ def build_dependencies(
             )
         )
 
-    ollama = OllamaClient(config.ollama_host)
+    ollama = OllamaClient(config.ollama_host, timeout=config.models.request_timeout_seconds)
     embedding_provider = OllamaEmbeddingProvider(ollama, model=config.models.embeddings)
 
     tmdb_key = _credential("TMDB_API_KEY", "tmdb")

@@ -249,6 +249,11 @@ def run_batch(
     events = _stage(
         "enrichment", lambda: enrichment_service.enrich(events, run_date), default=events
     )
+    # Extraction is the expensive stage — minutes an event on CPU — so it is
+    # handed a way to persist as it goes. Without it, a run killed near the end
+    # loses every model call it made. A dry run gets None: it persists nothing,
+    # checkpoints included.
+    extraction_stage.set_save_fn(None if dry_run else _save)
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
     _save(events)
 

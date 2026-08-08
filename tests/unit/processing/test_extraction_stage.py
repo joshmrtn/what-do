@@ -495,3 +495,74 @@ def test_a_synthetic_event_is_never_extracted():
 
     assert provider.extract.call_count == 0
     assert [t.text for t in event.tags] == ["walking"]
+
+
+# ---------------------------------------------------------------------------
+# Saving as it goes
+# ---------------------------------------------------------------------------
+
+
+class _Saves:
+    """Records each save and what the events looked like at the time."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def __call__(self, events: list[Event]) -> None:
+        self.calls.append(sum(1 for e in events if e.tags))
+
+
+def _stage_with_saves(save_every: int, saves: _Saves) -> ExtractionStage:
+    return ExtractionStage(
+        provider=_make_provider(tags=[("music", 0.9)]),
+        image_fetcher=None,
+        logger=_make_logger(),
+        get_now=_now,
+        save_fn=saves,
+        save_every=save_every,
+    )
+
+
+def test_progress_is_saved_as_extraction_goes():
+    """A run killed at hour 19 of 20 must not lose 19 hours of model time."""
+    saves = _Saves()
+    events = [_make_event(title=f"e{i}") for i in range(6)]
+
+    _stage_with_saves(2, saves).process(events)
+
+    assert len(saves.calls) >= 3
+
+
+def test_each_save_carries_the_work_done_so_far():
+    saves = _Saves()
+    events = [_make_event(title=f"e{i}") for i in range(4)]
+
+    _stage_with_saves(2, saves).process(events)
+
+    assert saves.calls == sorted(saves.calls)
+    assert saves.calls[-1] >= 4
+
+
+def test_nothing_is_saved_when_no_saver_is_given():
+    """A dry run passes none, and must still extract normally."""
+    events = [_make_event(title="e1")]
+
+    result = ExtractionStage(
+        provider=_make_provider(tags=[("music", 0.9)]),
+        image_fetcher=None,
+        logger=_make_logger(),
+        get_now=_now,
+    ).process(events)
+
+    assert result[0].tags
+
+
+def test_skipped_events_do_not_trigger_saves():
+    """Only real model calls are worth checkpointing."""
+    saves = _Saves()
+    done = _make_event(title="done")
+    done.extraction_input_hash = extraction_input_hash(done)
+
+    _stage_with_saves(2, saves).process([done, done, done, done])
+
+    assert saves.calls == []

@@ -245,6 +245,11 @@ DEFAULT_DISAMBIGUATION_MODEL = "gemma4:e2b"
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 
 
+#: Ceiling on one model call, in seconds. Twenty minutes, because the batch VM
+#: runs these on four CPU cores with no GPU.
+DEFAULT_LLM_TIMEOUT_SECONDS = 1200
+
+
 @dataclass
 class ModelsConfig:
     """Model names for the three model-backed stages."""
@@ -252,6 +257,11 @@ class ModelsConfig:
     llm_extraction: str = DEFAULT_EXTRACTION_MODEL
     llm_disambiguation: str = DEFAULT_DISAMBIGUATION_MODEL
     embeddings: str = DEFAULT_EMBEDDING_MODEL
+    #: How long one model call may take. Generous because the target is CPU
+    #: inference: measured on the batch VM, a single extraction runs for
+    #: minutes, so the old 60-second default failed *every* call and left the
+    #: whole batch with no tags at all.
+    request_timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS
 
 
 #: When one night's listing gives way to the next. Not midnight: a calendar
@@ -492,10 +502,24 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
             raise ConfigError(f"Model name '{key}' is blank")
         return value
 
+    timeout = defaults.request_timeout_seconds
+    if "request_timeout_seconds" in raw:
+        try:
+            timeout = int(raw["request_timeout_seconds"])
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                f"models.request_timeout_seconds is not a number: {raw['request_timeout_seconds']!r}"
+            ) from error
+        if timeout <= 0:
+            raise ConfigError(
+                f"models.request_timeout_seconds must be positive, got {timeout}"
+            )
+
     return ModelsConfig(
         llm_extraction=_name("llm_extraction", defaults.llm_extraction),
         llm_disambiguation=_name("llm_disambiguation", defaults.llm_disambiguation),
         embeddings=_name("embeddings", defaults.embeddings),
+        request_timeout_seconds=timeout,
     )
 
 

@@ -932,3 +932,31 @@ class TestFeedVenueDefaults:
         """A blank is a typo, not a choice — it would silently attribute nothing."""
         with pytest.raises(ConfigError, match="venue"):
             _feed(tmp_path, venue="   ")
+
+
+# ---------------------------------------------------------------------------
+# LLM request timeout
+# ---------------------------------------------------------------------------
+
+
+def test_the_llm_timeout_has_a_default_generous_enough_for_cpu_inference(tmp_path):
+    """Measured on the target VM: one extraction exceeds any 60-second budget."""
+    cfg = _load(tmp_path, {})
+
+    assert cfg.models.request_timeout_seconds >= 600
+
+
+def test_the_llm_timeout_can_be_configured(tmp_path):
+    cfg = _load(tmp_path, {"models": {"request_timeout_seconds": 120}})
+
+    assert cfg.models.request_timeout_seconds == 120
+
+
+def test_a_non_positive_llm_timeout_is_rejected(tmp_path):
+    with pytest.raises(ConfigError):
+        _load(tmp_path, {"models": {"request_timeout_seconds": 0}})
+
+
+def test_an_unreadable_llm_timeout_is_rejected(tmp_path):
+    with pytest.raises(ConfigError):
+        _load(tmp_path, {"models": {"request_timeout_seconds": "soon"}})
