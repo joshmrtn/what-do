@@ -131,6 +131,17 @@ class TestParsing:
         assert event.title == "Gulu-Gulu Cafe Presents"
         assert event.venue == "Gulu-Gulu Cafe"
 
+    def test_reads_the_sites_own_category(self) -> None:
+        page = parse_do617(_page(_card(category="food-drink")))
+
+        assert page.events[0].category == "food-drink"
+
+    def test_a_card_without_a_category_class_has_none(self) -> None:
+        card = _card().replace('class="ds-listing event-card ds-event-category-food-drink"', 'class="ds-listing event-card"')
+        page = parse_do617(_page(card))
+
+        assert page.events[0].category is None
+
     def test_ignores_names_outside_any_card(self) -> None:
         page = parse_do617(_page(_card()))
 

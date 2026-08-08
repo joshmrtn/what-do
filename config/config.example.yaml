@@ -136,6 +136,17 @@ sources:
     #   city: "Beverly"
     #   min_fetch_interval_hours: 6
 
+  # Do617 venue pages. One entry per venue worth watching — the aggregator's
+  # date listings would cover the same ground at a request per day of horizon.
+  # The schema.org markup states each event's own UTC offset, so nothing here
+  # is inferred. A venue the aggregator has no listings for is not an error;
+  # it costs one request and starts producing when listings appear.
+  do617_venues: []
+    # - name: do617_example_cafe
+    #   url: "https://do617.com/venues/example-cafe"
+    #   source_type: do617
+    #   min_fetch_interval_hours: 6
+
 models:
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"

@@ -24,6 +24,9 @@ from typing import Any
 #: Marks the container of one event.
 _EVENT_TYPE = "http://schema.org/Event"
 
+#: Class prefix carrying the site's own category for a card.
+_CATEGORY_PREFIX = "ds-event-category-"
+
 #: Elements that never close. The microdata lives on `<meta>`, which the markup
 #: writes both as `<meta ... />` and as `<meta ...>` — counting either as a level
 #: of nesting drifts the depth upward and a card then never appears to end.
@@ -50,6 +53,10 @@ class Do617Event:
     region: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    #: The site's own label for what kind of thing this is, from the card's
+    #: `ds-event-category-*` class. Extraction cannot infer "drag" from a title
+    #: like `BROADWAY DRAG w/ MIZ DIAMOND WIGFALL AND FRIENDS` alone.
+    category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,13 +157,24 @@ class _CardCollector(HTMLParser):
             self._card[self._capturing] = text
 
     def _begin_card(self, attributes: dict[str, str]) -> None:
-        self._card = {"permalink": attributes.get("data-permalink") or ""}
+        self._card = {
+            "permalink": attributes.get("data-permalink") or "",
+            "category": _category_of(attributes.get("class", "")),
+        }
         self._card_depth = self._depth
         self._location_depth = None
         self._capturing = None
 
     def _in_location(self) -> bool:
         return self._location_depth is not None
+
+
+def _category_of(class_names: str) -> str | None:
+    """Read `music` out of `ds-listing event-card ds-event-category-music`."""
+    for name in class_names.split():
+        if name.startswith(_CATEGORY_PREFIX) and len(name) > len(_CATEGORY_PREFIX):
+            return name[len(_CATEGORY_PREFIX) :]
+    return None
 
 
 def _slug_of(href: str | None) -> str | None:
@@ -206,6 +224,7 @@ def parse_do617(html: str, *, logger: Any = None) -> Do617Page:
                 region=card.get("addressRegion"),
                 latitude=_parse_number(card.get("latitude")),
                 longitude=_parse_number(card.get("longitude")),
+                category=card.get("category"),
             )
         )
 

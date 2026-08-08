@@ -17,6 +17,7 @@ from src.config import (
     SourcesConfig,
     VenueDiscoveryConfig,
 )
+from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.storage.db import init_db
@@ -131,6 +132,20 @@ def test_calendar_sources_are_built_from_config(paths):
 
     assert any(isinstance(s, IcsCalendarSource) for s in sources)
     assert any(isinstance(s, HtmlListingSource) for s in sources)
+
+
+def test_do617_venue_sources_are_built_from_config(paths):
+    config = _config(
+        sources=SourcesConfig(
+            do617_venues=[
+                FeedConfig("do617_gulu_gulu", "https://do617.com/venues/gulu-gulu-cafe", "do617")
+            ]
+        )
+    )
+
+    sources = _build(paths, config=config).ingestion_service._independent_sources
+
+    assert any(isinstance(s, Do617VenueSource) for s in sources)
 
 
 def test_calendar_sources_need_no_credential(paths):
