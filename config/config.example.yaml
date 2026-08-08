@@ -147,6 +147,21 @@ sources:
     #   source_type: do617
     #   min_fetch_interval_hours: 6
 
+  # Pages publishing schema.org events as JSON-LD. The richest markup a site
+  # can offer: real ISO timestamps with offsets, a location, and an explicit
+  # eventStatus, so a cancellation is stated rather than guessed from a title.
+  # Worth checking for before writing any bespoke HTML parser.
+  #
+  # The id is the event URL *plus its start*: a recurring programme keeps one
+  # page across every date it runs, so the URL alone collapses a season into
+  # a single candidate.
+  jsonld_pages: []
+    # - name: example_museum
+    #   url: "https://example.org/events"
+    #   source_type: example_museum
+    #   city: "Salem"
+    #   min_fetch_interval_hours: 6
+
   # MOON's Squarespace show feed. RSS carries no event date, so this adapter
   # knows one site's convention: the date is in the item title, and pubDate is
   # only when the show was announced. A different RSS venue needs its own
