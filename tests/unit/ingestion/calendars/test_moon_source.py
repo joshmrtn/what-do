@@ -178,8 +178,29 @@ class TestCancellation:
     def test_the_british_spelling_is_refused_too(self, source) -> None:
         assert source.interpret(_item("***CANCELLED*** 6/14/26 A Show")) is None
 
+    def test_a_leading_marker_with_a_separator_is_refused(self, source) -> None:
+        """The other convention seen in the wild: `CANCELED - <title>`."""
+        assert source.interpret(_item("CANCELED - Pop Up Library 6/14/26")) is None
+
     def test_a_moved_show_is_kept(self, source) -> None:
         """Moved is not cancelled — it is still happening."""
         event = source.interpret(_item("*** Moved to Deep Cuts *** 6/17/26 Vallory Falls"))
+
+        assert event is not None
+
+    def test_a_show_merely_named_for_cancelling_is_kept(self, source) -> None:
+        """The word is only a verdict inside the feed's own marker."""
+        event = source.interpret(_item("6/20/26 Cancelled Culture: A Comedy Show"))
+
+        assert event is not None
+        assert event.title == "Cancelled Culture: A Comedy Show"
+
+    def test_a_band_with_the_word_in_its_name_is_kept(self, source) -> None:
+        event = source.interpret(_item("6/20/26 The Cancelled, Dagwood, Replica City"))
+
+        assert event is not None
+
+    def test_a_show_promising_it_is_never_cancelled_is_kept(self, source) -> None:
+        event = source.interpret(_item("6/20/26 Rain or Shine — Never Cancelled Tour"))
 
         assert event is not None

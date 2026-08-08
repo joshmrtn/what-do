@@ -32,8 +32,19 @@ _LEADING_DATE_RE = re.compile(r"^\s*\d{1,2}/\d{1,2}/(?:\d{4}|\d{2})\s*[:\-–]?\
 #: `at 6pm`, `at 7:30 p.m.` — the description's own phrasing for the hour.
 _TIME_RE = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", re.IGNORECASE)
 
-#: A cancellation marker, which the feed leaves the original date inside.
-_CANCELLED_RE = re.compile(r"cancel{1,2}ed", re.IGNORECASE)
+#: A cancellation *marker*, not the word. The feed announces one two ways —
+#: `*** CANCELED*** 6/14/2026 NAGLY Benefit Show`, and the `CANCELED - <title>`
+#: form other calendars use — and both are structural: asterisk-delimited, or
+#: leading and followed by a separator. Matching the bare word anywhere would
+#: throw away `Cancelled Culture: A Comedy Show`, a band called The Cancelled,
+#: and a `Never Cancelled Tour`, none of which is a cancellation.
+_CANCELLED_RE = re.compile(
+    r"""
+      \*{2,}[^*]{0,40}?cancell?ed[^*]{0,40}?\*{2,}   # *** CANCELED ***
+    | ^\s*cancell?ed\s*[-–—:]                        # CANCELED - a show
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 #: What a venue name may look like. The text after `at <time> at ` is a venue on
 #: a templated item and a run of prose on a hand-written one — `Faces Malden -
