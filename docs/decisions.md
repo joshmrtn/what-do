@@ -1544,3 +1544,45 @@ Cancelled items keep their date and parse perfectly, so nothing else stops them.
 **Where a source states cancellation properly, none of this applies.** schema.org JSON-LD carries
 `eventStatus`, so `JsonLdEventSource` reads a fact instead of guessing at prose — one more reason to
 check for JSON-LD before writing any bespoke parser.
+
+## The first live run is scoped by horizon, not by model
+
+**Decision:** the first end-to-end run is scheduled nightly at 02:00 via cron and
+`scripts/run-batch.sh`, with `horizon_days` temporarily cut from 45 to 2. The extraction model
+is left alone.
+
+**Rationale: extraction is the whole cost, and it is measured in minutes an event.** The batch VM
+has four CPU cores and no GPU. Every other stage is negligible beside it — ingestion of nineteen
+sources takes about forty seconds, and normalisation plus dedup pass 1 over 1,018 candidates takes
+**0.7 seconds**. A 45-day horizon yields 957 events, which is thirty hours or more of model time and
+would never reach ranking overnight. A run that does not reach ranking produces no recommendations
+at all, so there would be nothing to look at in the morning.
+
+**Events are heavily front-loaded, so the horizon buys far more work than its length suggests:**
+
+| horizon | events | | horizon | events |
+|---|---|---|---|---|
+| 1 day | 62 | | 5 days | 335 |
+| 2 days | 165 | | 10 days | 514 |
+| 3 days | 241 | | 45 days | 957 |
+
+Two days is 165 events and still answers "what should we do tonight", which is the question the CLI
+exists for.
+
+**Switching to a smaller model was considered and rejected, and the reason is a trap worth
+remembering.** The extraction skip-hash is computed over the *input text*, not over the model that
+produced the output. Anything a weaker model extracted would therefore be treated as done for ever
+and never re-extracted — a permanent quality loss for a one-night speedup. Cutting the horizon only
+changes *which* events are extracted, never how well, and later nights pay only for what they have
+not seen.
+
+**Reducing `horizon_days` alone is not enough, which is easy to miss.** It bounds ingestion, but
+`load_candidates` has only a lower bound, so every candidate already stored is loaded, normalised
+and extracted regardless. The database was reset — backed up first — so the run rebuilds at the new
+horizon. It held nothing that was not regenerable: 1,018 candidates, 32 cached responses, and zero
+events, recommendations or run history.
+
+**The wrapper exists because cron gives a job no environment and no memory of the last one.** It
+takes a `flock`, so a batch still running is never joined by another — on this hardware a run lasts
+longer than the gap between some scheduling mistakes — and it writes a dated log with
+`batch-latest.log` symlinked to the newest.
