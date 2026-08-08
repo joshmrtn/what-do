@@ -7,7 +7,7 @@ import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from src.models.event import Event
@@ -114,7 +114,7 @@ class NormalizationEngine:
         if title is None and start_time is None:
             return None
 
-        metadata: dict = {}
+        metadata: dict[str, Any] = {}
         if title is None:
             metadata["missing_title"] = True
         if start_time is None:

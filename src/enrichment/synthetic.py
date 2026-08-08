@@ -2,7 +2,7 @@
 
 import re
 from datetime import date, datetime, timedelta
-from typing import Callable
+from typing import Any, Callable
 
 from src.config import SyntheticActivityRule, SyntheticConditions
 from src.enrichment.astronomical import AstronomicalData
@@ -22,7 +22,8 @@ _ANCHOR_RE = re.compile(
 
 def _get_anchor(name: str, astro: AstronomicalData) -> datetime:
     """Return the named astronomical anchor datetime."""
-    return getattr(astro, name)
+    anchor: datetime = getattr(astro, name)
+    return anchor
 
 
 def _parse_anchor_expr(expr: str, astro: AstronomicalData) -> datetime:
@@ -76,7 +77,9 @@ def parse_time_window(
 # ---------------------------------------------------------------------------
 
 
-def _conditions_met(conditions: SyntheticConditions, weather: dict | None) -> bool:
+def _conditions_met(
+    conditions: SyntheticConditions, weather: dict[str, Any] | None
+) -> bool:
     """Return True if all weather-based conditions in the rule are satisfied."""
     needs_weather = (
         conditions.min_temp_f is not None
@@ -121,7 +124,7 @@ class SyntheticActivityGenerator:
         self,
         rules: list[SyntheticActivityRule],
         run_date: date,
-        weather: dict | None,
+        weather: dict[str, Any] | None,
         astro: AstronomicalData,
         get_now: Callable[[], datetime] = datetime.now,
     ) -> list[Event]:

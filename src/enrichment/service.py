@@ -58,8 +58,8 @@ class EnrichmentService:
         tzname = self._config.location.timezone
 
         # Per-run in-memory caches to avoid redundant DB reads within a single batch
-        _weather_cache: dict[date, dict | None] = {}
-        _aqi_cache: dict[date, dict | None] = {}
+        _weather_cache: dict[date, dict[str, Any] | None] = {}
+        _aqi_cache: dict[date, dict[str, Any] | None] = {}
         _astro_cache: dict[date, AstronomicalData] = {}
 
         for event in events:
@@ -186,7 +186,9 @@ class EnrichmentService:
             "observed": None,
         }
 
-    def _fetch_weather(self, event_date: date, lat: float, lng: float) -> dict | None:
+    def _fetch_weather(
+        self, event_date: date, lat: float, lng: float
+    ) -> dict[str, Any] | None:
         """Return weather for (date, lat, lng), using DB cache; on miss, fetch and cache.
 
         A cached day is only served while it is still fresh. An event discovered
@@ -212,7 +214,9 @@ class EnrichmentService:
 
         return weather
 
-    def _db_weather_get(self, event_date: date, lat: float, lng: float) -> dict | None:
+    def _db_weather_get(
+        self, event_date: date, lat: float, lng: float
+    ) -> dict[str, Any] | None:
         """Return the cached day, or None if absent or past its TTL."""
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
@@ -243,7 +247,9 @@ class EnrichmentService:
         age_hours = (now - stamped).total_seconds() / 3600
         return age_hours <= self._config.weather.cache_ttl_hours
 
-    def _db_weather_put(self, event_date: date, lat: float, lng: float, weather: dict) -> None:
+    def _db_weather_put(
+        self, event_date: date, lat: float, lng: float, weather: dict[str, Any]
+    ) -> None:
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO weather_cache

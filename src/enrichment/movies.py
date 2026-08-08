@@ -1,6 +1,7 @@
 """Movie metadata provider ABC, TMDb implementation, and event enrichment helper."""
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import requests
 
@@ -14,7 +15,7 @@ class MovieMetadataProvider(ABC):
     """Abstract base for movie metadata providers."""
 
     @abstractmethod
-    def fetch(self, title: str, year: int | None) -> dict | None:
+    def fetch(self, title: str, year: int | None) -> dict[str, Any] | None:
         """Fetch metadata for a movie title.
 
         Returns:
@@ -32,7 +33,7 @@ class TMDbProvider(MovieMetadataProvider):
         self._api_key = api_key
         self._session = session or requests.Session()
 
-    def fetch(self, title: str, year: int | None) -> dict | None:
+    def fetch(self, title: str, year: int | None) -> dict[str, Any] | None:
         """Search TMDb for a movie and return structured metadata.
 
         Returns:
@@ -40,7 +41,7 @@ class TMDbProvider(MovieMetadataProvider):
             or None on not-found or any error.
         """
         try:
-            params: dict = {"api_key": self._api_key, "query": title}
+            params: dict[str, Any] = {"api_key": self._api_key, "query": title}
             if year is not None:
                 params["year"] = year
 

@@ -32,7 +32,7 @@ class NominatimGeocoder(GeocoderProvider):
         """Resolve an address via the Nominatim search endpoint."""
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
-            params={"q": address, "format": "json", "limit": 1},
+            params={"q": address, "format": "json", "limit": "1"},
             headers={"User-Agent": self._user_agent},
             timeout=10,
         )

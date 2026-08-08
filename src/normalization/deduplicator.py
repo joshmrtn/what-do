@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Callable
 
 from rapidfuzz import fuzz
@@ -33,7 +33,9 @@ def venues_match(a: str | None, b: str | None) -> bool:
     return a == b
 
 
-def times_match(a_time, b_time, window_hours: float) -> bool:
+def times_match(
+    a_time: datetime | None, b_time: datetime | None, window_hours: float
+) -> bool:
     """True when start times are within the configured window.
 
     Shared with Pass 2, which applies the same structural guard.
