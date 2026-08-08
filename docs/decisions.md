@@ -1466,3 +1466,81 @@ City of Salem Building Department dispute and is relocating scheduled shows, so 
 feed is already past. Adopting it now means shows appear the night booking resumes, with no session
 needed. A test pins both halves: run against the capture's own June it yields six shows, run against
 August it yields none.
+
+## Ingest-only exists because a dry run is not cheap
+
+**Decision:** `--ingest-only` fetches, filters and stops. `--raw [PATH]` dumps every candidate as
+fetched, in JSON Lines, with the reason any was discarded.
+
+**Rationale: there was no cheap way to prove the sources worked.** `--dry-run` persists nothing but
+runs every stage, so it costs the same hours as a real run at roughly three minutes an event. That
+is why eighteen configured sources had never once been fetched together, and why the first attempt
+found bugs that had been latent for three sessions.
+
+An ingest-only run **persists its candidates**, unlike a dry run. Fetching and then throwing the
+result away would mean paying for it twice; leaving it behind lets a later `--skip-ingest` run
+process exactly what was proven.
+
+**The report is per-source, and counts both fetched and kept.** A total cannot answer the only
+question a bad run raises, which is *which* source went quiet, and the two silences are different
+failures:
+
+- `0 kept of 0 fetched` — the source is broken, blocked, or genuinely empty
+- `0 kept of 213 fetched` — the source works and its dates are landing outside the window
+
+The second is invisible in any single number, and it is the more likely bug. Sources are listed
+quietest first, because the one worth reading about is never at the top of a config file. A source
+that returned nothing has no candidates to count, so it is seeded into the tally from the source
+list rather than derived from what arrived.
+
+**Raw collection happens before filtering**, which is the whole point: filtering is the part most
+likely to be wrong, and a dump of what survived cannot explain an empty run. It is off unless asked
+for, since it holds the entire fetch in memory. JSON Lines rather than one array, so a large dump
+stays greppable and a truncated file is readable to its last line.
+
+**Neither an ingest-only nor a dry run writes `run_history`.** Neither did a batch, and that table
+is the only durable record of what the nightly runs actually did.
+
+## The batch clock is timezone-aware, and the filters agree about naivety
+
+**Decision:** `run_batch` and the CLI default to a UTC-aware clock. Both ingestion filters normalise
+every time through one helper before comparing.
+
+**Rationale: the first real fetch died at the ingestion stage**, on
+`can't compare offset-naive and offset-aware datetimes`. The default clock was `datetime.now`, which
+is naive, while sources that state their own offset — Do617, the JSON-LD pages, every ICS feed —
+produce aware start times.
+
+**No test could have caught it, which is the lesson.** Every test injects a clock, and every test
+injects an aware one. Production was the only naive path in the system, so the suite was green
+across three sessions while the one configuration that mattered was broken.
+
+It took three fixes, because the same mistake had been made at three layers:
+
+- the default clock itself
+- **the two filters disagreed.** `_within_event_window` localised a bare time and `_passes_lookback`
+  did not, so one raised on input the other accepted. A pair of filters over the same field has to
+  read it the same way; they now share `_localise`.
+- **the HTTP cache** compared a stored timestamp against the clock. A row written by the older naive
+  clock failed *all eighteen sources at once*, since every configured source fetches through
+  `fetch_document`. Reading a bare stored timestamp as UTC keeps one legacy row from doing that.
+
+Measured after the fix: 991 candidates from 18 sources, 6 discarded, every one of them genuinely
+past the horizon.
+
+## Cancellation is a marker, not a word
+
+**Decision:** an item is treated as cancelled only when the feed's own marker says so —
+asterisk-delimited (`*** CANCELED*** 6/14/2026 NAGLY Benefit Show`) or leading and followed by a
+separator (`CANCELED - Pop Up Library`). Both forms were observed in real feeds.
+
+**Rationale:** matching `cancelled` anywhere in a title throws away `Cancelled Culture: A Comedy
+Show`, a band called The Cancelled, and a `Never Cancelled Tour`. The word appears in event titles
+for reasons that have nothing to do with an event being cancelled, while the *marker* is structural
+and unambiguous.
+
+Cancelled items keep their date and parse perfectly, so nothing else stops them.
+
+**Where a source states cancellation properly, none of this applies.** schema.org JSON-LD carries
+`eventStatus`, so `JsonLdEventSource` reads a fact instead of guessing at prose — one more reason to
+check for JSON-LD before writing any bespoke parser.
