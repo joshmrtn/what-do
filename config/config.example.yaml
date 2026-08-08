@@ -162,6 +162,17 @@ sources:
     #   city: "Salem"
     #   min_fetch_interval_hours: 6
 
+  # Assabet Interactive calendar feeds, used by many Massachusetts libraries.
+  # Its pubDate IS the event start — the opposite of the MOON feed below, where
+  # pubDate is when the show was announced. Look for the host behind an
+  # <iframe> on the organisation's own calendar page.
+  assabet_feeds: []
+    # - name: example_library
+    #   url: "https://example.assabetinteractive.com/calendar/upcoming-events.rss"
+    #   source_type: example_library
+    #   city: "Salem"
+    #   min_fetch_interval_hours: 6
+
   # MOON's Squarespace show feed. RSS carries no event date, so this adapter
   # knows one site's convention: the date is in the item title, and pubDate is
   # only when the show was announced. A different RSS venue needs its own

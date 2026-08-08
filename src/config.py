@@ -124,6 +124,8 @@ class SourcesConfig:
     do617_venues: list[FeedConfig] = field(default_factory=list)
     #: MOON's Squarespace show feed, whose event dates live in item titles.
     moon_feeds: list[FeedConfig] = field(default_factory=list)
+    #: Assabet Interactive calendar feeds, whose pubDate *is* the event start.
+    assabet_feeds: list[FeedConfig] = field(default_factory=list)
     #: Pages publishing schema.org events as JSON-LD — the richest markup a
     #: site can offer, stating offsets and cancellations outright.
     jsonld_pages: list[FeedConfig] = field(default_factory=list)
@@ -473,6 +475,7 @@ def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
         tribe_calendars=_load_feeds(raw.get("tribe_calendars"), "Tribe calendar"),
         do617_venues=_load_feeds(raw.get("do617_venues"), "Do617 venue"),
         moon_feeds=_load_feeds(raw.get("moon_feeds"), "MOON feed"),
+        assabet_feeds=_load_feeds(raw.get("assabet_feeds"), "Assabet feed"),
         jsonld_pages=_load_feeds(raw.get("jsonld_pages"), "JSON-LD page"),
     )
 

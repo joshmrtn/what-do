@@ -33,6 +33,7 @@ from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import OpenMeteoProvider
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
+from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.ingestion.calendars.moon_source import MoonRssSource
@@ -203,6 +204,18 @@ def build_dependencies(
     for feed in config.sources.jsonld_pages:
         independent_sources.append(
             JsonLdEventSource(
+                feed,
+                db_path,
+                get_now=get_now,
+                logger=logger,
+                timezone_name=config.location.timezone,
+                horizon_days=config.scraping.horizon_days,
+                day_starts_at=config.day_starts_at,
+            )
+        )
+    for feed in config.sources.assabet_feeds:
+        independent_sources.append(
+            AssabetRssSource(
                 feed,
                 db_path,
                 get_now=get_now,

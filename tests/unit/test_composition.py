@@ -19,6 +19,7 @@ from src.config import (
 )
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
+from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.ingestion.calendars.moon_source import MoonRssSource
@@ -160,6 +161,18 @@ def test_jsonld_sources_are_built_from_config(paths):
     sources = _build(paths, config=config).ingestion_service._independent_sources
 
     assert any(isinstance(s, JsonLdEventSource) for s in sources)
+
+
+def test_assabet_feed_sources_are_built_from_config(paths):
+    config = _config(
+        sources=SourcesConfig(
+            assabet_feeds=[FeedConfig("salempl", "https://x.assabetinteractive.com/f.rss", "salempl")]
+        )
+    )
+
+    sources = _build(paths, config=config).ingestion_service._independent_sources
+
+    assert any(isinstance(s, AssabetRssSource) for s in sources)
 
 
 def test_moon_feed_sources_are_built_from_config(paths):

@@ -12,6 +12,7 @@ place is dropped rather than guessed: a wrong date is worse than a missing event
 
 from __future__ import annotations
 
+import re
 from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
@@ -28,6 +29,29 @@ from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.timing import EXACT
 from src.utils.nights import night_start
+
+
+#: A cancellation *marker*, not the word. Two conventions seen in real feeds:
+#: MOON writes `*** CANCELED*** 6/14/2026 NAGLY Benefit Show`, Assabet writes
+#: `CANCELED - Pop Up Library`. Both are structural, which is what makes them
+#: safe to match — the bare word appears in `Cancelled Culture: A Comedy Show`,
+#: in a band called The Cancelled, and in a `Never Cancelled Tour`.
+_CANCELLED_RE = re.compile(
+    r"""
+      \*{2,}[^*]{0,40}?cancell?ed[^*]{0,40}?\*{2,}   # *** CANCELED ***
+    | ^\s*cancell?ed\s*[-–—:]                        # CANCELED - a show
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def looks_cancelled(title: str) -> bool:
+    """Whether a feed has marked this item cancelled.
+
+    Cancelled items keep their date and parse perfectly, so nothing else stops
+    them reaching the pipeline as though they were going ahead.
+    """
+    return _CANCELLED_RE.search(title) is not None
 
 
 @dataclass(frozen=True)
