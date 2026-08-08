@@ -99,6 +99,11 @@ class RssFeedSource(IngestionSource):
             date — which is a normal outcome, not an error.
         """
 
+    @property
+    def source_name(self) -> str:
+        """The feed's configured name, so a report can name the feed not the class."""
+        return self._config.name
+
     def fetch(self) -> list[EventCandidate]:
         """Fetch the feed and return the events inside the window.
 

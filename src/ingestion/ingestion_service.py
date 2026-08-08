@@ -20,6 +20,34 @@ from src.models.event_candidate import EventCandidate
 from src.utils.nights import night_start
 
 
+@dataclass(frozen=True)
+class SourceTally:
+    """What one source contributed.
+
+    Both numbers are needed to tell the two silences apart: a source that
+    returned nothing is broken or empty, while a source that returned plenty and
+    kept none is parsing dates into the wrong window — which looks identical in
+    a total.
+    """
+
+    fetched: int = 0
+    accepted: int = 0
+
+
+@dataclass(frozen=True)
+class RawCandidateRecord:
+    """One candidate exactly as a source produced it, with its verdict.
+
+    Collected before filtering, because filtering is the thing most likely to be
+    wrong. A dump of what survived cannot explain an empty run.
+    """
+
+    candidate: EventCandidate
+    source: str
+    verdict: str
+    reason: str | None = None
+
+
 @dataclass
 class IngestionResult:
     """Summary of a single ingestion run."""
@@ -30,6 +58,12 @@ class IngestionResult:
     discarded: int
     handles_discovered: int
     candidates: list[EventCandidate] = dataclass_field(default_factory=list)
+    #: What each source fetched and kept, keyed by its `source_name`.
+    per_source: dict[str, SourceTally] = dataclass_field(default_factory=dict)
+    #: Sources that raised. Named, because a total cannot say which went quiet.
+    failed_sources: list[str] = dataclass_field(default_factory=list)
+    #: Every candidate as fetched, only when `collect_raw` asked for it.
+    raw: list[RawCandidateRecord] = dataclass_field(default_factory=list)
 
 
 class IngestionService:
@@ -70,6 +104,7 @@ class IngestionService:
         self,
         get_now: Callable[[], datetime] = datetime.now,
         persist: bool = True,
+        collect_raw: bool = False,
     ) -> IngestionResult:
         """Execute one ingestion pass.
 
@@ -78,6 +113,9 @@ class IngestionService:
             persist: Whether to write anything. `False` fetches and filters as
                 normal but touches no table — a dry run must leave the database
                 exactly as it found it, while still proving the providers work.
+            collect_raw: Keep every candidate as fetched, with the reason any
+                was discarded. Off by default because it holds the whole fetch
+                in memory; on when a diagnostic run asks to dump it.
 
         Returns:
             IngestionResult with the accepted candidates and their counts.
@@ -90,12 +128,33 @@ class IngestionService:
                 conn.commit()
 
             seed_handles = {h for h in seeds.handles}
-            candidates = self._collect_candidates()
+            pairs, failed_sources = self._collect_candidates()
 
             accepted: list[EventCandidate] = []
             pending_discovery: list[tuple[str, str]] = []
             discarded = 0
             handles_discovered = 0
+            raw: list[RawCandidateRecord] = []
+            fetched_by_source: dict[str, int] = {}
+            accepted_by_source: dict[str, int] = {}
+
+            for source_name, _ in pairs:
+                fetched_by_source[source_name] = fetched_by_source.get(source_name, 0) + 1
+            # A source that returned nothing has no pairs, and its silence is
+            # the single most useful line in the report.
+            for source in self._independent_sources:
+                fetched_by_source.setdefault(source.source_name, 0)
+
+            def _record(source_name: str, ec: EventCandidate, reason: str | None) -> None:
+                if collect_raw:
+                    raw.append(
+                        RawCandidateRecord(
+                            candidate=ec,
+                            source=source_name,
+                            verdict="accepted" if reason is None else "discarded",
+                            reason=reason,
+                        )
+                    )
 
             extractor = HandleExtractor(
                 db_path=self._db_path,
@@ -110,7 +169,7 @@ class IngestionService:
             floor = night_start(now, self._config.day_starts_at, zone)
             ceiling = floor + timedelta(days=self._config.scraping.horizon_days)
 
-            for ec in candidates:
+            for source_name, ec in pairs:
                 if not self._within_event_window(ec, floor, ceiling, zone):
                     self._logger.info(
                         f"Discarding out-of-window event from {ec.source}: "
@@ -118,6 +177,7 @@ class IngestionService:
                         component="ingestion",
                         duration_ms=0,
                     )
+                    _record(source_name, ec, f"out of window: start_time={ec.start_time}")
                     discarded += 1
                     continue
 
@@ -126,6 +186,11 @@ class IngestionService:
                         f"Discarding old post from {ec.source}: raw_published_at={ec.raw_published_at}",
                         component="ingestion",
                         duration_ms=0,
+                    )
+                    _record(
+                        source_name,
+                        ec,
+                        f"outside lookback: raw_published_at={ec.raw_published_at}",
                     )
                     discarded += 1
                     continue
@@ -137,9 +202,16 @@ class IngestionService:
                         component="ingestion",
                         duration_ms=0,
                     )
+                    _record(
+                        source_name,
+                        ec,
+                        "malformed: title, description and start_time are all absent",
+                    )
                     discarded += 1
                     continue
 
+                _record(source_name, ec, None)
+                accepted_by_source[source_name] = accepted_by_source.get(source_name, 0) + 1
                 accepted.append(ec)
 
                 if conn is not None:
@@ -174,6 +246,12 @@ class IngestionService:
             discarded=discarded,
             handles_discovered=handles_discovered,
             candidates=accepted,
+            per_source={
+                name: SourceTally(fetched=count, accepted=accepted_by_source.get(name, 0))
+                for name, count in fetched_by_source.items()
+            },
+            failed_sources=failed_sources,
+            raw=raw,
         )
 
     # ------------------------------------------------------------------
@@ -209,30 +287,45 @@ class IngestionService:
     # Candidate collection
     # ------------------------------------------------------------------
 
-    def _collect_candidates(self) -> list[EventCandidate]:
+    def _collect_candidates(self) -> tuple[list[tuple[str, EventCandidate]], list[str]]:
         """Run the failover chain plus every independent source, combined.
 
         The two lists differ by fetch policy, not by subject matter. Putting a
         source in the failover list means "only fetch this if the ones before
         it failed", which would silently starve any source that is not an
         alternative route to the same data.
-        """
-        candidates: list[EventCandidate] = []
 
+        Returns:
+            Each candidate paired with the name of the source that produced it,
+            and the names of any sources that raised. The pairing is what lets a
+            report say which of seventeen sources went quiet; `candidate.source`
+            cannot, since several feeds can share one `source` value.
+        """
+        pairs: list[tuple[str, EventCandidate]] = []
+        failed: list[str] = []
+
+        # The chain reports only the source that succeeded, by design — the
+        # others were never meant to run — so it is attributed as one unit.
         chain = FailoverChain(sources=self._failover_sources, logger=self._logger)
-        candidates.extend(chain.fetch_all())
+        if self._failover_sources:
+            fetched = chain.fetch_all()
+            pairs.extend(("failover_chain", candidate) for candidate in fetched)
 
         for source in self._independent_sources:
+            name = source.source_name
             try:
-                candidates.extend(source.fetch())
+                fetched = source.fetch()
             except Exception as exc:
+                failed.append(name)
                 self._logger.error(
-                    f"Source {source.__class__.__name__} failed: {exc}",
+                    f"Source {name} failed: {exc}",
                     component="ingestion",
                     duration_ms=0,
                 )
+                continue
+            pairs.extend((name, candidate) for candidate in fetched)
 
-        return candidates
+        return pairs, failed
 
     # ------------------------------------------------------------------
     # Filtering

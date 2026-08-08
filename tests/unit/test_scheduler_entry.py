@@ -1,25 +1,44 @@
 from __future__ import annotations
 
 import io
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from src.ingestion.ingestion_service import RawCandidateRecord
+from src.models.event_candidate import EventCandidate
 from src.scheduler import BatchResult, run
 
 NOW = datetime(2026, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
 
 
+def _raw_record() -> RawCandidateRecord:
+    return RawCandidateRecord(
+        candidate=EventCandidate(
+            id="c1", source="moon", source_type="moon", discovered_at=NOW
+        ),
+        source="moon",
+        verdict="discarded",
+        reason="out of window: start_time=None",
+    )
+
+
 class _Recorder:
     """Stands in for run_batch, capturing the kwargs the entry point built."""
 
-    def __init__(self, result: BatchResult | None = None) -> None:
+    def __init__(self, result: BatchResult | None = None, raw: list | None = None) -> None:
         self.kwargs: dict = {}
         self.result = result or BatchResult(outcome="success")
+        self.raw = raw
 
     def __call__(self, **kwargs):
         self.kwargs = kwargs
+        # run_batch hands the dump its records mid-run, so the fake must too —
+        # calling it afterwards would write to a stream nobody is reading.
+        if self.raw is not None and kwargs.get("raw_dump_fn") is not None:
+            kwargs["raw_dump_fn"](self.raw)
         return self.result
 
 
@@ -53,8 +72,8 @@ def _fake_build(**kwargs):
 def invoke(tmp_path):
     """Drive run() with every real construction seam replaced."""
 
-    def _invoke(argv, result=None, build=None):
-        batch = _Recorder(result)
+    def _invoke(argv, result=None, build=None, raw=None):
+        batch = _Recorder(result, raw=raw)
         config_calls: list = []
 
         def _load_config(config_path=None, env_path=None):
@@ -169,3 +188,55 @@ def test_the_summary_reports_the_outcome_and_counts(invoke):
     assert "7" in output
     assert "enrichment failed: boom" in output
     assert "apify" in output
+
+
+# ----------------------------------------------------------------------
+# Ingest-only and the raw dump
+# ----------------------------------------------------------------------
+
+
+def test_ingest_only_is_passed_through(invoke):
+    _, batch, _, _ = invoke(["--ingest-only"])
+
+    assert batch.kwargs["ingest_only"] is True
+
+
+def test_ingest_only_defaults_off(invoke):
+    _, batch, _, _ = invoke([])
+
+    assert batch.kwargs["ingest_only"] is False
+
+
+def test_no_raw_dump_is_requested_by_default(invoke):
+    """Collecting the raw fetch costs memory, so nothing asks for it unbidden."""
+    _, batch, _, _ = invoke([])
+
+    assert batch.kwargs["raw_dump_fn"] is None
+
+
+def test_raw_without_a_path_dumps_to_stdout(invoke):
+    _, _, out, _ = invoke(["--raw"], raw=[_raw_record()])
+
+    assert '"source": "moon"' in out
+    assert '"verdict": "discarded"' in out
+
+
+def test_raw_with_a_path_writes_a_file(invoke, tmp_path):
+    target = tmp_path / "raw.jsonl"
+
+    _, _, out, _ = invoke(["--raw", str(target)], raw=[_raw_record(), _raw_record()])
+
+    lines = target.read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["candidate"]["id"] == "c1"
+    assert out.strip().startswith("outcome:")
+
+
+def test_raw_renders_times_as_text(invoke, tmp_path):
+    """A datetime is not JSON, and a dump that raises explains nothing."""
+    target = tmp_path / "raw.jsonl"
+
+    invoke(["--raw", str(target)], raw=[_raw_record()])
+
+    record = json.loads(target.read_text().strip())
+    assert record["candidate"]["discovered_at"] == NOW.isoformat()

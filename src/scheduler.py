@@ -13,9 +13,10 @@ which is what makes a re-run incremental and a crash survivable.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import zoneinfo
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, TextIO
@@ -23,7 +24,7 @@ from typing import Any, Callable, TextIO
 from src.composition import BatchDependencies, build_dependencies
 from src.config import AppConfig, load_config
 from src.enrichment.service import EnrichmentService
-from src.ingestion.ingestion_service import IngestionService
+from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.models.recommendation import Recommendation
@@ -56,6 +57,11 @@ class BatchResult:
     errors: list[str] = field(default_factory=list)
     skipped_sources: list[str] = field(default_factory=list)
     recommendations: list[Recommendation] = field(default_factory=list)
+    #: What each source fetched and kept. A total cannot say which of seventeen
+    #: sources went quiet, and that is the question a failed run always asks.
+    per_source: dict[str, SourceTally] = field(default_factory=dict)
+    #: Sources that raised during the fetch, by name.
+    failed_sources: list[str] = field(default_factory=list)
 
 
 def run_batch(
@@ -76,6 +82,8 @@ def run_batch(
     skipped_sources: list[str] | None = None,
     skip_ingest: bool = False,
     dry_run: bool = False,
+    ingest_only: bool = False,
+    raw_dump_fn: Callable[[list[Any]], None] | None = None,
     load_candidates_fn: Callable[..., list[EventCandidate]] = load_candidates,
     load_events_fn: Callable[..., list[Event]] = load_events,
     save_events_fn: Callable[..., None] = save_events,
@@ -106,6 +114,12 @@ def run_batch(
             touching the network.
         dry_run: Run every stage but persist no events or recommendations.
             Ingestion still writes candidates, since it owns that write itself.
+        ingest_only: Fetch, filter and stop. Proves every source still works in
+            minutes rather than the hours a full run costs, and leaves the
+            candidates behind so `skip_ingest` can process them later.
+        raw_dump_fn: Given every candidate as fetched, with the reason any was
+            discarded. Supplied only when a diagnostic run asks for the dump,
+            since collecting it holds the whole fetch in memory.
         load_candidates_fn: Injected for testing, as the CLI injects its loaders.
         load_events_fn: Injected for testing.
         save_events_fn: Injected for testing.
@@ -120,9 +134,9 @@ def run_batch(
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
 
-    # A dry run did not do a batch, so recording one would pollute the only
-    # durable record of what the nightly runs actually did.
-    run_id = None if dry_run else start_run_fn(db_path, now)
+    # Neither a dry run nor an ingest-only run did a batch, so recording one
+    # would pollute the only durable record of what the nightly runs actually did.
+    run_id = None if dry_run or ingest_only else start_run_fn(db_path, now)
 
     def _finish() -> BatchResult:
         """Complete the history row and hand back the result.
@@ -171,14 +185,27 @@ def run_batch(
     else:
         ingested = _stage(
             "ingestion",
-            lambda: ingestion_service.run(get_now=get_now, persist=not dry_run),
+            lambda: ingestion_service.run(
+                get_now=get_now,
+                persist=not dry_run,
+                collect_raw=raw_dump_fn is not None,
+            ),
         )
         if ingested is not None:
             result.stage_counts["ingested"] = ingested.accepted
+            result.per_source = ingested.per_source
+            result.failed_sources = list(ingested.failed_sources)
+            if raw_dump_fn is not None:
+                raw_dump_fn(ingested.raw)
             if dry_run:
                 # A dry run wrote nothing, so the loader below cannot see what
                 # was just fetched. Carry it in memory instead.
                 fetched = ingested.candidates
+
+    if ingest_only:
+        # Deliberately before load_events: nothing downstream has run, so there
+        # is no batch to finish and nothing to reconcile against.
+        return result
 
     stored = load_events_fn(db_path)
 
@@ -343,6 +370,21 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-run the pipeline over already-fetched candidates, touching no network",
     )
+    parser.add_argument(
+        "--ingest-only",
+        action="store_true",
+        help="Fetch from every source, report what each returned, and stop",
+    )
+    parser.add_argument(
+        "--raw",
+        nargs="?",
+        const="-",
+        metavar="PATH",
+        help=(
+            "Dump every fetched candidate as JSON Lines, with the reason any was "
+            "discarded. Defaults to stdout; give a path to write a file"
+        ),
+    )
     parser.add_argument("--run-date", help="The date to run for, as YYYY-MM-DD")
     return parser
 
@@ -352,11 +394,57 @@ def _summarise(result: BatchResult) -> str:
     lines = [f"outcome: {result.outcome}"]
     for name, count in result.stage_counts.items():
         lines.append(f"  {name}: {count}")
+
+    if result.per_source:
+        lines.append("  sources:")
+        width = max(len(name) for name in result.per_source)
+        # Quietest first: the whole point of the table is to surface the source
+        # that stopped producing, and it is never the one at the top of a
+        # config file.
+        for name, tally in sorted(
+            result.per_source.items(), key=lambda item: (item[1].accepted, item[0])
+        ):
+            note = ""
+            if tally.fetched and not tally.accepted:
+                note = "   <- fetched but all discarded"
+            elif not tally.fetched:
+                note = "   <- nothing fetched"
+            lines.append(
+                f"    {name.ljust(width)}  {tally.accepted:>4} kept "
+                f"of {tally.fetched:>4} fetched{note}"
+            )
+
+    if result.failed_sources:
+        lines.append(f"  failed sources: {', '.join(result.failed_sources)}")
     if result.skipped_sources:
         lines.append(f"  skipped sources: {', '.join(result.skipped_sources)}")
     for error in result.errors:
         lines.append(f"  error: {error}")
     return "\n".join(lines)
+
+
+def _write_raw(records: list[Any], destination: str, stdout: TextIO) -> None:
+    """Dump every fetched candidate as JSON Lines.
+
+    One object per line rather than one array, so a dump of thousands stays
+    greppable and a truncated file is still readable to its last line.
+    """
+    stream = stdout if destination == "-" else open(destination, "w", encoding="utf-8")
+    try:
+        for record in records:
+            payload = {
+                "source": record.source,
+                "verdict": record.verdict,
+                "reason": record.reason,
+                "candidate": {
+                    key: (value.isoformat() if isinstance(value, datetime) else value)
+                    for key, value in asdict(record.candidate).items()
+                },
+            }
+            print(json.dumps(payload, ensure_ascii=False), file=stream)
+    finally:
+        if stream is not stdout:
+            stream.close()
 
 
 def run(
@@ -434,6 +522,12 @@ def run(
         skipped_sources=dependencies.skipped_sources,
         skip_ingest=args.skip_ingest,
         dry_run=args.dry_run,
+        ingest_only=args.ingest_only,
+        raw_dump_fn=(
+            None
+            if args.raw is None
+            else lambda records: _write_raw(records, args.raw, stdout)
+        ),
     )
 
     print(_summarise(result), file=stdout)

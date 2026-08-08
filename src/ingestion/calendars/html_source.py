@@ -54,6 +54,11 @@ class HtmlListingSource(IngestionSource):
         self._get_now = get_now
         self._logger = logger
 
+    @property
+    def source_name(self) -> str:
+        """The feed's configured name, so a report can name the feed not the class."""
+        return self._config.name
+
     def fetch(self) -> list[EventCandidate]:
         """Fetch and parse the listing, skipping the network when polite to.
 

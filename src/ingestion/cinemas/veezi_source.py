@@ -47,6 +47,11 @@ class VeeziSessionsSource(IngestionSource):
         self._logger = logger
         self._zone = _zone_of(timezone_name)
 
+    @property
+    def source_name(self) -> str:
+        """The feed's configured name, so a report can name the feed not the class."""
+        return self._config.name
+
     def fetch(self) -> list[EventCandidate]:
         """Fetch and parse the sessions page, skipping the network when polite to.
 

@@ -63,6 +63,11 @@ class IcsCalendarSource(IngestionSource):
         #: convention, reported once at the end rather than one line each.
         self._unconventional = 0
 
+    @property
+    def source_name(self) -> str:
+        """The feed's configured name, so a report can name the feed not the class."""
+        return self._config.name
+
     def fetch(self) -> list[EventCandidate]:
         """Fetch and parse the calendar, skipping the network when it is polite to.
 

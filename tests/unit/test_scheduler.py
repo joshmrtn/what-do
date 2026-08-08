@@ -40,16 +40,24 @@ RUN_DATE = date(2026, 6, 15)
 
 class _FakeIngestion:
     def __init__(
-        self, error: Exception | None = None, candidates: list[EventCandidate] | None = None
+        self,
+        error: Exception | None = None,
+        candidates: list[EventCandidate] | None = None,
+        per_source: dict[str, int] | None = None,
+        failed_sources: list[str] | None = None,
     ) -> None:
         self.error = error
         self.candidates = candidates or []
+        self.per_source = per_source or {}
+        self.failed_sources = failed_sources or []
         self.calls = 0
         self.persist_flags: list[bool] = []
+        self.raw_flags: list[bool] = []
 
-    def run(self, get_now=None, persist=True):
+    def run(self, get_now=None, persist=True, collect_raw=False):
         self.calls += 1
         self.persist_flags.append(persist)
+        self.raw_flags.append(collect_raw)
         if self.error:
             raise self.error
         return IngestionResult(
@@ -57,6 +65,8 @@ class _FakeIngestion:
             discarded=0,
             handles_discovered=0,
             candidates=list(self.candidates),
+            per_source=dict(self.per_source),
+            failed_sources=list(self.failed_sources),
         )
 
 
@@ -468,6 +478,95 @@ def test_an_event_tonight_is_ranked(db):
     _, fakes, _, _ = _run(db, fresh=[tonight])
 
     assert fakes["ranking_engine"].ranked == [["tonight"]]
+
+
+# ----------------------------------------------------------------------
+# Ingest-only
+# ----------------------------------------------------------------------
+
+
+def test_ingest_only_stops_before_the_pipeline(db):
+    """It exists to prove the sources fetch, without paying for extraction."""
+    _, fakes, _, _ = _run(db, ingest_only=True)
+
+    assert fakes["ingestion_service"].calls == 1
+    assert fakes["normalization_service"].calls == []
+    assert fakes["extraction_stage"].extracted == []
+    assert fakes["ranking_engine"].ranked == []
+
+
+def test_ingest_only_persists_the_candidates_it_fetched(db):
+    """So a later --skip-ingest run can process them without refetching."""
+    _, fakes, _, _ = _run(db, ingest_only=True)
+
+    assert fakes["ingestion_service"].persist_flags == [True]
+
+
+def test_ingest_only_with_dry_run_persists_nothing(db):
+    _, fakes, _, _ = _run(db, ingest_only=True, dry_run=True)
+
+    assert fakes["ingestion_service"].persist_flags == [False]
+
+
+def test_ingest_only_writes_no_events_or_recommendations(db):
+    _, _, save_spy, recs_spy = _run(db, ingest_only=True)
+
+    assert (save_spy.calls, recs_spy.calls) == (0, 0)
+
+
+def test_ingest_only_reports_the_count_it_accepted(db):
+    ingestion = _FakeIngestion(
+        candidates=[
+            EventCandidate(id="a", source="s", source_type="apify", discovered_at=NOW),
+            EventCandidate(id="b", source="s", source_type="apify", discovered_at=NOW),
+        ]
+    )
+
+    result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
+
+    assert result.stage_counts["ingested"] == 2
+
+
+def test_ingest_only_reports_what_each_source_returned(db):
+    """A total says nothing about which of seventeen sources went quiet."""
+    ingestion = _FakeIngestion(per_source={"do617_gulu_gulu": 25, "do617_koto": 0})
+
+    result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
+
+    assert result.per_source == {"do617_gulu_gulu": 25, "do617_koto": 0}
+
+
+def test_ingest_only_reports_a_source_that_failed(db):
+    ingestion = _FakeIngestion(failed_sources=["nshoremag"])
+
+    result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
+
+    assert result.failed_sources == ["nshoremag"]
+
+
+def test_ingest_only_records_no_run_history(db):
+    """A diagnostic did not do a batch, as with a dry run."""
+    _run(db, ingest_only=True)
+
+    assert _runs(db) == []
+
+
+def test_ingest_only_survives_an_ingestion_failure(db):
+    ingestion = _FakeIngestion(error=RuntimeError("network down"))
+
+    result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
+
+    assert result.outcome == "partial"
+    assert any("ingestion failed" in e for e in result.errors)
+
+
+def test_a_normal_run_reports_per_source_counts_too(db):
+    """The same diagnostic is worth having on a real run."""
+    ingestion = _FakeIngestion(per_source={"cabot": 88})
+
+    result, _, _, _ = _run(db, deps={"ingestion_service": ingestion})
+
+    assert result.per_source == {"cabot": 88}
 
 
 # ----------------------------------------------------------------------

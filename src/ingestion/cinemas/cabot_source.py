@@ -61,6 +61,11 @@ class CabotListingSource(IngestionSource):
         self._day_starts_at = day_starts_at
         self._max_pages = max_pages
 
+    @property
+    def source_name(self) -> str:
+        """The feed's configured name, so a report can name the feed not the class."""
+        return self._config.name
+
     def fetch(self) -> list[EventCandidate]:
         """Fetch as many listing pages as the horizon actually reaches.
 

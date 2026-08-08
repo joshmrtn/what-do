@@ -793,3 +793,143 @@ class TestEventTimeWindow:
         )
 
         assert len(_accepted(db, seeds_yaml, [booked_early])) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-source reporting
+# ---------------------------------------------------------------------------
+
+
+class _NamedSource(IngestionSource):
+    """A source that knows what it is called, as the config-declared ones do."""
+
+    def __init__(self, name: str, candidates: list[EventCandidate] | None = None,
+                 error: Exception | None = None) -> None:
+        self._name = name
+        self._candidates = candidates or []
+        self._error = error
+
+    @property
+    def source_name(self) -> str:
+        return self._name
+
+    def fetch(self) -> list[EventCandidate]:
+        if self._error:
+            raise self._error
+        return list(self._candidates)
+
+
+def _service(db, seeds_yaml, sources):
+    return IngestionService(
+        config=_make_config(),
+        db_path=db,
+        seeds_path=seeds_yaml,
+        failover_sources=[],
+        independent_sources=sources,
+        logger=_make_logger(),
+    )
+
+
+def test_each_source_reports_what_it_fetched(db, seeds_yaml):
+    sources = [
+        _NamedSource("do617_gulu_gulu", [_make_candidate(days_ago=1), _make_candidate(days_ago=1)]),
+        _NamedSource("do617_koto", []),
+    ]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW)
+
+    assert result.per_source["do617_gulu_gulu"].fetched == 2
+    assert result.per_source["do617_koto"].fetched == 0
+
+
+def test_a_source_whose_candidates_are_all_discarded_is_visible(db, seeds_yaml):
+    """The failure that looks like silence: fetched many, kept none."""
+    ancient = _make_candidate(days_ago=900)
+    sources = [_NamedSource("nshoremag", [ancient])]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW)
+
+    tally = result.per_source["nshoremag"]
+    assert (tally.fetched, tally.accepted) == (1, 0)
+
+
+def test_a_failing_source_is_named(db, seeds_yaml):
+    sources = [_NamedSource("cabot", error=RuntimeError("boom"))]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW)
+
+    assert result.failed_sources == ["cabot"]
+
+
+def test_a_failing_source_does_not_stop_the_others(db, seeds_yaml):
+    sources = [
+        _NamedSource("cabot", error=RuntimeError("boom")),
+        _NamedSource("moon", [_make_candidate(days_ago=1)]),
+    ]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW)
+
+    assert result.accepted == 1
+
+
+def test_an_unnamed_source_falls_back_to_its_class_name(db, seeds_yaml):
+    """Adapters that are not config-declared still have to appear in a report."""
+
+    class QuietSource(IngestionSource):
+        def fetch(self):
+            return []
+
+    result = _service(db, seeds_yaml, [QuietSource()]).run(get_now=lambda: FIXED_NOW)
+
+    assert list(result.per_source) == ["QuietSource"]
+
+
+# ---------------------------------------------------------------------------
+# Raw collection
+# ---------------------------------------------------------------------------
+
+
+def test_raw_is_not_collected_unless_asked(db, seeds_yaml):
+    sources = [_NamedSource("moon", [_make_candidate(days_ago=1)])]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW)
+
+    assert result.raw == []
+
+
+def test_raw_keeps_every_candidate_as_fetched(db, seeds_yaml):
+    sources = [_NamedSource("moon", [_make_candidate(days_ago=1), _make_candidate(days_ago=900)])]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW, collect_raw=True)
+
+    assert len(result.raw) == 2
+
+
+def test_raw_records_why_a_candidate_was_discarded(db, seeds_yaml):
+    """Without the reason, a dump of nothing explains nothing."""
+    sources = [_NamedSource("moon", [_make_candidate(days_ago=900)])]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW, collect_raw=True)
+
+    record = result.raw[0]
+    assert record.verdict == "discarded"
+    assert record.reason is not None
+    assert record.source == "moon"
+
+
+def test_raw_marks_an_accepted_candidate(db, seeds_yaml):
+    sources = [_NamedSource("moon", [_make_candidate(days_ago=1)])]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW, collect_raw=True)
+
+    assert result.raw[0].verdict == "accepted"
+    assert result.raw[0].reason is None
+
+
+def test_raw_carries_the_candidate_itself(db, seeds_yaml):
+    candidate = _make_candidate(days_ago=1)
+    sources = [_NamedSource("moon", [candidate])]
+
+    result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW, collect_raw=True)
+
+    assert result.raw[0].candidate.id == candidate.id
