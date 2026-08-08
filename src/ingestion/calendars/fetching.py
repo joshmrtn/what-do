@@ -10,7 +10,7 @@ requests that let the server answer 304, and no retry loop on failure.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -97,10 +97,21 @@ def fetch_document(
 
 
 def _within_interval(fetched_at: datetime, now: datetime, hours: float) -> bool:
-    """True while the politeness floor since the last fetch has not elapsed."""
+    """True while the politeness floor since the last fetch has not elapsed.
+
+    Both sides are read as UTC when they state no zone. The cache is our own
+    write and the batch clock is UTC, but a row left by an older naive clock
+    would otherwise raise here — and since every configured source fetches
+    through this function, one legacy row failed all seventeen at once.
+    """
     if hours <= 0:
         return False
-    return now - fetched_at < timedelta(hours=hours)
+    return _as_utc(now) - _as_utc(fetched_at) < timedelta(hours=hours)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Read a bare timestamp as UTC, leaving one that states its zone alone."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _log(logger: Any, message: str) -> None:

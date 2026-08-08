@@ -181,7 +181,7 @@ class IngestionService:
                     discarded += 1
                     continue
 
-                if not self._passes_lookback(ec, cutoff, now):
+                if not self._passes_lookback(ec, cutoff, now, zone):
                     self._logger.info(
                         f"Discarding old post from {ec.source}: raw_published_at={ec.raw_published_at}",
                         component="ingestion",
@@ -332,19 +332,27 @@ class IngestionService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _passes_lookback(ec: EventCandidate, cutoff: datetime, now: datetime) -> bool:
+    def _passes_lookback(
+        ec: EventCandidate, cutoff: datetime, now: datetime, zone: tzinfo
+    ) -> bool:
         """Decide whether a candidate is recent enough to ingest.
 
         The lookback exists to drop stale social posts, which is a judgement about
         an announcement's age. A candidate whose event has not happened yet is not
         stale under any reading, no matter how far back it was announced — forward
         looking sources such as public calendars routinely carry both.
+
+        Every comparison localises first. Sources disagree about naivety —
+        Do617 and the ICS feeds state an offset, HTML listings do not — and this
+        filter and `_within_event_window` have to read a bare time the same way
+        or one of them raises on input the other accepted.
         """
-        if ec.start_time is not None and ec.start_time > now:
+        if ec.start_time is not None and _localise(ec.start_time, zone) > _localise(now, zone):
             return True
+
         if ec.raw_published_at is None:
             return True
-        return ec.raw_published_at >= cutoff
+        return _localise(ec.raw_published_at, zone) >= _localise(cutoff, zone)
 
     @staticmethod
     def _within_event_window(
@@ -366,15 +374,10 @@ class IngestionService:
         if ec.start_time is None:
             return True
 
-        start = ec.start_time
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=zone)
+        start = _localise(ec.start_time, zone)
+        finish = _localise(ec.end_time, zone) if ec.end_time is not None else start
 
-        finish = ec.end_time or start
-        if finish.tzinfo is None:
-            finish = finish.replace(tzinfo=zone)
-
-        return finish >= floor and start < ceiling
+        return finish >= _localise(floor, zone) and start < _localise(ceiling, zone)
 
     @staticmethod
     def _is_malformed(ec: EventCandidate) -> bool:
@@ -442,6 +445,16 @@ class IngestionService:
                     component="ingestion",
                     duration_ms=0,
                 )
+
+
+def _localise(value: datetime, zone: tzinfo) -> datetime:
+    """Read a bare time as local, leaving one that states its own zone alone.
+
+    Sources genuinely differ: Do617 and the ICS feeds carry an offset, HTML
+    listings carry a wall clock with no zone at all. Both are legitimate, so
+    every comparison has to normalise rather than assume.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=zone)
 
 
 def _zone_of(name: str) -> ZoneInfo:

@@ -933,3 +933,51 @@ def test_raw_carries_the_candidate_itself(db, seeds_yaml):
     result = _service(db, seeds_yaml, sources).run(get_now=lambda: FIXED_NOW, collect_raw=True)
 
     assert result.raw[0].candidate.id == candidate.id
+
+
+# ---------------------------------------------------------------------------
+# Aware and naive times must not meet
+# ---------------------------------------------------------------------------
+
+
+def test_an_aware_candidate_survives_a_naive_clock(db, seeds_yaml):
+    """The filters must agree about naivety, or a real fetch dies mid-run.
+
+    `_within_event_window` localises a naive time and `_passes_lookback` did
+    not, so a source stating its own offset — Do617 and every ICS feed — met a
+    naive clock and raised `can't compare offset-naive and offset-aware`.
+    """
+    aware_past = EventCandidate(
+        id="x",
+        source="do617",
+        source_type="do617",
+        title="A show that already happened",
+        start_time=datetime(2025, 6, 1, 20, 0, tzinfo=timezone(timedelta(hours=-4))),
+        raw_published_at=datetime(2025, 5, 1, tzinfo=timezone.utc),
+        discovered_at=FIXED_NOW,
+    )
+    naive_now = FIXED_NOW.replace(tzinfo=None)
+
+    result = _service(db, seeds_yaml, [_NamedSource("do617", [aware_past])]).run(
+        get_now=lambda: naive_now
+    )
+
+    assert result.accepted + result.discarded == 1
+
+
+def test_a_naive_candidate_survives_an_aware_clock(db, seeds_yaml):
+    naive_future = EventCandidate(
+        id="y",
+        source="listing",
+        source_type="listing",
+        title="A show with no stated zone",
+        start_time=(FIXED_NOW + timedelta(days=2)).replace(tzinfo=None),
+        raw_published_at=None,
+        discovered_at=FIXED_NOW,
+    )
+
+    result = _service(db, seeds_yaml, [_NamedSource("listing", [naive_future])]).run(
+        get_now=lambda: FIXED_NOW
+    )
+
+    assert result.accepted == 1

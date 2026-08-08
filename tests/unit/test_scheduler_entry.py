@@ -240,3 +240,15 @@ def test_raw_renders_times_as_text(invoke, tmp_path):
 
     record = json.loads(target.read_text().strip())
     assert record["candidate"]["discovered_at"] == NOW.isoformat()
+
+
+def test_the_default_clock_is_timezone_aware():
+    """A naive clock meets an aware start_time and the whole fetch raises.
+
+    Sources that state their own offset — Do617, every ICS feed — are compared
+    against this clock during ingestion. `datetime.now` returns a naive time,
+    which killed the first real run at the ingestion stage.
+    """
+    from src.scheduler import _default_now
+
+    assert _default_now().tzinfo is not None

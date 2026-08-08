@@ -17,7 +17,7 @@ import json
 import sys
 import zoneinfo
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
@@ -46,6 +46,17 @@ DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
 DEFAULT_LIKES_PATH = Path("data/likes.txt")
 DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
 DEFAULT_BLOCKLIST_PATH = Path("data/blocklist.json")
+
+
+def _default_now() -> datetime:
+    """The clock the batch runs on when nothing injects one.
+
+    Timezone-aware deliberately. `datetime.now` returns a naive time, and
+    sources that state their own offset — Do617, every ICS feed — are compared
+    against this during ingestion; the mismatch raised `can't compare
+    offset-naive and offset-aware datetimes` and ended the fetch.
+    """
+    return datetime.now(timezone.utc)
 
 
 @dataclass
@@ -78,7 +89,7 @@ def run_batch(
     ranking_engine: RankingEngine,
     logger: StructuredLogger,
     run_date: date,
-    get_now: Callable[[], datetime] = datetime.now,
+    get_now: Callable[[], datetime] = _default_now,
     skipped_sources: list[str] | None = None,
     skip_ingest: bool = False,
     dry_run: bool = False,
@@ -450,7 +461,7 @@ def _write_raw(records: list[Any], destination: str, stdout: TextIO) -> None:
 def run(
     argv: list[str] | None = None,
     *,
-    get_now: Callable[[], datetime] = datetime.now,
+    get_now: Callable[[], datetime] = _default_now,
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
     load_config_fn: Callable[..., AppConfig] = load_config,
