@@ -17,7 +17,7 @@ set -uo pipefail
 PROJECT_DIR="/home/ubuntu/projects/what-do"
 LOG_DIR="${PROJECT_DIR}/logs"
 LOCK_FILE="/tmp/what-do-batch.lock"
-PYTHON="${PROJECT_DIR}/.venv/bin/python"
+BATCH="${PROJECT_DIR}/.venv/bin/what-do-run-batch"
 
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/batch-$(date +%Y%m%d-%H%M%S).log"
@@ -36,8 +36,7 @@ cd "${PROJECT_DIR}" || exit 1
     echo "=== args: $* ==="
 } >>"${LOG_FILE}"
 
-"${PYTHON}" -u -c 'import sys; from src.scheduler import run; sys.exit(run())' "$@" \
-    >>"${LOG_FILE}" 2>&1
+PYTHONUNBUFFERED=1 "${BATCH}" "$@" >>"${LOG_FILE}" 2>&1
 STATUS=$?
 
 {

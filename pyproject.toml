@@ -26,6 +26,15 @@ dev = [
     "types-python-dateutil",
 ]
 
+# The importable package is `src` itself, rooted at the project directory —
+# every module here imports `from src.foo import ...`. Setuptools' src-layout
+# autodetection instead puts `src/` on the path and exposes its children as
+# top-level packages, which makes `import src.config` fail and breaks both
+# console scripts anywhere but the project root.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [project.scripts]
 what-do = "src.presentation.cli:main"
 what-do-run-batch = "src.scheduler:run"
