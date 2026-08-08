@@ -40,8 +40,12 @@ from src.storage.db import DEFAULT_DB_PATH, init_db
 from src.storage.events import delete_events, load_events, save_events
 from src.storage.recommendations import save_recommendations
 from src.storage.runs import finish_run, start_run
+from src.utils.llm_transcript import LLMTranscript
 from src.utils.logging import StructuredLogger, get_logger
 
+#: Where the batch wrapper already keeps its per-run logs, so a transcript
+#: lands beside the log it belongs to.
+DEFAULT_LOG_DIR = Path("logs")
 DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
 DEFAULT_LIKES_PATH = Path("data/likes.txt")
 DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
@@ -402,6 +406,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--run-date", help="The date to run for, as YYYY-MM-DD")
+    parser.add_argument(
+        "--llm-transcript",
+        nargs="?",
+        const="-",
+        metavar="PATH",
+        help=(
+            "Record every model call verbatim — full request and full response — "
+            "as JSON Lines. Defaults to logs/llm-<timestamp>.jsonl; give a path "
+            "to choose the file. Off unless asked for"
+        ),
+    )
     return parser
 
 
@@ -473,6 +488,7 @@ def run(
     build_dependencies_fn: Callable[..., BatchDependencies] = build_dependencies,
     run_batch_fn: Callable[..., BatchResult] = run_batch,
     init_db_fn: Callable[[Path], None] = init_db,
+    transcript_factory: Callable[..., Any] = LLMTranscript,
 ) -> int:
     """Entry point for `what-do-run-batch`.
 
@@ -485,6 +501,8 @@ def run(
         build_dependencies_fn: Injected for testing.
         run_batch_fn: Injected for testing.
         init_db_fn: Injected for testing.
+        transcript_factory: Builds the LLM transcript. Injected so a test can
+            assert the file chosen without one being opened.
 
     Returns:
         Process exit code. A `partial` run still exits zero — a stage failed but
@@ -510,6 +528,15 @@ def run(
     # recommendations, and no deletes.
     init_db_fn(db_path)
 
+    transcript = None
+    if args.llm_transcript is not None:
+        transcript_path = (
+            DEFAULT_LOG_DIR / f"llm-{get_now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+            if args.llm_transcript == "-"
+            else Path(args.llm_transcript)
+        )
+        transcript = transcript_factory(transcript_path, get_now=get_now)
+
     dependencies = build_dependencies_fn(
         config=config,
         db_path=db_path,
@@ -519,32 +546,39 @@ def run(
         blocklist_path=DEFAULT_BLOCKLIST_PATH,
         logger=logger,
         get_now=get_now,
+        llm_transcript=transcript,
     )
 
-    result = run_batch_fn(
-        config=config,
-        db_path=db_path,
-        ingestion_service=dependencies.ingestion_service,
-        normalization_service=dependencies.normalization_service,
-        enrichment_service=dependencies.enrichment_service,
-        extraction_stage=dependencies.extraction_stage,
-        embedding_stage=dependencies.embedding_stage,
-        semantic_deduplicator=dependencies.semantic_deduplicator,
-        similarity_stage=dependencies.similarity_stage,
-        ranking_engine=dependencies.ranking_engine,
-        logger=logger,
-        run_date=run_date,
-        get_now=get_now,
-        skipped_sources=dependencies.skipped_sources,
-        skip_ingest=args.skip_ingest,
-        dry_run=args.dry_run,
-        ingest_only=args.ingest_only,
-        raw_dump_fn=(
-            None
-            if args.raw is None
-            else lambda records: _write_raw(records, args.raw, stdout)
-        ),
-    )
+    try:
+        result = run_batch_fn(
+            config=config,
+            db_path=db_path,
+            ingestion_service=dependencies.ingestion_service,
+            normalization_service=dependencies.normalization_service,
+            enrichment_service=dependencies.enrichment_service,
+            extraction_stage=dependencies.extraction_stage,
+            embedding_stage=dependencies.embedding_stage,
+            semantic_deduplicator=dependencies.semantic_deduplicator,
+            similarity_stage=dependencies.similarity_stage,
+            ranking_engine=dependencies.ranking_engine,
+            logger=logger,
+            run_date=run_date,
+            get_now=get_now,
+            skipped_sources=dependencies.skipped_sources,
+            skip_ingest=args.skip_ingest,
+            dry_run=args.dry_run,
+            ingest_only=args.ingest_only,
+            raw_dump_fn=(
+                None
+                if args.raw is None
+                else lambda records: _write_raw(records, args.raw, stdout)
+            ),
+        )
+    finally:
+        # A batch that died is exactly when the transcript matters, so it is
+        # flushed and closed on the way out either way.
+        if transcript is not None:
+            transcript.close()
 
     print(_summarise(result), file=stdout)
     return 1 if result.outcome == "failed" else 0

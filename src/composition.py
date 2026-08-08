@@ -58,6 +58,7 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.entities import load_active_handles
 from src.utils.logging import StructuredLogger
+from src.utils.llm_transcript import TranscriptSink
 from src.utils.ollama_client import OllamaClient
 
 
@@ -87,6 +88,7 @@ def build_dependencies(
     logger: StructuredLogger,
     get_now: Callable[[], datetime] = datetime.now,
     env: Mapping[str, str] | None = None,
+    llm_transcript: TranscriptSink | None = None,
 ) -> BatchDependencies:
     """Construct every real provider and stage for one batch run.
 
@@ -101,6 +103,8 @@ def build_dependencies(
         get_now: Injectable clock, passed to every adapter that needs one.
         env: Environment mapping. Injected so tests never read the developer's
             real `.env` — see #6.
+        llm_transcript: Where every model call is recorded verbatim. None, the
+            default, records nothing.
 
     Returns:
         BatchDependencies, including the sources skipped for a missing key.
@@ -248,8 +252,24 @@ def build_dependencies(
             )
         )
 
-    ollama = OllamaClient(config.ollama_host, timeout=config.models.request_timeout_seconds)
-    embedding_provider = OllamaEmbeddingProvider(ollama, model=config.models.embeddings)
+    # Two clients over one host: they differ only in the name their calls carry
+    # into the transcript, which is what makes a slow extraction distinguishable
+    # from the hundreds of embedding calls around it.
+    extraction_client = OllamaClient(
+        config.ollama_host,
+        timeout=config.models.request_timeout_seconds,
+        transcript=llm_transcript,
+        component="extraction",
+    )
+    embedding_client = OllamaClient(
+        config.ollama_host,
+        timeout=config.models.request_timeout_seconds,
+        transcript=llm_transcript,
+        component="embedding",
+    )
+    embedding_provider = OllamaEmbeddingProvider(
+        embedding_client, model=config.models.embeddings
+    )
 
     tmdb_key = _credential("TMDB_API_KEY", "tmdb")
 
@@ -281,7 +301,7 @@ def build_dependencies(
         ),
         extraction_stage=ExtractionStage(
             provider=OllamaExtractionProvider(
-                ollama,
+                extraction_client,
                 model=config.models.llm_extraction,
                 min_tags=config.scoring.min_tags_per_event,
             ),

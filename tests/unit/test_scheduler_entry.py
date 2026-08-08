@@ -95,6 +95,79 @@ def invoke(tmp_path):
     return _invoke
 
 
+class _FakeTranscriptFactory:
+    """Records the path chosen without opening a file."""
+
+    def __init__(self) -> None:
+        self.paths: list = []
+        self.closed = False
+
+    def __call__(self, path, get_now=None):
+        self.paths.append(path)
+        return self
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _invoke_with_transcript(argv, tmp_path, factory):
+    """Drive run() capturing what the composition root was handed."""
+    built: dict = {}
+
+    def _build(**kwargs):
+        built.update(kwargs)
+        return _FakeDeps(**kwargs)
+
+    run(
+        [*argv, "--db", str(tmp_path / "batch.db")],
+        get_now=lambda: NOW,
+        stdout=io.StringIO(),
+        load_config_fn=lambda config_path=None, env_path=None: object(),
+        build_dependencies_fn=_build,
+        run_batch_fn=_Recorder(),
+        init_db_fn=lambda path: None,
+        transcript_factory=factory,
+    )
+    return built
+
+
+def test_no_transcript_is_created_by_default(tmp_path):
+    factory = _FakeTranscriptFactory()
+
+    built = _invoke_with_transcript([], tmp_path, factory)
+
+    assert factory.paths == []
+    assert built["llm_transcript"] is None
+
+
+def test_the_transcript_flag_names_a_file_after_the_run(tmp_path):
+    factory = _FakeTranscriptFactory()
+
+    built = _invoke_with_transcript(["--llm-transcript"], tmp_path, factory)
+
+    assert built["llm_transcript"] is factory
+    assert len(factory.paths) == 1
+    assert factory.paths[0].name == "llm-20260615-020000.jsonl"
+    assert factory.paths[0].parent.name == "logs"
+
+
+def test_the_transcript_flag_accepts_an_explicit_path(tmp_path):
+    factory = _FakeTranscriptFactory()
+    target = tmp_path / "somewhere" / "calls.jsonl"
+
+    _invoke_with_transcript(["--llm-transcript", str(target)], tmp_path, factory)
+
+    assert factory.paths == [target]
+
+
+def test_the_transcript_is_closed_when_the_run_ends(tmp_path):
+    factory = _FakeTranscriptFactory()
+
+    _invoke_with_transcript(["--llm-transcript"], tmp_path, factory)
+
+    assert factory.closed is True
+
+
 def test_the_run_date_defaults_to_today(invoke):
     _, batch, _, _ = invoke([])
 

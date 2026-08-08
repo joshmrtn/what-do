@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -110,6 +111,128 @@ def test_chat_uses_configured_host():
 
     url = mock_post.call_args[0][0]
     assert "192.168.1.50:11434" in url
+
+
+# ---------------------------------------------------------------------------
+# Transcript recording
+# ---------------------------------------------------------------------------
+
+
+class _FakeTranscript:
+    """Captures record() calls instead of writing a file."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(self, **fields) -> None:
+        self.records.append(fields)
+
+
+def test_chat_records_the_request_and_response_to_the_transcript():
+
+    transcript = _FakeTranscript()
+    client = OllamaClient(
+        host="http://localhost:11434", timeout=30, transcript=transcript, component="extraction"
+    )
+    body = {"message": {"content": "{}", "thinking": "reasoning"}, "done": True}
+
+    with patch("requests.post", return_value=_make_response(200, body)):
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert len(transcript.records) == 1
+    entry = transcript.records[0]
+    assert entry["component"] == "extraction"
+    assert entry["model"] == "gemma4:e4b"
+    assert entry["status"] == 200
+    assert entry["request"]["messages"] == [{"role": "user", "content": "hi"}]
+    assert entry["response"] == body
+
+
+def test_chat_records_thinking_even_when_content_is_empty():
+    """The case we are actually hunting: the answer went to the wrong channel."""
+    transcript = _FakeTranscript()
+    client = OllamaClient(host="http://localhost:11434", timeout=30, transcript=transcript)
+    body = {"message": {"content": "", "thinking": "I should reply with JSON..."}}
+
+    with patch("requests.post", return_value=_make_response(200, body)):
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert transcript.records[0]["response"]["message"]["thinking"]
+
+
+def test_chat_numbers_successive_calls():
+
+    transcript = _FakeTranscript()
+    client = OllamaClient(host="http://localhost:11434", timeout=30, transcript=transcript)
+    mock_resp = _make_response(200, {"message": {"content": "ok"}})
+
+    with patch("requests.post", return_value=mock_resp):
+        for _ in range(3):
+            client.chat(model="gemma4:e2b", messages=[{"role": "user", "content": "hi"}])
+
+    assert [r["sequence"] for r in transcript.records] == [1, 2, 3]
+
+
+def test_chat_records_before_raising_on_http_error():
+
+    transcript = _FakeTranscript()
+    client = OllamaClient(host="http://localhost:11434", timeout=30, transcript=transcript)
+
+    with patch("requests.post", return_value=_make_response(500, text="boom")):
+        with pytest.raises(OllamaError):
+            client.chat(model="gemma4:e2b", messages=[{"role": "user", "content": "hi"}])
+
+    assert transcript.records[0]["status"] == 500
+    assert "500" in transcript.records[0]["error"]
+
+
+def test_chat_records_before_raising_on_timeout():
+
+    transcript = _FakeTranscript()
+    client = OllamaClient(host="http://localhost:11434", timeout=30, transcript=transcript)
+
+    with patch("requests.post", side_effect=req.Timeout("too slow")):
+        with pytest.raises(OllamaError):
+            client.chat(model="gemma4:e2b", messages=[{"role": "user", "content": "hi"}])
+
+    assert transcript.records[0]["status"] is None
+    assert "timed out" in transcript.records[0]["error"]
+
+
+def test_chat_records_before_raising_on_connection_error():
+
+    transcript = _FakeTranscript()
+    client = OllamaClient(host="http://localhost:11434", timeout=30, transcript=transcript)
+
+    with patch("requests.post", side_effect=req.ConnectionError("nope")):
+        with pytest.raises(OllamaError):
+            client.chat(model="gemma4:e2b", messages=[{"role": "user", "content": "hi"}])
+
+    assert transcript.records[0]["status"] is None
+    assert "refused" in transcript.records[0]["error"]
+
+
+def test_chat_without_a_transcript_behaves_exactly_as_before():
+
+    client = OllamaClient(host="http://localhost:11434", timeout=30)
+    mock_resp = _make_response(200, {"message": {"content": "hello"}})
+
+    with patch("requests.post", return_value=mock_resp):
+        assert client.chat(model="gemma4:e2b", messages=[{"role": "user", "content": "hi"}]) == "hello"
+
+
+def test_embed_records_input_length_not_the_vector():
+    """A 768-float vector per event would drown the transcript."""
+    transcript = _FakeTranscript()
+    client = OllamaClient(host="http://localhost:11434", timeout=30, transcript=transcript)
+    mock_resp = _make_response(200, {"embeddings": [[0.1] * 768]})
+
+    with patch("requests.post", return_value=mock_resp):
+        client.embed(model="nomic-embed-text", text="live jazz")
+
+    entry = transcript.records[0]
+    assert entry["request"]["input_length"] == len("live jazz")
+    assert "0.1" not in json.dumps(entry, default=str)
 
 
 # ---------------------------------------------------------------------------
