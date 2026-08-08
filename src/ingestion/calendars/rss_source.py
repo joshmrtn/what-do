@@ -82,6 +82,11 @@ class RssFeedSource(IngestionSource):
         """The zone a subclass should place its wall-clock times in."""
         return self._zone
 
+    @property
+    def day_starts_at(self) -> time:
+        """Where a subclass should place an event whose hour was never published."""
+        return self._day_starts_at
+
     @abstractmethod
     def interpret(self, item: RssItem) -> RssEvent | None:
         """Read one feed item as an event.

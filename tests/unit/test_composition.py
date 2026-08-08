@@ -20,6 +20,7 @@ from src.config import (
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.ingestion.calendars.moon_source import MoonRssSource
 from src.storage.db import init_db
 from src.utils.logging import get_logger
 
@@ -146,6 +147,18 @@ def test_do617_venue_sources_are_built_from_config(paths):
     sources = _build(paths, config=config).ingestion_service._independent_sources
 
     assert any(isinstance(s, Do617VenueSource) for s in sources)
+
+
+def test_moon_feed_sources_are_built_from_config(paths):
+    config = _config(
+        sources=SourcesConfig(
+            moon_feeds=[FeedConfig("moon", "https://www.moon-ns.org/shows?format=rss", "moon")]
+        )
+    )
+
+    sources = _build(paths, config=config).ingestion_service._independent_sources
+
+    assert any(isinstance(s, MoonRssSource) for s in sources)
 
 
 def test_calendar_sources_need_no_credential(paths):

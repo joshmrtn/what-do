@@ -122,6 +122,8 @@ class SourcesConfig:
     #: Do617 venue pages, whose schema.org microdata states each event's own
     #: UTC offset. One entry per venue worth watching.
     do617_venues: list[FeedConfig] = field(default_factory=list)
+    #: MOON's Squarespace show feed, whose event dates live in item titles.
+    moon_feeds: list[FeedConfig] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -467,6 +469,7 @@ def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
         cabot_listings=_load_feeds(raw.get("cabot_listings"), "Cabot listing"),
         tribe_calendars=_load_feeds(raw.get("tribe_calendars"), "Tribe calendar"),
         do617_venues=_load_feeds(raw.get("do617_venues"), "Do617 venue"),
+        moon_feeds=_load_feeds(raw.get("moon_feeds"), "MOON feed"),
     )
 
 

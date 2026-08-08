@@ -147,6 +147,17 @@ sources:
     #   source_type: do617
     #   min_fetch_interval_hours: 6
 
+  # MOON's Squarespace show feed. RSS carries no event date, so this adapter
+  # knows one site's convention: the date is in the item title, and pubDate is
+  # only when the show was announced. A different RSS venue needs its own
+  # RssFeedSource subclass rather than an entry here.
+  moon_feeds: []
+    # - name: moon
+    #   url: "https://www.moon-ns.org/shows?format=rss"
+    #   source_type: moon
+    #   city: "Salem"
+    #   min_fetch_interval_hours: 6
+
 models:
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"

@@ -34,6 +34,7 @@ from src.enrichment.weather import OpenMeteoProvider
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.ingestion.calendars.moon_source import MoonRssSource
 from src.ingestion.calendars.tribe_source import TribeCalendarSource
 from src.ingestion.cinemas.cabot_source import CabotListingSource
 from src.ingestion.cinemas.veezi_source import VeeziSessionsSource
@@ -189,6 +190,18 @@ def build_dependencies(
     for feed in config.sources.do617_venues:
         independent_sources.append(
             Do617VenueSource(
+                feed,
+                db_path,
+                get_now=get_now,
+                logger=logger,
+                timezone_name=config.location.timezone,
+                horizon_days=config.scraping.horizon_days,
+                day_starts_at=config.day_starts_at,
+            )
+        )
+    for feed in config.sources.moon_feeds:
+        independent_sources.append(
+            MoonRssSource(
                 feed,
                 db_path,
                 get_now=get_now,
