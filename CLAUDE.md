@@ -220,6 +220,11 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Blocklist `@handle` entries at ranking time | An `Event` carries no handle — normalization drops it. Handles are enforced at ingestion; ranking matches venue names only. See #15 |
 | Checking a database exists with `Path.exists()` | `sqlite3.connect` creates a zero-byte file for any path, so a stray read leaves one that then fails with `no such table`. Use `has_schema()` |
 | Hiding the bottom tier in the CLI instead of folding it | The count must stay on screen (`+ N more (--all)`). Thresholds are uncalibrated; a folded event is recoverable, a hidden one is invisible |
+| A default argument that no test ever uses | `get_now=datetime.now` was naive while every test injected an aware clock, so production was the only naive path and the suite stayed green. It killed the first live fetch. Defaults that only production reaches are untested by construction |
+| Comparing a datetime without localising it | Sources genuinely differ — Do617 and JSON-LD state an offset, HTML listings do not. Two filters over the same field must read naivety the same way, or one raises on input the other accepted |
+| Keying a candidate id on an event URL alone | A recurring programme keeps one page across every date it runs — PEM's 97 listings are 61 URLs — so the id must carry the start too, or a whole season collapses into one candidate |
+| Concluding a site has no events because it has no feed | Autodiscovery cannot see `application/ld+json`. PEM publishes 97 events that way and was written off twice. Grep for it before writing any bespoke parser |
+| Matching the word `cancelled` anywhere in a title | Throws away `Cancelled Culture: A Comedy Show` and a `Never Cancelled Tour`. A cancellation is the feed's *marker* — asterisk-delimited, or leading with a separator |
 
 ---
 
@@ -286,3 +291,17 @@ The batch orchestrator is not one of the numbered phases — it is the sequencer
 root that makes phases 3–10 actually run. `src/scheduler.py` holds `run_batch` and the
 `what-do-run-batch` entry point; `src/composition.py` is the only place real providers are built.
 Note that issue **#12** is the orchestrator, unrelated to **phase 12** above.
+
+## Proving the sources without paying for a full run
+
+`what-do-run-batch --ingest-only` fetches, filters and stops — seconds, against the hours a full
+run costs at ~3 min/event of local LLM time. `--dry-run` is *not* a cheap alternative: it persists
+nothing but still runs every stage.
+
+Read the per-source table it prints rather than the total, and note that it counts fetched *and*
+kept. `0 kept of 0 fetched` means broken or empty; `0 kept of 213 fetched` means the source works
+and its dates are landing outside the window. Add `--raw [PATH]` to dump every candidate **as
+fetched, before filtering**, as JSON Lines with the discard reason.
+
+Baseline as of 2026-08-08: **991 candidates from 18 sources.** Expected zeroes are `do617_koto`,
+`do617_bit_bar` and `moon`; anything else at zero is a regression.
