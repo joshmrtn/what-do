@@ -31,6 +31,13 @@ fi
 
 cd "${PROJECT_DIR}" || exit 1
 
+# Point at this run before it starts, not after it ends. A batch here runs for
+# hours, and pointing the link only on the way out meant that for the whole time
+# anyone actually wanted to watch a run, the link named the *previous* one --
+# which reads as a finished batch, complete with its summary and exit 0. Past
+# the flock, so a skipped start still leaves the link on the live run.
+ln -sfn "${LOG_FILE}" "${LOG_DIR}/batch-latest.log"
+
 {
     echo "=== batch started $(date -Is) ==="
     echo "=== args: $* ==="
@@ -42,8 +49,5 @@ STATUS=$?
 {
     echo "=== batch finished $(date -Is), exit ${STATUS} ==="
 } >>"${LOG_FILE}"
-
-# Leave the newest run easy to find without knowing today's date.
-ln -sfn "${LOG_FILE}" "${LOG_DIR}/batch-latest.log"
 
 exit "${STATUS}"
