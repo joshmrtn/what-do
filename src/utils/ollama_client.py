@@ -27,6 +27,17 @@ class OllamaClient:
             a debugging aid, not part of the batch's output.
         component: Name recorded against this client's calls, so extraction and
             disambiguation stay distinguishable in one transcript.
+        options: Sampling and runtime options (temperature, top_p, num_ctx, ...)
+            sent with every chat request. None sends none, leaving the model's
+            own defaults in force.
+        think: Whether a thinking-capable model should reason before answering.
+            None omits the field; False is a real instruction and is sent.
+        response_format: Ollama's `format` — "json" constrains decoding to valid
+            JSON. None omits it.
+        keep_alive: How long the server keeps this model resident after a call
+            ("30m", "0" to unload immediately). None omits it and leaves the
+            server default in force — which on this host never expires, so a
+            model loaded once squats its whole footprint forever.
     """
 
     def __init__(
@@ -35,11 +46,19 @@ class OllamaClient:
         timeout: int = 60,
         transcript: TranscriptSink | None = None,
         component: str = "ollama",
+        options: dict[str, Any] | None = None,
+        think: bool | None = None,
+        response_format: str | dict[str, Any] | None = None,
+        keep_alive: str | None = None,
     ) -> None:
         self._host = host.rstrip("/")
         self._timeout = timeout
         self._transcript = transcript
         self._component = component
+        self._options = options
+        self._think = think
+        self._response_format = response_format
+        self._keep_alive = keep_alive
         self._sequence = 0
 
     def chat(
@@ -72,6 +91,17 @@ class OllamaClient:
             "messages": payload_messages,
             "stream": False,
         }
+        # Each is omitted unless configured, so an unconfigured client posts
+        # exactly what it always did. `think` is tested against None rather
+        # than falsiness: False is the value we most want to send.
+        if self._response_format is not None:
+            payload["format"] = self._response_format
+        if self._think is not None:
+            payload["think"] = self._think
+        if self._options:
+            payload["options"] = self._options
+        if self._keep_alive is not None:
+            payload["keep_alive"] = self._keep_alive
 
         body = self._post("/api/chat", payload, model)
         return str(body["message"]["content"])
@@ -90,9 +120,13 @@ class OllamaClient:
             OllamaError: On HTTP error, timeout, connection failure, or a
                 response body that does not carry an embedding.
         """
+        embed_payload: dict[str, Any] = {"model": model, "input": text}
+        if self._keep_alive is not None:
+            embed_payload["keep_alive"] = self._keep_alive
+
         body = self._post(
             "/api/embed",
-            {"model": model, "input": text},
+            embed_payload,
             model,
             # A 768-float vector per event would bury the transcript, and the
             # thing worth knowing about an embedding call is what went in.

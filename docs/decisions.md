@@ -1586,3 +1586,57 @@ events, recommendations or run history.
 takes a `flock`, so a batch still running is never joined by another — on this hardware a run lasts
 longer than the gap between some scheduling mistakes — and it writes a dated log with
 `batch-latest.log` symlinked to the newest.
+
+## Extraction asks Ollama for constrained JSON, and tolerates a fence anyway
+
+The first live batch lost 68 of 164 events — 41.5% — every one to the same error, `JSON parse
+error — response was not valid JSON`. Both the first attempt and its retry failed, so each loss
+cost roughly ten minutes of CPU inference and produced nothing.
+
+**The cause was markdown code fences.** `gemma4:e4b` wrapped its reply in ```` ```json ```` about
+40% of the time, however firmly the prompt said not to. The JSON inside was complete and correct;
+`json.loads` died on the first backtick. Measured against the same twelve events the batch had
+failed on:
+
+| condition | parsed | failed | fenced |
+|---|---|---|---|
+| as shipped (no request parameters) | 7 | 5 | 5 |
+| `format: "json"` only | 6 | 0 | 0 |
+| all parameters | 12 | 0 | 0 |
+| gemini-flash, same prompt | 12 | 0 | 0 |
+
+42% reproduced against the batch's 41.5%, and every failure was a fence.
+
+**`format: "json"` is the fix and the rest is not.** Constrained decoding makes an unparseable
+reply structurally impossible. Isolated, with thinking left on and temperature left at the model's
+default of 1, it produced six clean parses from six calls — so neither sampling nor reasoning had
+anything to do with the failure.
+
+**Two hypotheses were wrong, and both were plausible.** The first was that thinking exhausted the
+context: `gemma4:e4b` advertises a `thinking` capability, Ollama defaults `num_ctx` to 4096, and
+the model does spend the majority of its output budget reasoning. It never ran out — peak usage
+was 1890 tokens of 4096, and every failing response carried `done_reason: "stop"` with 600–730
+characters of content. A response that is present, complete and unparseable looks nothing like a
+truncated one, and `done_reason` says which it is. Read it before theorising.
+
+**The parser strips a fence regardless.** `format` protects the Ollama path only; a fence is
+unambiguous and recovering one costs a `find`/`rfind` pair. This alone would have saved all 68
+events.
+
+**`think: false` is a speed decision, not a correctness one.** It is honoured by this model and
+removes ~82% of generated tokens, taking an extraction from ~260s to ~82s and a full batch from
+roughly twelve hours to three and a half. It fixes nothing, and is worth having anyway.
+
+**`num_ctx` is insurance against a failure we did not have.** 32768 costs 0.5 GB of KV cache —
+gemma4's sliding-window attention means only the full-attention layers scale — and does not slow
+per-token generation (0.56 s/token against 0.59 at 4096). Sized to survive a model that ignores
+`think`, which this one does not, but the next one might.
+
+**`keep_alive` is sent explicitly because this host never expires a model.** The server default
+left every model resident indefinitely: one stray test pinned 7.7 GB until Ollama restarted, and
+two large models resident at once is how the box starts thrashing.
+
+**Thin descriptions are an ingestion problem wearing an extraction costume.** Sources that publish
+`Category: Music` and nothing else lead every model tested to invent specifics — "Ryan O'Connell"
+became *irish music*, "Tyler Bard" became *indie* and *acoustic*. Gemini confabulates too, more
+plausibly. This predates the request parameters and is not fixed by them.

@@ -249,10 +249,29 @@ DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 #: runs these on four CPU cores with no GPU.
 DEFAULT_LLM_TIMEOUT_SECONDS = 1200
 
+#: Ollama's own default is 4096, and a model that reasons fills that with
+#: thinking before a single character of the answer is emitted — which is how
+#: 44% of one night's extractions came back with empty content. 32768 leaves
+#: room to reason and still answer. Past ~64k the model is not thinking, it is
+#: looping, and a bigger window buys nothing.
+DEFAULT_LLM_NUM_CTX = 32768
+
+#: gemma4:e4b ships temperature 1 / top_p 0.95, which is sampling tuned for
+#: variety. Extraction wants the opposite: the same JSON shape every time.
+DEFAULT_LLM_TEMPERATURE = 0.2
+DEFAULT_LLM_TOP_P = 0.9
+
+#: How long a model stays resident after a call. Long enough that the model
+#: stays hot across a stage whose calls are minutes apart, short enough that it
+#: releases its footprint once the batch is done. Explicit because this host's
+#: server default never expires: a model loaded once by a stray test pins its
+#: whole footprint until Ollama restarts.
+DEFAULT_LLM_KEEP_ALIVE = "30m"
+
 
 @dataclass
 class ModelsConfig:
-    """Model names for the three model-backed stages."""
+    """Model names and request parameters for the model-backed stages."""
 
     llm_extraction: str = DEFAULT_EXTRACTION_MODEL
     llm_disambiguation: str = DEFAULT_DISAMBIGUATION_MODEL
@@ -262,6 +281,18 @@ class ModelsConfig:
     #: minutes, so the old 60-second default failed *every* call and left the
     #: whole batch with no tags at all.
     request_timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS
+    temperature: float = DEFAULT_LLM_TEMPERATURE
+    top_p: float = DEFAULT_LLM_TOP_P
+    num_ctx: int = DEFAULT_LLM_NUM_CTX
+    #: Asks a thinking-capable model to answer directly. Advisory: some models
+    #: reason anyway, which is why `num_ctx` is sized to survive being ignored.
+    think: bool = False
+    #: Ollama's constrained decoding. "json" makes unparseable output
+    #: structurally impossible rather than merely discouraged by the prompt.
+    #: None sends nothing and lets the model emit whatever it likes.
+    response_format: str | None = "json"
+    #: None defers to the server's own default.
+    keep_alive: str | None = DEFAULT_LLM_KEEP_ALIVE
 
 
 #: When one night's listing gives way to the next. Not midnight: a calendar
@@ -515,11 +546,47 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
                 f"models.request_timeout_seconds must be positive, got {timeout}"
             )
 
+    def _number(key: str, default: float, low: float, high: float | None) -> float:
+        """Read a numeric parameter, rejecting anything outside its range."""
+        if key not in raw:
+            return default
+        try:
+            value = float(raw[key])
+        except (TypeError, ValueError) as error:
+            raise ConfigError(f"models.{key} is not a number: {raw[key]!r}") from error
+        if value < low or (high is not None and value > high):
+            bound = f"{low}..{high}" if high is not None else f"at least {low}"
+            raise ConfigError(f"models.{key} must be {bound}, got {value}")
+        return value
+
+    num_ctx = int(_number("num_ctx", float(defaults.num_ctx), 1, None))
+    temperature = _number("temperature", defaults.temperature, 0.0, None)
+    # Excludes zero: top_p 0 admits no tokens at all.
+    top_p = _number("top_p", defaults.top_p, 0.0, 1.0)
+    if "top_p" in raw and top_p == 0:
+        raise ConfigError("models.top_p must be greater than 0")
+
+    # A blank format is how config turns constrained decoding off, distinct
+    # from omitting the key, which keeps the default on.
+    response_format = defaults.response_format
+    if "format" in raw:
+        response_format = str(raw["format"]).strip() or None
+
+    keep_alive = defaults.keep_alive
+    if "keep_alive" in raw:
+        keep_alive = str(raw["keep_alive"]).strip() or None
+
     return ModelsConfig(
         llm_extraction=_name("llm_extraction", defaults.llm_extraction),
         llm_disambiguation=_name("llm_disambiguation", defaults.llm_disambiguation),
         embeddings=_name("embeddings", defaults.embeddings),
         request_timeout_seconds=timeout,
+        temperature=temperature,
+        top_p=top_p,
+        num_ctx=num_ctx,
+        think=bool(raw.get("think", defaults.think)),
+        response_format=response_format,
+        keep_alive=keep_alive,
     )
 
 

@@ -189,6 +189,32 @@ models:
   llm_disambiguation: "gemma4:e2b"
   embeddings: "nomic-embed-text"
 
+  # Chat request parameters. Every one of these has a default in code, so the
+  # whole block can be omitted; it is spelled out because the defaults are not
+  # the model's own and the difference is what makes extraction reliable.
+  #
+  # num_ctx is the important one. Ollama defaults to 4096, and a model that
+  # reasons before answering spends that budget thinking, leaving `content`
+  # empty and the JSON parse to fail. Sized to survive a model that ignores
+  # `think`. Above ~64k a model is looping rather than reasoning.
+  num_ctx: 32768
+  # gemma4:e4b ships temperature 1 / top_p 0.95 — variety, which is the
+  # opposite of what structured extraction wants.
+  temperature: 0.2
+  top_p: 0.9
+  # Advisory. Some models reason regardless, hence the context sizing above.
+  think: false
+  # Ollama's constrained decoding: makes unparseable output impossible rather
+  # than merely discouraged by the prompt. Blank turns it off.
+  format: "json"
+  # How long a model stays resident after a call. Long enough to stay hot
+  # across a stage whose calls are minutes apart, short enough to give the
+  # memory back afterwards. Set explicitly because a server configured to keep
+  # models alive indefinitely lets one stray call pin gigabytes until restart,
+  # and two large models resident at once is how this box starts thrashing.
+  # Blank defers to the server default.
+  keep_alive: "30m"
+
 weather:
   provider: "open-meteo"
 

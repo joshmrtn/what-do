@@ -171,6 +171,45 @@ def test_invalid_json_raises_after_retry():
     assert client.chat.call_count == 2
 
 
+def test_json_wrapped_in_a_markdown_fence_is_accepted():
+    """Measured: gemma4:e4b fenced ~40% of its replies, and every fence was a
+    lost event. Constrained decoding prevents it upstream; this is the belt to
+    that pair of braces, and costs one strip() to have."""
+    client = _make_client(f"```json\n{_valid_response()}\n```")
+    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+
+    result = provider.extract("some event text")
+
+    assert result.summary
+    assert len(result.tags) == 5
+    assert client.chat.call_count == 1
+
+
+def test_a_bare_fence_without_a_language_tag_is_accepted():
+    client = _make_client(f"```\n{_valid_response()}\n```")
+    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+
+    assert provider.extract("some event text").summary
+    assert client.chat.call_count == 1
+
+
+def test_a_fence_with_surrounding_chatter_is_accepted():
+    client = _make_client(f"Here you go:\n\n```json\n{_valid_response()}\n```\n\nHope that helps!")
+    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+
+    assert provider.extract("some event text").summary
+    assert client.chat.call_count == 1
+
+
+def test_prose_with_no_json_at_all_still_fails():
+    """Stripping a fence must not become 'find something vaguely brace-shaped'."""
+    client = _make_client("Jazz night tonight, it should be fun!")
+    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+
+    with pytest.raises(ExtractionError, match="JSON"):
+        provider.extract("some event text")
+
+
 def test_retry_succeeds_on_second_attempt():
 
     client = MagicMock()

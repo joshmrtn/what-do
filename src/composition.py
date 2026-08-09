@@ -260,12 +260,23 @@ def build_dependencies(
         timeout=config.models.request_timeout_seconds,
         transcript=llm_transcript,
         component="extraction",
+        options={
+            "temperature": config.models.temperature,
+            "top_p": config.models.top_p,
+            "num_ctx": config.models.num_ctx,
+        },
+        think=config.models.think,
+        response_format=config.models.response_format,
+        keep_alive=config.models.keep_alive,
     )
+    # No chat parameters: /api/embed takes none of them, and the embedding
+    # model neither samples nor reasons.
     embedding_client = OllamaClient(
         config.ollama_host,
         timeout=config.models.request_timeout_seconds,
         transcript=llm_transcript,
         component="embedding",
+        keep_alive=config.models.keep_alive,
     )
     embedding_provider = OllamaEmbeddingProvider(
         embedding_client, model=config.models.embeddings

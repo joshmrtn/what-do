@@ -114,6 +114,141 @@ def test_chat_uses_configured_host():
 
 
 # ---------------------------------------------------------------------------
+# Request parameters
+# ---------------------------------------------------------------------------
+
+
+def test_chat_sends_no_parameters_when_none_are_configured():
+    """The bare payload stays the default, so no caller is changed by accident."""
+    client = OllamaClient(host="http://localhost:11434", timeout=30)
+    mock_resp = _make_response(200, {"message": {"content": "ok"}})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.chat(model="gemma4:e2b", messages=[{"role": "user", "content": "hi"}])
+
+    payload = mock_post.call_args[1]["json"]
+    assert "format" not in payload
+    assert "think" not in payload
+    assert "options" not in payload
+
+
+def test_chat_sends_the_response_format_when_configured():
+
+    client = OllamaClient(host="http://localhost:11434", timeout=30, response_format="json")
+    mock_resp = _make_response(200, {"message": {"content": "{}"}})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert mock_post.call_args[1]["json"]["format"] == "json"
+
+
+def test_chat_sends_think_false_when_configured():
+    """False is a real instruction here, not an absent value."""
+    client = OllamaClient(host="http://localhost:11434", timeout=30, think=False)
+    mock_resp = _make_response(200, {"message": {"content": "{}"}})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert mock_post.call_args[1]["json"]["think"] is False
+
+
+def test_chat_sends_sampling_options_together():
+
+    client = OllamaClient(
+        host="http://localhost:11434",
+        timeout=30,
+        options={"temperature": 0.2, "top_p": 0.9, "num_ctx": 32768},
+    )
+    mock_resp = _make_response(200, {"message": {"content": "{}"}})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert mock_post.call_args[1]["json"]["options"] == {
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "num_ctx": 32768,
+    }
+
+
+def test_chat_sends_keep_alive_when_configured():
+    """Residency is the caller's to decide; the server default pins forever."""
+    client = OllamaClient(host="http://localhost:11434", timeout=30, keep_alive="30m")
+    mock_resp = _make_response(200, {"message": {"content": "{}"}})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert mock_post.call_args[1]["json"]["keep_alive"] == "30m"
+
+
+def test_embed_sends_keep_alive_when_configured():
+    """An embedding model left resident squats memory the extraction model wants."""
+    client = OllamaClient(host="http://localhost:11434", timeout=30, keep_alive="30m")
+    mock_resp = _make_response(200, {"embeddings": [[0.1, 0.2]]})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.embed(model="nomic-embed-text", text="live jazz")
+
+    assert mock_post.call_args[1]["json"]["keep_alive"] == "30m"
+
+
+def test_keep_alive_is_omitted_when_not_configured():
+
+    client = OllamaClient(host="http://localhost:11434", timeout=30)
+    mock_resp = _make_response(200, {"message": {"content": "{}"}})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    assert "keep_alive" not in mock_post.call_args[1]["json"]
+
+
+def test_embed_does_not_send_chat_parameters():
+    """format and think are chat concerns; an embedding endpoint rejects them."""
+    client = OllamaClient(
+        host="http://localhost:11434",
+        timeout=30,
+        response_format="json",
+        think=False,
+        options={"temperature": 0.2},
+    )
+    mock_resp = _make_response(200, {"embeddings": [[0.1, 0.2]]})
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        client.embed(model="nomic-embed-text", text="live jazz")
+
+    payload = mock_post.call_args[1]["json"]
+    assert "format" not in payload
+    assert "think" not in payload
+    assert "options" not in payload
+
+
+def test_the_configured_parameters_reach_the_transcript():
+    """What we actually sent is the first thing to check when output is wrong."""
+    transcript = _FakeTranscript()
+    client = OllamaClient(
+        host="http://localhost:11434",
+        timeout=30,
+        transcript=transcript,
+        response_format="json",
+        think=False,
+        options={"num_ctx": 32768},
+    )
+    mock_resp = _make_response(200, {"message": {"content": "{}"}})
+
+    with patch("requests.post", return_value=mock_resp):
+        client.chat(model="gemma4:e4b", messages=[{"role": "user", "content": "hi"}])
+
+    request = transcript.records[0]["request"]
+    assert request["format"] == "json"
+    assert request["think"] is False
+    assert request["options"] == {"num_ctx": 32768}
+
+
+# ---------------------------------------------------------------------------
 # Transcript recording
 # ---------------------------------------------------------------------------
 

@@ -960,3 +960,83 @@ def test_a_non_positive_llm_timeout_is_rejected(tmp_path):
 def test_an_unreadable_llm_timeout_is_rejected(tmp_path):
     with pytest.raises(ConfigError):
         _load(tmp_path, {"models": {"request_timeout_seconds": "soon"}})
+
+
+def test_the_context_window_default_leaves_room_for_a_model_that_reasons(tmp_path):
+    """4096, ollama's default, is filled by reasoning before any content lands."""
+    cfg = _load(tmp_path, {})
+
+    assert cfg.models.num_ctx >= 32768
+
+
+def test_the_sampling_default_is_tight_enough_for_structured_output(tmp_path):
+    """gemma4:e4b ships temperature 1, which is indefensible for JSON."""
+    cfg = _load(tmp_path, {})
+
+    assert cfg.models.temperature <= 0.3
+    assert 0 < cfg.models.top_p <= 1.0
+
+
+def test_thinking_is_off_and_json_is_demanded_by_default(tmp_path):
+    cfg = _load(tmp_path, {})
+
+    assert cfg.models.think is False
+    assert cfg.models.response_format == "json"
+
+
+def test_models_are_released_rather_than_pinned_forever(tmp_path):
+    """This host's server default never expires, so a model loaded once squats."""
+    cfg = _load(tmp_path, {})
+
+    assert cfg.models.keep_alive == "30m"
+
+
+def test_keep_alive_can_be_configured(tmp_path):
+    cfg = _load(tmp_path, {"models": {"keep_alive": "5m"}})
+
+    assert cfg.models.keep_alive == "5m"
+
+
+def test_a_blank_keep_alive_defers_to_the_server(tmp_path):
+    cfg = _load(tmp_path, {"models": {"keep_alive": ""}})
+
+    assert cfg.models.keep_alive is None
+
+
+def test_the_request_parameters_can_be_configured(tmp_path):
+    cfg = _load(
+        tmp_path,
+        {
+            "models": {
+                "temperature": 0.7,
+                "top_p": 0.5,
+                "num_ctx": 65536,
+                "think": True,
+                "format": "",
+            }
+        },
+    )
+
+    assert cfg.models.temperature == 0.7
+    assert cfg.models.top_p == 0.5
+    assert cfg.models.num_ctx == 65536
+    assert cfg.models.think is True
+    assert cfg.models.response_format is None
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("num_ctx", 0),
+        ("num_ctx", -1),
+        ("num_ctx", "big"),
+        ("temperature", -0.5),
+        ("temperature", "hot"),
+        ("top_p", 0),
+        ("top_p", 1.5),
+        ("top_p", "wide"),
+    ],
+)
+def test_an_out_of_range_request_parameter_is_rejected(tmp_path, key, value):
+    with pytest.raises(ConfigError):
+        _load(tmp_path, {"models": {key: value}})

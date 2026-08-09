@@ -45,6 +45,34 @@ class ExtractionResult:
     setting: str = "unknown"
 
 
+def _decode_json_object(text: str) -> dict[str, Any] | None:
+    """Decode the JSON object in a model reply, tolerating a markdown fence.
+
+    Models wrap JSON in ```json fences however firmly the prompt says not to —
+    measured, gemma4:e4b did it to roughly 40% of replies, and each one cost a
+    whole event despite the JSON inside being complete and correct. Constrained
+    decoding stops it at the source; this stops it for any model that slips
+    through, including one reached through a different provider.
+
+    Falls back to the span between the first `{` and last `}` rather than
+    matching fences specifically, which also absorbs a stray "Here you go:".
+    Returns None when nothing object-shaped is present — prose stays a failure.
+    """
+    candidates = [text.strip()]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            return decoded
+    return None
+
+
 def _parse_setting(raw: Any) -> str:
     """Coerce the model's `setting` to the allowed enum.
 
@@ -210,9 +238,8 @@ class OllamaExtractionProvider(ExtractionProvider):
 
     def _parse_and_validate(self, text: str) -> tuple[ExtractionResult | None, str]:
         """Parse raw LLM output into ExtractionResult, returning (result, error_reason)."""
-        try:
-            data = json.loads(text.strip())
-        except json.JSONDecodeError:
+        data = _decode_json_object(text)
+        if data is None:
             return None, "JSON parse error — response was not valid JSON"
 
         raw_tags = data.get("tags")
