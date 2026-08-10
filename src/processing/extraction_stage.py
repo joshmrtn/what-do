@@ -15,12 +15,6 @@ from src.processing.extraction import ExtractionError, ExtractionProvider
 from src.processing.image_fetcher import ImageFetchError, ImageFetcher
 
 
-#: Extractions between checkpoints. Small enough that a crash costs minutes
-#: rather than hours, large enough that saving stays a rounding error against a
-#: model call measured in minutes.
-DEFAULT_SAVE_EVERY = 20
-
-
 def extraction_input(event: Event) -> str:
     """The text LLM Pass 1 runs over, and the thing whose hash gates a re-run."""
     return "\n".join(filter(None, [event.title, event.description]))
@@ -56,12 +50,12 @@ class ExtractionStage:
         logger: Structured logger instance.
         get_now: Injectable clock; supplies the reference date the model uses to
             resolve relative dates in event text.
-        save_fn: Called with every event periodically as extraction proceeds, so
-            model time already spent survives a run that does not finish. On the
-            batch VM one extraction takes minutes, which makes a full pass long
-            enough that saving only at the end risks losing all of it.
-        save_every: How many extractions between saves. Counts real model calls,
-            not events — a pass that skips everything on its hash writes nothing.
+        save_fn: Called with each event as soon as it is extracted, so model
+            time already spent survives a run that does not finish. On the batch
+            VM one extraction takes minutes, which makes a full pass long enough
+            that saving only at the end risks losing all of it. Called only for
+            real model calls — a pass that skips everything on its hash writes
+            nothing.
     """
 
     def __init__(
@@ -70,17 +64,15 @@ class ExtractionStage:
         image_fetcher: ImageFetcher | None,
         logger: Any,
         get_now: Callable[[], datetime] = datetime.now,
-        save_fn: Callable[[list[Event]], None] | None = None,
-        save_every: int = DEFAULT_SAVE_EVERY,
+        save_fn: Callable[[Event], None] | None = None,
     ) -> None:
         self._provider = provider
         self._image_fetcher = image_fetcher
         self._logger = logger
         self._get_now = get_now
         self._save_fn = save_fn
-        self._save_every = max(1, save_every)
 
-    def set_save_fn(self, save_fn: Callable[[list[Event]], None] | None) -> None:
+    def set_save_fn(self, save_fn: Callable[[Event], None] | None) -> None:
         """Set where checkpoints go, or None to disable them.
 
         The orchestrator owns every save point, so it decides this rather than
@@ -106,16 +98,12 @@ class ExtractionStage:
                 continue
             self._extract(event, text)
             extracted += 1
-            if extracted % self._save_every == 0:
-                self._checkpoint(events, extracted)
-
-        if self._save_fn is not None and extracted % self._save_every:
-            self._checkpoint(events, extracted)
+            self._checkpoint(event, extracted)
 
         return events
 
-    def _checkpoint(self, events: list[Event], extracted: int) -> None:
-        """Persist what has been extracted so far, never ending the stage.
+    def _checkpoint(self, event: Event, extracted: int) -> None:
+        """Persist the event just extracted, never ending the stage.
 
         A failing save must not throw away the model time it was protecting —
         the next checkpoint, or the orchestrator's own save, may well succeed.
@@ -123,7 +111,7 @@ class ExtractionStage:
         if self._save_fn is None:
             return
         try:
-            self._save_fn(events)
+            self._save_fn(event)
         except Exception as exc:  # noqa: BLE001 — a checkpoint is best-effort
             self._logger.error(
                 f"extraction checkpoint failed after {extracted} events: {exc}",

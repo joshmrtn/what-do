@@ -824,11 +824,19 @@ def test_a_dry_run_gives_extraction_no_saver(db):
     assert extraction.save_fn is None
 
 
-def test_an_extraction_checkpoint_persists_the_events(db):
+def test_an_extraction_checkpoint_persists_the_single_event_it_is_given(db):
+    """The saver handed to extraction takes one event, not a list.
+
+    Asserting only that a counter moved let the two sides disagree about the
+    argument entirely: the stage passed an Event, the scheduler unpacked a list,
+    and every test still passed while a real batch would have failed on its
+    first checkpoint.
+    """
     extraction = _FakeExtraction()
 
     _, _, save_spy, _ = _run(db, deps={"extraction_stage": extraction})
     before = save_spy.calls
-    extraction.save_fn([_event("checkpointed", ["c1"])])
+    extraction.save_fn(_event("checkpointed", ["c1"]))
 
     assert save_spy.calls == before + 1
+    assert "checkpointed" in [e.event_id for e in load_events(db)]

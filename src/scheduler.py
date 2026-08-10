@@ -194,6 +194,16 @@ def run_batch(
         if not dry_run and events:
             save_events_fn(events, db_path)
 
+    def _save_one(event: Event) -> None:
+        """Persist a single freshly extracted event.
+
+        Extraction checkpoints after every event now that one save no longer
+        costs a rewrite of the whole corpus, so this takes the event rather than
+        the list it belongs to.
+        """
+        if not dry_run:
+            save_events_fn([event], db_path)
+
     fetched: list[EventCandidate] = []
     if skip_ingest:
         logger.info("skipping ingestion", component="batch", duration_ms=0)
@@ -257,7 +267,7 @@ def run_batch(
     # handed a way to persist as it goes. Without it, a run killed near the end
     # loses every model call it made. A dry run gets None: it persists nothing,
     # checkpoints included.
-    extraction_stage.set_save_fn(None if dry_run else _save)
+    extraction_stage.set_save_fn(None if dry_run else _save_one)
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
     _save(events)
 

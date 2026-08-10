@@ -503,44 +503,46 @@ def test_a_synthetic_event_is_never_extracted():
 
 
 class _Saves:
-    """Records each save and what the events looked like at the time."""
+    """Records the event handed to each save, in order."""
 
     def __init__(self) -> None:
-        self.calls: list[int] = []
+        self.events: list[Event] = []
 
-    def __call__(self, events: list[Event]) -> None:
-        self.calls.append(sum(1 for e in events if e.tags))
+    def __call__(self, event: Event) -> None:
+        self.events.append(event)
 
 
-def _stage_with_saves(save_every: int, saves: _Saves) -> ExtractionStage:
+def _stage_with_saves(saves: _Saves) -> ExtractionStage:
     return ExtractionStage(
-        provider=_make_provider(tags=[("music", 0.9)]),
+        provider=_make_provider(tags=[Tag(text="music", weight=0.9)]),
         image_fetcher=None,
         logger=_make_logger(),
         get_now=_now,
         save_fn=saves,
-        save_every=save_every,
     )
 
 
-def test_progress_is_saved_as_extraction_goes():
-    """A run killed at hour 19 of 20 must not lose 19 hours of model time."""
+def test_every_extracted_event_is_saved_immediately():
+    """A run killed at hour 19 of 20 must lose one event, not twenty.
+
+    Batching existed because each save rewrote the whole corpus; saving one
+    event no longer costs that, so the batch size that hid the cost can go.
+    """
     saves = _Saves()
     events = [_make_event(title=f"e{i}") for i in range(6)]
 
-    _stage_with_saves(2, saves).process(events)
+    _stage_with_saves(saves).process(events)
 
-    assert len(saves.calls) >= 3
+    assert [e.title for e in saves.events] == [f"e{i}" for i in range(6)]
 
 
-def test_each_save_carries_the_work_done_so_far():
+def test_a_checkpoint_carries_the_extraction_it_just_made():
+    """Saving the event before its tags are attached would persist nothing of value."""
     saves = _Saves()
-    events = [_make_event(title=f"e{i}") for i in range(4)]
 
-    _stage_with_saves(2, saves).process(events)
+    _stage_with_saves(saves).process([_make_event(title="e1")])
 
-    assert saves.calls == sorted(saves.calls)
-    assert saves.calls[-1] >= 4
+    assert [t.text for t in saves.events[0].tags] == ["music"]
 
 
 def test_nothing_is_saved_when_no_saver_is_given():
@@ -563,6 +565,29 @@ def test_skipped_events_do_not_trigger_saves():
     done = _make_event(title="done")
     done.extraction_input_hash = extraction_input_hash(done)
 
-    _stage_with_saves(2, saves).process([done, done, done, done])
+    _stage_with_saves(saves).process([done, done, done, done])
 
-    assert saves.calls == []
+    assert saves.events == []
+
+
+def test_a_failing_checkpoint_does_not_end_the_stage():
+    """A failed save must not throw away the model time it was protecting."""
+    saved: list[Event] = []
+
+    def flaky(event: Event) -> None:
+        saved.append(event)
+        if len(saved) == 1:
+            raise RuntimeError("disk full")
+
+    stage = ExtractionStage(
+        provider=_make_provider(tags=[("music", 0.9)]),
+        image_fetcher=None,
+        logger=_make_logger(),
+        get_now=_now,
+        save_fn=flaky,
+    )
+
+    result = stage.process([_make_event(title="e1"), _make_event(title="e2")])
+
+    assert len(saved) == 2
+    assert all(e.tags for e in result)
