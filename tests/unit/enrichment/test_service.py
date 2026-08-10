@@ -526,3 +526,35 @@ def test_air_quality_failure_does_not_break_enrichment(db_path, cfg):
 def test_no_air_quality_provider_configured_is_fine(db_path, cfg):
     svc = _make_service(db_path, cfg)
     assert svc.enrich([_make_event()], RUN_DATE)[0].weather is not None
+
+
+# ---------------------------------------------------------------------------
+# Movie enrichment is scoped to movie sources
+# ---------------------------------------------------------------------------
+
+
+def test_non_movie_events_are_never_sent_to_the_movie_provider(db_path, cfg):
+    """A karaoke night is not a film.
+
+    Without this guard every event would cost a third-party lookup — over a
+    thousand a night against an API that owes us nothing — and whatever a title
+    search happened to return would be merged into an event that is not a movie.
+    """
+    movie = _movie_provider(return_value={"genres": ["Horror"]})
+    service = _make_service(db_path, cfg, movie=movie)
+
+    service.enrich([_make_event(source_type="northshorenightout", title="Karaoke Night")], RUN_DATE)
+
+    movie.fetch.assert_not_called()
+
+
+def test_movie_events_are_still_enriched(db_path, cfg):
+    movie = _movie_provider(return_value={"genres": ["Horror"], "runtime_minutes": 118})
+    service = _make_service(db_path, cfg, movie=movie)
+
+    events = service.enrich(
+        [_make_event(source_type="cinema_veezi", title="The Substance")], RUN_DATE
+    )
+
+    movie.fetch.assert_called_once()
+    assert events[0].metadata["genres"] == ["Horror"]
