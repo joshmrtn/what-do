@@ -55,6 +55,18 @@ class InMemoryEventRepository:
         for event_id in event_ids:
             self._events.pop(event_id, None)
 
+    def replace(self, stale_ids: list[str], events: list[Event]) -> None:
+        """Delete superseded events and save their replacements.
+
+        Validation runs before anything is removed, so a rejected event cannot
+        leave the store having dropped the rows it was meant to supersede — the
+        atomicity SQLite gets from a transaction.
+        """
+        for event in events:
+            validate_tag_vectors(event)
+        self.delete(stale_ids)
+        self.save(events)
+
     def tag_embeddings(self) -> dict[str, bytes]:
         """Every tag vector held, keyed by tag text."""
         vectors: dict[str, bytes] = {}

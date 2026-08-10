@@ -37,7 +37,8 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.candidates import load_candidates
 from src.storage.db import DEFAULT_DB_PATH, init_db
-from src.storage.events import delete_events, load_events, save_events
+from src.storage.protocols import EventRepository
+from src.storage.sqlite.events import SqliteEventRepository
 from src.storage.recommendations import save_recommendations
 from src.storage.runs import finish_run, start_run
 from src.utils.llm_transcript import LLMTranscript
@@ -100,9 +101,7 @@ def run_batch(
     ingest_only: bool = False,
     raw_dump_fn: Callable[[list[Any]], None] | None = None,
     load_candidates_fn: Callable[..., list[EventCandidate]] = load_candidates,
-    load_events_fn: Callable[..., list[Event]] = load_events,
-    save_events_fn: Callable[..., None] = save_events,
-    delete_events_fn: Callable[..., None] = delete_events,
+    event_repository: EventRepository | None = None,
     save_recommendations_fn: Callable[..., None] = save_recommendations,
     start_run_fn: Callable[..., str] = start_run,
     finish_run_fn: Callable[..., None] = finish_run,
@@ -136,9 +135,9 @@ def run_batch(
             discarded. Supplied only when a diagnostic run asks for the dump,
             since collecting it holds the whole fetch in memory.
         load_candidates_fn: Injected for testing, as the CLI injects its loaders.
-        load_events_fn: Injected for testing.
-        save_events_fn: Injected for testing.
-        delete_events_fn: Injected for testing.
+        event_repository: Where events are read and written. Defaults to the
+            SQLite repository over `db_path`; injected for testing, which is
+            what lets the pipeline run without a database at all.
         save_recommendations_fn: Injected for testing.
         start_run_fn: Injected for testing.
         finish_run_fn: Injected for testing.
@@ -146,6 +145,9 @@ def run_batch(
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
     """
+    events_repo: EventRepository = (
+        event_repository if event_repository is not None else SqliteEventRepository(db_path)
+    )
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
 
@@ -192,7 +194,7 @@ def run_batch(
 
     def _save(events: list[Event]) -> None:
         if not dry_run and events:
-            save_events_fn(events, db_path)
+            events_repo.save(events)
 
     def _save_one(event: Event) -> None:
         """Persist a single freshly extracted event.
@@ -202,7 +204,7 @@ def run_batch(
         the list it belongs to.
         """
         if not dry_run:
-            save_events_fn([event], db_path)
+            events_repo.save_one(event)
 
     fetched: list[EventCandidate] = []
     if skip_ingest:
@@ -232,7 +234,7 @@ def run_batch(
         # is no batch to finish and nothing to reconcile against.
         return result
 
-    stored = load_events_fn(db_path)
+    stored = events_repo.load_all()
 
     candidates = _stage(
         "load_candidates",
@@ -252,9 +254,13 @@ def run_batch(
         default=[],
     )
 
+    # The superseded ids are carried, not acted on. Reconcile knows which
+    # duplicates lose hours before the run has anything to store in their place,
+    # and deleting them here would leave a window across enrichment and
+    # extraction with the duplicate gone and the winner unwritten. They ride
+    # with the first save instead. `_carry_forward` already excludes them, so
+    # nothing downstream sees them in the meantime.
     reconciled, stale_ids = reconcile(normalized, stored)
-    if stale_ids and not dry_run:
-        delete_events_fn(stale_ids, db_path)
 
     in_scope = _scope_filter(config, run_date, now)
     events = _carry_forward(reconciled, stored, stale_ids, in_scope)
@@ -269,7 +275,8 @@ def run_batch(
     # checkpoints included.
     extraction_stage.set_save_fn(None if dry_run else _save_one)
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
-    _save(events)
+    if not dry_run and events:
+        events_repo.replace(stale_ids, events)
 
     embedded = _stage("embedding", lambda: embedding_stage.process(events))
     if embedded is None:

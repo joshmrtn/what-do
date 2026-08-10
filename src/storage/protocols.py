@@ -51,6 +51,23 @@ class EventRepository(Protocol):
         """
         ...
 
+    def replace(self, stale_ids: list[str], events: list[Event]) -> None:
+        """Delete superseded events and save their replacements, atomically.
+
+        Reconcile identifies superseded duplicates hours before the run has
+        anything to write in their place. Deleting them at that point opens a
+        window across enrichment and extraction where the duplicate is gone and
+        the merged winner was never stored; holding one transaction across those
+        hours instead would lock the database for the whole batch, which is the
+        failure this boundary exists to remove. So the delete travels with the
+        save and both take milliseconds.
+
+        Args:
+            stale_ids: Events superseded by a merge.
+            events: Events to persist in their place.
+        """
+        ...
+
     def tag_embeddings(self) -> dict[str, bytes]:
         """Every tag vector already computed, keyed by tag text.
 

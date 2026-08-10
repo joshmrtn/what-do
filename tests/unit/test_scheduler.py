@@ -26,7 +26,8 @@ from src.models.tag import Tag
 from src.normalization.service import NormalizationResult
 from src.scheduler import run_batch
 from src.storage.db import init_db
-from src.storage.events import delete_events, load_events, save_events
+from src.storage.events import load_events, save_events
+from src.storage.sqlite.events import SqliteEventRepository
 from src.utils.logging import get_logger
 
 NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -201,6 +202,62 @@ class _Spy:
         return len(self.snapshots)
 
 
+class _SpyRepository:
+    """A real repository that records every write.
+
+    Delegates rather than reimplements: the tests below assert on what the
+    batch persisted, and a hand-written store would only prove the batch agrees
+    with the stub. `on_save` replaces the write entirely, for the runs that need
+    persistence to fail.
+    """
+
+    def __init__(self, inner, on_save=None) -> None:
+        self._inner = inner
+        self._on_save = on_save
+        self.snapshots: list[list[tuple[str, bool, bool]]] = []
+        self.replaced: list[list[str]] = []
+
+    def _record(self, events) -> None:
+        self.snapshots.append(
+            [(e.event_id, bool(e.tags), bool(e.tag_embeddings)) for e in events]
+        )
+
+    def save(self, events) -> None:
+        self._record(events)
+        if self._on_save is not None:
+            self._on_save(events)
+            return
+        self._inner.save(events)
+
+    def save_one(self, event) -> None:
+        self._record([event])
+        if self._on_save is not None:
+            self._on_save([event])
+            return
+        self._inner.save_one(event)
+
+    def replace(self, stale_ids, events) -> None:
+        self._record(events)
+        self.replaced.append(list(stale_ids))
+        if self._on_save is not None:
+            self._on_save(events)
+            return
+        self._inner.replace(stale_ids, events)
+
+    def load_all(self):
+        return self._inner.load_all()
+
+    def delete(self, event_ids) -> None:
+        self._inner.delete(event_ids)
+
+    def tag_embeddings(self):
+        return self._inner.tag_embeddings()
+
+    @property
+    def calls(self) -> int:
+        return len(self.snapshots)
+
+
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
@@ -252,7 +309,9 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
     }
     fakes.update(deps or {})
 
-    save_spy = _Spy(save_events)
+    save_spy = _SpyRepository(
+        SqliteEventRepository(db), on_save=kwargs.pop("on_save", None)
+    )
     recs_spy = _Spy(lambda items, path: None)
 
     result = run_batch(
@@ -264,9 +323,7 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
         load_candidates_fn=lambda *a, **k: [
             EventCandidate(id="c1", source="@v", source_type="apify", discovered_at=NOW)
         ],
-        load_events_fn=load_events,
-        save_events_fn=save_spy,
-        delete_events_fn=delete_events,
+        event_repository=save_spy,
         save_recommendations_fn=recs_spy,
         **fakes,
         **kwargs,
@@ -774,8 +831,22 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
     reconcile treats everything as new, so failing loudly beats duplicating the
     whole database quietly.
     """
-    def _boom(*_args, **_kwargs):
-        raise sqlite3.OperationalError("database is locked")
+    class _UnreadableRepository:
+        """A repository whose read fails, standing in for a locked database."""
+
+        def load_all(self):
+            raise sqlite3.OperationalError("database is locked")
+
+        def save(self, events): ...
+
+        def save_one(self, event): ...
+
+        def replace(self, stale_ids, events): ...
+
+        def delete(self, event_ids): ...
+
+        def tag_embeddings(self):
+            return {}
 
     with pytest.raises(sqlite3.OperationalError):
         run_batch(
@@ -792,7 +863,7 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             semantic_deduplicator=_FakeSemanticDedup(),
             similarity_stage=_FakeSimilarity(),
             ranking_engine=_FakeRanking(),
-            load_events_fn=_boom,
+            event_repository=_UnreadableRepository(),
         )
 
     row = _runs(db)[0]
@@ -840,3 +911,31 @@ def test_an_extraction_checkpoint_persists_the_single_event_it_is_given(db):
 
     assert save_spy.calls == before + 1
     assert "checkpointed" in [e.event_id for e in load_events(db)]
+
+
+# ----------------------------------------------------------------------
+# Superseded events
+# ----------------------------------------------------------------------
+
+
+def test_superseded_events_survive_a_batch_that_dies_before_persisting(db):
+    """The delete of a superseded event rides with the save that replaces it.
+
+    Deleting at reconcile time and saving hours later leaves a window covering
+    the whole of enrichment and extraction, and a batch that dies inside it has
+    dropped the duplicate without writing the merged winner. Holding one
+    transaction across those hours is not the alternative — it would lock the
+    database for the entire run, which is the failure this refactor exists to
+    remove. So the delete moves to the save instead.
+    """
+    winner = _event("winner", ["c1"])
+    loser = _event("loser", ["c1"])
+    save_events([winner, loser], db)
+
+    def explode(events):
+        raise RuntimeError("disk full")
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        _run(db, fresh=[_event("fresh-1", ["c1"])], on_save=explode)
+
+    assert {e.event_id for e in load_events(db)} == {"winner", "loser"}
