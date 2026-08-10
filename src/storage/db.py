@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 DEFAULT_DB_PATH = Path("database/event_hub.db")
 
@@ -31,6 +34,45 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return conn
+
+
+#: Savepoint names must be unique while nested, so each block takes the next one
+#: rather than a fixed name a nested block would shadow.
+_savepoint_names = itertools.count()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Group writes so they commit together or not at all.
+
+    Built on `SAVEPOINT` rather than `BEGIN` for two reasons. Nesting works
+    without bookkeeping — SQLite commits only when the outermost block releases,
+    so a caller need not know whether it is already inside a transaction. And a
+    savepoint opens a transaction implicitly, which keeps the driver from
+    emitting its own `BEGIN` and failing with "cannot start a transaction within
+    a transaction".
+
+    Args:
+        conn: An open connection, from `connect`.
+
+    Yields:
+        The same connection, for writes that should share the block's fate.
+
+    Raises:
+        Exception: Whatever the block raised, after rolling its writes back.
+    """
+    name = f"what_do_sp{next(_savepoint_names)}"
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        yield conn
+    except BaseException:
+        # ROLLBACK TO undoes the block's writes but leaves the savepoint on the
+        # stack, so it is released too — otherwise an enclosing block would
+        # commit with a stale entry beneath it.
+        conn.execute(f"ROLLBACK TO {name}")
+        conn.execute(f"RELEASE {name}")
+        raise
+    conn.execute(f"RELEASE {name}")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS venues (
