@@ -33,6 +33,26 @@ EVENT_COLUMNS = (
 )
 
 
+def validate_tag_vectors(event: Event) -> None:
+    """Reject an event whose tag vectors cannot be paired with its tags.
+
+    An event with no vectors at all is the ordinary state between extraction and
+    embedding. Some vectors but not one per tag is different: the pairing is
+    positional, so a short list silently drops the tail and reports success.
+
+    Args:
+        event: The event about to be persisted.
+
+    Raises:
+        ValueError: If the event has vectors but not one for every tag.
+    """
+    if event.tag_embeddings and len(event.tag_embeddings) != len(event.tags):
+        raise ValueError(
+            f"event {event.event_id} has {len(event.tags)} tags but "
+            f"{len(event.tag_embeddings)} tag vectors"
+        )
+
+
 def event_to_row(event: Event) -> tuple[Any, ...]:
     """Flatten an Event into a row for the events table.
 
@@ -145,50 +165,78 @@ def save_events(
     if not events:
         return
 
-    placeholders = ", ".join("?" * len(EVENT_COLUMNS.split(", ")))
     conn = connect(db_path)
     try:
-        conn.executemany(
-            f"INSERT OR REPLACE INTO events ({EVENT_COLUMNS}) VALUES ({placeholders})",
-            [event_to_row(e) for e in events],
-        )
-
-        ids = [(e.event_id,) for e in events]
-        conn.executemany("DELETE FROM event_tags WHERE event_id = ?", ids)
-        conn.executemany("DELETE FROM event_source_candidates WHERE event_id = ?", ids)
-
-        tag_rows = [
-            (event.event_id, position, tag.text, tag.weight)
-            for event in events
-            for position, tag in enumerate(event.tags)
-        ]
-        conn.executemany(
-            "INSERT INTO event_tags (event_id, position, tag, weight) VALUES (?, ?, ?, ?)",
-            tag_rows,
-        )
-
-        vector_rows = [
-            (tag.text, embedding_model, vector, event.updated_at.isoformat())
-            for event in events
-            for tag, vector in zip(event.tags, event.tag_embeddings)
-        ]
-        conn.executemany(
-            "INSERT OR REPLACE INTO tag_embeddings (tag, model, embedding, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            vector_rows,
-        )
-
-        conn.executemany(
-            "INSERT OR IGNORE INTO event_source_candidates (event_id, candidate_id) VALUES (?, ?)",
-            [
-                (event.event_id, candidate_id)
-                for event in events
-                for candidate_id in event.source_event_candidates
-            ],
-        )
+        write_events(conn, events, embedding_model)
         conn.commit()
     finally:
         conn.close()
+
+
+def write_events(
+    conn: sqlite3.Connection,
+    events: list[Event],
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+) -> None:
+    """Write events on an existing connection, without committing.
+
+    Split out so a caller can group this with other writes in one transaction —
+    reconcile deletes superseded events and saves their replacements, and a
+    crash between the two must leave neither applied.
+
+    Args:
+        conn: An open connection, from `connect`. The caller owns the commit.
+        events: Events to persist. Existing rows are replaced by event_id.
+        embedding_model: Names which model produced the vectors.
+
+    Raises:
+        ValueError: If an event's tag vectors cannot be paired with its tags.
+    """
+    if not events:
+        return
+
+    for event in events:
+        validate_tag_vectors(event)
+
+    placeholders = ", ".join("?" * len(EVENT_COLUMNS.split(", ")))
+    conn.executemany(
+        f"INSERT OR REPLACE INTO events ({EVENT_COLUMNS}) VALUES ({placeholders})",
+        [event_to_row(e) for e in events],
+    )
+
+    ids = [(e.event_id,) for e in events]
+    conn.executemany("DELETE FROM event_tags WHERE event_id = ?", ids)
+    conn.executemany("DELETE FROM event_source_candidates WHERE event_id = ?", ids)
+
+    tag_rows = [
+        (event.event_id, position, tag.text, tag.weight)
+        for event in events
+        for position, tag in enumerate(event.tags)
+    ]
+    conn.executemany(
+        "INSERT INTO event_tags (event_id, position, tag, weight) VALUES (?, ?, ?, ?)",
+        tag_rows,
+    )
+
+    vector_rows = [
+        (tag.text, embedding_model, vector, event.updated_at.isoformat())
+        for event in events
+        for tag, vector in zip(event.tags, event.tag_embeddings)
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO tag_embeddings (tag, model, embedding, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        vector_rows,
+    )
+
+    conn.executemany(
+        "INSERT OR IGNORE INTO event_source_candidates (event_id, candidate_id) VALUES (?, ?)",
+        [
+            (event.event_id, candidate_id)
+            for event in events
+            for candidate_id in event.source_event_candidates
+        ],
+    )
 
 
 def delete_events(event_ids: list[str], db_path: Path | str) -> None:
