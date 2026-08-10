@@ -803,7 +803,10 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     random.Random(7).shuffle(shuffled)
     assert engine.rank(shuffled, run_date) == ranked
 
-    # The run survives a real round trip through SQLite.
+    # The run survives a real round trip through SQLite. The events go in first
+    # because a score references the event it scored: persisting a verdict about
+    # a row that was never stored is the thing the foreign key exists to reject.
+    save_events(events, db_path)
     save_recommendations(ranked, db_path)
     assert load_recommendations(db_path, run_date=run_date) == ranked
 
