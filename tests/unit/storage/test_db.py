@@ -35,8 +35,10 @@ def test_events_table_has_blob_columns(tmp_path):
     columns = {row[1]: row[2] for row in cursor.fetchall()}
     conn.close()
 
-    assert columns.get("tag_embeddings") == "BLOB"
+    # Tag vectors moved to `tag_embeddings`, keyed by (tag, model): a vector is
+    # a property of the text, not of the event that happens to use it.
     assert columns.get("summary_embedding") == "BLOB"
+    assert "tag_embeddings" not in columns
 
 
 def test_recommendations_table_columns(tmp_path):
@@ -47,12 +49,18 @@ def test_recommendations_table_columns(tmp_path):
     columns = {row[1]: row[2] for row in cursor.fetchall()}
     conn.close()
 
-    for score_column in ("base_score", "weather_adjustment", "tag_confidence", "final_score"):
+    # `recommendations` is the ranking output alone. The semantic verdict lives
+    # in `event_scores` and its breakdown in `score_reasons`, so both survive
+    # for events that were scored but fell outside the ranked window.
+    for score_column in ("weather_adjustment", "tag_confidence", "final_score"):
         assert columns.get(score_column) == "REAL"
     assert columns.get("rank") == "INTEGER"
-    assert "reasons" in columns
-    assert "tier" in columns
-    assert "match" in columns
+    assert "base_score" not in columns
+    assert "reasons" not in columns
+    assert "match" not in columns
+    # tier is derived from final_score at render time, never stored: a threshold
+    # change must relabel history rather than disagree with it.
+    assert "tier" not in columns
 
 
 def test_init_db_idempotent(tmp_path):
@@ -85,16 +93,16 @@ def test_candidate_entities_has_depth_and_mention_sources(tmp_path):
     assert "mention_sources" in columns
 
 
-def test_events_table_has_image_bytes_blob(tmp_path):
-
+def test_image_bytes_live_outside_the_hot_events_row(tmp_path):
+    """A blob column widens every scan of the table the batch reads most."""
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
-    cursor = conn.execute("PRAGMA table_info(events)")
-    columns = {row[1]: row[2] for row in cursor.fetchall()}
+    events = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(events)")}
+    images = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(event_images)")}
     conn.close()
 
-    assert "image_bytes" in columns
-    assert columns["image_bytes"] == "BLOB"
+    assert "image_bytes" not in events
+    assert images["bytes"] == "BLOB"
 
 
 def test_has_schema_is_false_when_the_file_does_not_exist(tmp_path):

@@ -17,7 +17,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from functools import partial
+
 from src.config import DEFAULT_DAY_STARTS_AT, ConfigError, load_config
+from src.scoring.tiers import (
+    DEFAULT_TOP_PICKS_MIN,
+    DEFAULT_WORTH_CONSIDERING_MIN,
+    tier_for_score,
+)
 from src.models.event import Event
 from src.presentation.filters import (
     RankedPair,
@@ -50,6 +57,11 @@ class ViewSettings:
         zone: The timezone events are judged in. From `config.location`, which
             derives it from the coordinates rather than from the machine.
         day_starts_at: Local time of day at which the listing rolls over.
+        top_picks_min: Score at or above which an event is a top pick.
+        worth_considering_min: Score at or above which it is worth considering.
+            Both live here because a tier is derived at render time, never
+            stored — a threshold change must relabel history, not disagree
+            with it.
         warning: Emitted to stderr when the settings had to be guessed. Carried
             on the value rather than printed by the loader, so the loader stays
             substitutable in tests without capturing a stream.
@@ -57,6 +69,8 @@ class ViewSettings:
 
     zone: tzinfo
     day_starts_at: time
+    top_picks_min: float = DEFAULT_TOP_PICKS_MIN
+    worth_considering_min: float = DEFAULT_WORTH_CONSIDERING_MIN
     warning: str | None = None
 
 
@@ -76,6 +90,8 @@ def default_view_settings() -> ViewSettings:
         return ViewSettings(
             zone=ZoneInfo(config.location.timezone),
             day_starts_at=config.day_starts_at,
+            top_picks_min=config.scoring.top_picks_min,
+            worth_considering_min=config.scoring.worth_considering_min,
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
         system_zone = datetime.now().astimezone().tzinfo
@@ -169,7 +185,15 @@ def _cmd_recommend(
         print(f"Error: {exc}", file=stderr)
         return 1
 
-    pairs = load_pairs(db_path, run_date=run_date)
+    pairs = load_pairs(
+        db_path,
+        run_date=run_date,
+        tier_for=partial(
+            tier_for_score,
+            top_picks_min=view.top_picks_min,
+            worth_considering_min=view.worth_considering_min,
+        ),
+    )
     if not pairs:
         print(_NO_RECOMMENDATIONS_MESSAGE, file=stdout)
         return 0

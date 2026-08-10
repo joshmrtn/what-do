@@ -18,15 +18,16 @@ from src.config import AppConfig
 from src.models.event import Event
 from src.models.recommendation import Recommendation, make_recommendation_id
 from src.scoring.similarity import Reason, SimilarityResult
+from src.scoring.tiers import (
+    EVERYTHING_ELSE,
+    TOP_PICK,
+    WORTH_CONSIDERING,
+    tier_for_score,
+)
 from src.scoring.weather_score import weather_adjustment
 from src.utils.blocklist import is_blocked
 from src.utils.logging import StructuredLogger, get_logger
 
-TOP_PICK = "top_pick"
-WORTH_CONSIDERING = "worth_considering"
-#: Deliberately not "excluded": that name invites a `WHERE tier != ...` in the
-#: CLI, which would silently hide events the engine was careful to keep.
-EVERYTHING_ELSE = "everything_else"
 
 MATCH_FACTOR = "match_classification"
 CONFIDENCE_FACTOR = "low_tag_confidence"
@@ -171,11 +172,9 @@ class RankingEngine:
     def _tier(self, final_score: float) -> str:
         """Label the score. Presentation only — never a filter."""
         scoring = self._config.scoring
-        if final_score >= scoring.top_picks_min:
-            return TOP_PICK
-        if final_score >= scoring.worth_considering_min:
-            return WORTH_CONSIDERING
-        return EVERYTHING_ELSE
+        return tier_for_score(
+            final_score, scoring.top_picks_min, scoring.worth_considering_min
+        )
 
     def _drop_as_blocked(self, event: Event) -> bool:
         """Whether this event's venue is blocklisted.

@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from src.storage.db import has_schema
+from src.storage.db import connect, has_schema
 
 
 def load_active_handles(db_path: Path | str) -> list[str]:
@@ -28,7 +28,7 @@ def load_active_handles(db_path: Path | str) -> list[str]:
     if not has_schema(db_path):
         return []
 
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         rows = conn.execute(
             "SELECT handle FROM candidate_entities WHERE state = 'active' "

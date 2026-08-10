@@ -9,7 +9,7 @@ from src.models.event import Event
 from src.models.recommendation import Recommendation, make_recommendation_id
 from src.scoring.similarity import Reason
 from src.storage.db import init_db
-from src.storage.events import save_events
+from src.storage.events import delete_events, save_events
 from src.storage.recommendations import (
     latest_run_date,
     load_ranked,
@@ -21,11 +21,39 @@ RUN_DATE = date(2025, 6, 21)
 NEXT_DAY = date(2025, 6, 22)
 
 
+#: Event ids these tests attach recommendations to. Foreign keys are enforced,
+#: so the events have to exist first — which is the constraint doing its job.
+_EVENT_IDS = ("evt-1", "evt-2", "evt-3", "evt-a", "evt-b", "evt-c", "evt-old", "evt-new")
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
     p = tmp_path / "test.db"
     init_db(p)
+    _store_events(p, *_EVENT_IDS)
     return p
+
+
+def _store_events(db_path: Path, *event_ids: str) -> None:
+    """Create placeholder events for the ids the tests reference.
+
+    A test that cares about an event's contents saves its own over the top.
+    """
+    now = datetime(2025, 6, 21, 12, 0)
+    save_events(
+        [
+            Event(
+                event_id=event_id,
+                source_event_candidates=[],
+                source_type="test",
+                created_at=now,
+                updated_at=now,
+                title=f"Event {event_id}",
+            )
+            for event_id in event_ids
+        ],
+        db_path,
+    )
 
 
 def _reason(factor: str = "like_similarity", contribution: float = 0.8) -> Reason:
@@ -211,12 +239,19 @@ def test_load_ranked_can_be_pinned_to_an_earlier_run(db_path):
     assert [r.event_id for r, _ in load_ranked(db_path, run_date=RUN_DATE)] == ["evt-old"]
 
 
-def test_load_ranked_skips_a_recommendation_whose_event_is_gone(db_path):
-    """A purged event must not take down the whole view."""
-    save_events([_event("evt-1")], db_path)
+def test_purging_an_event_takes_its_recommendation_with_it(db_path):
+    """A recommendation for a deleted event is now unrepresentable.
+
+    This used to be a "skip the orphan" test. Foreign keys are enforced and
+    `event_scores` cascades from `events`, so a purged event removes its own
+    score and ranking rather than leaving a row pointing at nothing.
+    """
+    save_events([_event("evt-1"), _event("evt-2")], db_path)
     save_recommendations(
-        [_make(event_id="evt-1", rank=1), _make(event_id="evt-missing", rank=2)], db_path
+        [_make(event_id="evt-1", rank=1), _make(event_id="evt-2", rank=2)], db_path
     )
+
+    delete_events(["evt-2"], db_path)
 
     assert [r.event_id for r, _ in load_ranked(db_path)] == ["evt-1"]
 

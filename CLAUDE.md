@@ -203,7 +203,10 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Package name can't be `what-do` | Python package is `what_do`; CLI entry point is `what-do` |
 | `src/` layout breaks pytest imports | `pyproject.toml` needs `[tool.pytest.ini_options] pythonpath = ["."]` |
 | `datetime.now()` called directly | Will cause flaky time-dependent tests; use injected `get_now()` |
-| Embedding precision | Store as float32 BLOB, not float64. Use `encode_vector`/`decode_vector` utilities everywhere |
+| Embedding precision | Vectors are float32, never float64 — that is the invariant. *How* they are encoded is a storage concern: `encode_vector`/`decode_vector` belong behind the storage layer, not scattered through the core |
+| Opening a database with `sqlite3.connect` directly | `foreign_keys` and `busy_timeout` are per-connection and default to off and zero, so a raw connection silently drops referential integrity and fails instantly on a lock. Always use `storage.db.connect()` |
+| Copying `event_hub.db` with `cp` | WAL keeps recent commits in a sidecar, so a plain copy captures a torn state. Use `scripts/backup-db.sh`, which does `VACUUM INTO` |
+| A tag vector stored per event | A vector is a pure function of `(tag text, model)`. Storing it per event-tag pairing costs 4× the space and re-embeds tags seen on previous nights. The *weight* is per event; the vector is not |
 | LLM Pass 1 bypass | If `event.tags` already populated, skip extraction. No special flag. Handles synthetic events |
 | Synthetic activities | Enter pipeline as pre-structured `Events` (not `EventCandidates`), after dedup, before Stage 1 |
 | Blocklist source of truth | `data/blocklist.json` is the *only* source. The composition root reads it once and hands it to ingestion and ranking; there is no DB table, by decision (#16) |

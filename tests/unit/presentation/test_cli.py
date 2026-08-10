@@ -101,9 +101,10 @@ class _Harness:
         self.load_ranked_calls = 0
         self.load_events_calls = 0
 
-    def _load_ranked(self, db_path, run_date=None):
+    def _load_ranked(self, db_path, run_date=None, tier_for=None):
         self.load_ranked_calls += 1
         self.requested_run_date = run_date
+        self.tier_for = tier_for
         return self.pairs
 
     def _load_events(self, db_path):

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+
+from src.storage.db import connect
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -148,7 +150,7 @@ class PreferenceRepository:
             PreferenceSet with embeddings populated. Lines whose embedding
             could not be generated are omitted and logged.
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = connect(self._db_path)
         try:
             try:
                 likes = self._load_file(conn, Path(likes_path), "like")

@@ -9,6 +9,8 @@ of somebody else's server.
 from __future__ import annotations
 
 import sqlite3
+
+from src.storage.db import connect
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +36,7 @@ def read_cache(db_path: Path | str, url: str) -> CachedResponse | None:
     Returns:
         The cached response, or None when the URL has never been fetched.
     """
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         row = conn.execute(
             "SELECT body, etag, last_modified, fetched_at FROM http_cache WHERE url = ?",
@@ -64,7 +66,7 @@ def write_cache(
     fetched_at: datetime,
 ) -> None:
     """Store a fetched response, replacing any earlier entry for the same URL."""
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         conn.execute(
             """INSERT OR REPLACE INTO http_cache

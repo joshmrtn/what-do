@@ -57,6 +57,7 @@ from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.entities import load_active_handles
+from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
 from src.utils.llm_transcript import TranscriptSink
 from src.utils.ollama_client import OllamaClient
@@ -320,7 +321,11 @@ def build_dependencies(
             logger=logger,
             get_now=get_now,
         ),
-        embedding_stage=EmbeddingStage(embedding_provider, logger),
+        embedding_stage=EmbeddingStage(
+            embedding_provider,
+            logger,
+            preload=lambda: load_tag_embeddings(db_path, config.models.embeddings),
+        ),
         semantic_deduplicator=SemanticDeduplicationEngine(),
         similarity_stage=SimilarityStage(preferences, config.scoring),
         ranking_engine=RankingEngine(config, blocklist, logger),

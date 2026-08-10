@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from src.storage.db import connect
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +29,7 @@ def start_run(db_path: Path | str, started_at: datetime) -> str:
         The new run's id, to be handed back to `finish_run`.
     """
     run_id = str(uuid.uuid4())
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         conn.execute(
             "INSERT INTO run_history (id, started_at) VALUES (?, ?)",
@@ -69,7 +71,7 @@ def finish_run(
         errors: Stage failure messages.
         skipped_sources: Sources not built, normally for a missing credential.
     """
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         row = conn.execute(
             "SELECT started_at FROM run_history WHERE id = ?", (run_id,)

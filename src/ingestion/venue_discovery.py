@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+
+from src.storage.db import connect
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +60,7 @@ class VenueDiscoveryService:
         blocklist = self._load_blocklist()
         seeds = load_seeds(self._seeds_path)
 
-        conn = sqlite3.connect(self._db_path)
+        conn = connect(self._db_path)
         try:
             self._persist_seed_handles(conn, seeds)
             seed_venues = self._resolve_seed_venues(seeds)
@@ -217,21 +219,27 @@ class VenueDiscoveryService:
             return
 
         now = datetime.now(timezone.utc).isoformat()
+        venue_id = str(uuid.uuid4())
         conn.execute(
             """INSERT INTO venues
                (id, name, address, latitude, longitude, category,
-                social_handles, blocklisted, discovery_source, discovered_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                discovery_source, discovered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                str(uuid.uuid4()),
+                venue_id,
                 venue.name,
                 venue.address,
                 venue.latitude,
                 venue.longitude,
                 venue.category,
-                json.dumps(venue.social_handles),
-                1 if venue.blocklist_flag else 0,
                 venue.discovery_source,
                 now,
             ),
+        )
+        # Handles are a relation, not a field: one venue, many handles. The
+        # blocklist flag is deliberately absent — `data/blocklist.json` is the
+        # only source of truth for that (#16), and a column here would drift.
+        conn.executemany(
+            "INSERT OR IGNORE INTO venue_handles (venue_id, handle) VALUES (?, ?)",
+            [(venue_id, handle) for handle in venue.social_handles],
         )

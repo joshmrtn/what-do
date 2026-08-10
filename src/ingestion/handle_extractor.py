@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+
+from src.storage.db import connect
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +47,7 @@ class HandleExtractor:
             return
 
         context = text[:300]
-        conn = sqlite3.connect(self._db_path)
+        conn = connect(self._db_path)
         try:
             now = datetime.now(timezone.utc).isoformat()
             for handle in handles:

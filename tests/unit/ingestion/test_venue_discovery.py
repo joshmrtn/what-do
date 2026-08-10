@@ -245,17 +245,21 @@ class TestVenueSchema:
 
         conn = sqlite3.connect(db_path)
         row = conn.execute(
-            "SELECT name, address, latitude, longitude, category, social_handles, discovery_source FROM venues"
+            "SELECT id, name, address, latitude, longitude, category, discovery_source FROM venues"
         ).fetchone()
+        # Handles are their own relation now, one row per handle.
+        handles = conn.execute(
+            "SELECT handle FROM venue_handles WHERE venue_id = ?", (row[0],)
+        ).fetchall()
         conn.close()
 
-        assert row[0] == "The Vault"
-        assert row[1] == "1 Pickering Wharf"
-        assert row[2] == pytest.approx(SALEM_LAT)
-        assert row[3] == pytest.approx(SALEM_LNG)
-        assert row[4] == "music_venue"
-        assert "@thevaultlounge" in row[5]
+        assert row[1] == "The Vault"
+        assert row[2] == "1 Pickering Wharf"
+        assert row[3] == pytest.approx(SALEM_LAT)
+        assert row[4] == pytest.approx(SALEM_LNG)
+        assert row[5] == "music_venue"
         assert row[6] == "test_provider"
+        assert [h[0] for h in handles] == ["@thevaultlounge"]
 
 
 # ---- Deduplication -----------------------------------------------------------

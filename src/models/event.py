@@ -47,6 +47,14 @@ class Event:
     tag_embeddings: list[bytes] = field(default_factory=list)
     summary_embedding: bytes | None = None
     weather: dict[str, Any] | None = None
+    #: The cached forecast this event's weather was taken from. The event keeps
+    #: only the hour it was scored against; the full day series stays in
+    #: `weather_cache` rather than being copied onto every event that shares a
+    #: date — measured, that duplication was 2.6 MB against the cache's 66 KB.
+    weather_cache_id: str | None = None
+    #: Set only when a venue name resolves confidently to a discovered venue.
+    #: Source venue strings are messy, so this stays None far more often than not.
+    venue_id: str | None = None
     astronomical_data: dict[str, Any] | None = None
     #: Hash of the text LLM Pass 1 last ran over successfully. Set only on
     #: success, so it distinguishes three states the old `if tags` check

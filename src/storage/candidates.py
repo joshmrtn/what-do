@@ -9,6 +9,8 @@ failure picks up candidates already fetched without touching the network again.
 from __future__ import annotations
 
 import sqlite3
+
+from src.storage.db import connect
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -63,7 +65,7 @@ def load_candidates(
         Matching candidates, ordered by discovery then id. The order is fixed
         because dedup picks a merge base partly on the order it sees.
     """
-    conn = sqlite3.connect(db_path)
+    conn = connect(db_path)
     try:
         rows = conn.execute(
             f"""SELECT {CANDIDATE_COLUMNS} FROM event_candidates

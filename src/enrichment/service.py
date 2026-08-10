@@ -2,6 +2,8 @@
 
 import json
 import sqlite3
+
+from src.storage.db import connect
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -218,7 +220,7 @@ class EnrichmentService:
         self, event_date: date, lat: float, lng: float
     ) -> dict[str, Any] | None:
         """Return the cached day, or None if absent or past its TTL."""
-        with sqlite3.connect(self._db_path) as conn:
+        with connect(self._db_path) as conn:
             row = conn.execute(
                 """SELECT data, fetched_at FROM weather_cache
                    WHERE date=? AND latitude=? AND longitude=?""",
@@ -250,7 +252,7 @@ class EnrichmentService:
     def _db_weather_put(
         self, event_date: date, lat: float, lng: float, weather: dict[str, Any]
     ) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect(self._db_path) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO weather_cache
                    (id, date, latitude, longitude, data, fetched_at)

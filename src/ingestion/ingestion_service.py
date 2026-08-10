@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from src.storage.db import connect
 import uuid
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta, tzinfo, timezone
@@ -120,7 +122,7 @@ class IngestionService:
         Returns:
             IngestionResult with the accepted candidates and their counts.
         """
-        conn = sqlite3.connect(self._db_path) if persist else None
+        conn = connect(self._db_path) if persist else None
         try:
             seeds = load_seeds(self._seeds_path)
             if conn is not None:

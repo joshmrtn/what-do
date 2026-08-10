@@ -17,13 +17,8 @@ from src.models.event import Event
 from src.models.recommendation import Recommendation
 from src.models.timing import ALL_DAY, UNKNOWN
 from src.presentation.filters import RankedPair
-from src.scoring.ranking import (
-    CONFIDENCE_FACTOR,
-    EVERYTHING_ELSE,
-    MATCH_FACTOR,
-    TOP_PICK,
-    WORTH_CONSIDERING,
-)
+from src.scoring.ranking import CONFIDENCE_FACTOR, MATCH_FACTOR
+from src.scoring.tiers import EVERYTHING_ELSE, TOP_PICK, WORTH_CONSIDERING
 from src.scoring.similarity import DISLIKE_FACTOR, LIKE_FACTOR, Reason
 from src.scoring.weather_score import WEATHER_FACTOR
 

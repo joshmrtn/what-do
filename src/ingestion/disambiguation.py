@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+
+from src.storage.db import connect
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,7 +140,7 @@ class DisambiguationStep:
 
     def run(self) -> None:
         """Classify all unclassified probationary handles."""
-        conn = sqlite3.connect(self._db_path)
+        conn = connect(self._db_path)
         try:
             rows = conn.execute(
                 """SELECT id, handle, discovery_context
