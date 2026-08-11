@@ -18,9 +18,10 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from src.models.event import Event
-from src.models.recommendation import Recommendation
+from src.models.event_score import EventScore
+from src.models.ranking import Ranking
 from src.models.timing import ALL_DAY, UNKNOWN
-from src.presentation.filters import RankedPair
+from src.models.ranked_event import RankedEvent
 from src.scoring.ranking import CONFIDENCE_FACTOR, MATCH_FACTOR
 from src.scoring.similarity import DISLIKE_FACTOR, LIKE_FACTOR, Reason
 from src.scoring.weather_score import WEATHER_FACTOR
@@ -56,7 +57,7 @@ _UNKNOWN_TIME_LABEL = "time TBC"
 
 
 def render_recommendations(
-    pairs: list[RankedPair],
+    pairs: list[RankedEvent],
     *,
     heading: str | None = None,
     verbose: bool = False,
@@ -90,9 +91,10 @@ def render_recommendations(
     if heading:
         lines += [_style(heading, _BOLD, color), ""]
 
-    for recommendation, event in shown:
+    for ranked in shown:
+        event, score, ranking = ranked.event, ranked.score, ranked.ranking
         when = _when_of(event)
-        prefix = f"  {recommendation.rank}. "
+        prefix = f"  {ranking.rank}. "
         lines.append(f"{prefix}{when + '  ' if when else ''}{_describe(event)}")
         # Directly under the title, ahead of the reasons. The reasons are the
         # batch's justification; the link is what you want next once a title has
@@ -109,8 +111,8 @@ def render_recommendations(
         elif source_urls and (site := source_urls.get(event.source_type)):
             lines.append(_style(f"      source: {site}", _DIM, color))
         if verbose:
-            lines.append(_style(f"      {_components(recommendation)}", _DIM, color))
-        for reason in _visible_reasons(recommendation.reasons, verbose=verbose):
+            lines.append(_style(f"      {_components(score, ranking)}", _DIM, color))
+        for reason in _visible_reasons(score.reasons, verbose=verbose):
             lines.append(_style(f"      {_format_reason(reason)}", _DIM, color))
         lines.append("")
 
@@ -178,14 +180,14 @@ def _format_reason(reason: Reason) -> str:
     return f"{sign} {label}: {reason.matched_preference} {magnitude}"
 
 
-def _components(recommendation: Recommendation) -> str:
-    """The numbers the tier was cut on, for when the tier looks wrong."""
+def _components(score: EventScore, ranking: Ranking) -> str:
+    """The numbers behind the order, for when a placement looks wrong."""
     return (
-        f"score {recommendation.final_score:+.2f}  "
-        f"base {recommendation.base_score:+.2f}  "
-        f"weather {recommendation.weather_adjustment:+.2f}  "
-        f"confidence {recommendation.tag_confidence:.2f}  "
-        f"match {recommendation.match}"
+        f"score {ranking.final_score:+.2f}  "
+        f"base {score.base_score:+.2f}  "
+        f"weather {ranking.weather_adjustment:+.2f}  "
+        f"confidence {score.tag_confidence:.2f}  "
+        f"match {score.match}"
     )
 
 

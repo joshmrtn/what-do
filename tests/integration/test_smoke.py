@@ -60,7 +60,8 @@ from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
-from src.storage.recommendations import load_recommendations, save_recommendations
+from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.scores import SqliteScoreRepository
 from src.utils.logging import get_logger
 from src.utils.ollama_client import OllamaClient
 from src.utils.vectors import decode_vector
@@ -750,9 +751,10 @@ def test_ranking_smoke(tmp_path: Path) -> None:
 
     blocklist = ["The Sports Bar"]
     engine = RankingEngine(config, blocklist=blocklist, logger=logger)
-    ranked = engine.rank(events, run_date)
+    scored, ranked = engine.rank(events, run_date)
 
-    by_id = {r.event_id: r for r in ranked}
+    by_id = {s.event_id: s for s in scored}
+    placed = {r.event_id: r for r in ranked}
 
     # Only the blocklisted venue is dropped; everything else survives, negatives included.
     assert "blocked-bar" not in by_id
@@ -772,8 +774,8 @@ def test_ranking_smoke(tmp_path: Path) -> None:
 
     # Weather separates two otherwise identical outdoor events.
     assert scores["rooftop-jazz-clear"] > scores["rooftop-jazz-storm"], scores
-    assert by_id["rooftop-jazz-clear"].weather_adjustment > 0
-    assert by_id["rooftop-jazz-storm"].weather_adjustment < 0
+    assert placed["rooftop-jazz-clear"].weather_adjustment > 0
+    assert placed["rooftop-jazz-storm"].weather_adjustment < 0
 
     # A thin extraction is uncertain, not bad: it sinks toward the middle.
     assert by_id["karaoke-thin"].tag_confidence < 1.0
@@ -781,10 +783,10 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     assert scores["karaoke-thin"] < scores["karaoke-night"], scores
 
     # Every score component is explained.
-    for recommendation in ranked:
-        factors = {reason.factor for reason in recommendation.reasons}
+    for score in scored:
+        factors = {reason.factor for reason in score.reasons}
         assert "match_classification" in factors
-        if recommendation.weather_adjustment != 0:
+        if placed[score.event_id].weather_adjustment != 0:
             assert "weather_adjustment" in factors
     assert "low_tag_confidence" in {r.factor for r in by_id["karaoke-thin"].reasons}
 
@@ -796,18 +798,23 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     # Re-ranking the same batch is identical, whatever order the events arrive in.
     shuffled = list(events)
     random.Random(7).shuffle(shuffled)
-    assert engine.rank(shuffled, run_date) == ranked
+    assert engine.rank(shuffled, run_date) == (scored, ranked)
 
     # The run survives a real round trip through SQLite. The events go in first
     # because a score references the event it scored: persisting a verdict about
     # a row that was never stored is the thing the foreign key exists to reject.
     save_events(events, db_path)
-    save_recommendations(ranked, db_path)
-    assert load_recommendations(db_path, run_date=run_date) == ranked
+    score_repo, ranking_repo = SqliteScoreRepository(db_path), SqliteRankingRepository(db_path)
+    score_repo.save(scored)
+    ranking_repo.save(ranked)
+    assert {s.event_id for s in score_repo.for_run(run_date)} == set(by_id)
+    assert ranking_repo.for_run(run_date) == ranked
 
     # A re-run supersedes its earlier attempt rather than accumulating a second copy.
-    save_recommendations(engine.rank(shuffled, run_date), db_path)
-    assert load_recommendations(db_path) == ranked
+    again_scored, again_ranked = engine.rank(shuffled, run_date)
+    score_repo.save(again_scored)
+    ranking_repo.save(again_ranked)
+    assert ranking_repo.for_run(run_date) == ranked
 
 
 # ---------------------------------------------------------------------------
@@ -891,11 +898,12 @@ def test_cli_smoke(tmp_path: Path) -> None:
     ]
 
     engine = RankingEngine(config, blocklist=[], logger=get_logger("smoke", stream=io.StringIO()))
-    ranked = engine.rank(events, run_date)
+    scored, ranked = engine.rank(events, run_date)
     assert len(ranked) == 10
 
     save_events(events, db_path)
-    save_recommendations(ranked, db_path)
+    SqliteScoreRepository(db_path).save(scored)
+    SqliteRankingRepository(db_path).save(ranked)
 
     def _invoke(*argv: str) -> str:
         stdout = io.StringIO()
@@ -1139,22 +1147,22 @@ def test_batch_smoke(tmp_path: Path) -> None:
 
     assert result.outcome == "success", result.errors
     assert result.stage_counts["ingested"] > 0
-    assert result.recommendations, "the batch produced no recommendations"
+    assert result.rankings, "the batch produced no rankings"
 
     first_pass_extractions = len(extraction.texts)
     assert first_pass_extractions > 0
 
-    # Recommendations reached the database, not just the return value.
+    # Rankings reached the database, not just the return value.
     conn = sqlite3.connect(db_path)
     try:
-        persisted = conn.execute("SELECT COUNT(*) FROM recommendations").fetchone()[0]
+        persisted = conn.execute("SELECT COUNT(*) FROM rankings").fetchone()[0]
         runs = conn.execute(
             "SELECT outcome, completed_at FROM run_history"
         ).fetchall()
     finally:
         conn.close()
 
-    assert persisted == len(result.recommendations)
+    assert persisted == len(result.rankings)
     assert runs == [("success", BATCH_NOW.isoformat())]
 
     # --- second run, same night -------------------------------------------
@@ -1174,4 +1182,4 @@ def test_batch_smoke(tmp_path: Path) -> None:
     assert second_extraction.texts == [], (
         "the second run re-extracted; the save-after-extraction design is broken"
     )
-    assert second.recommendations
+    assert second.rankings

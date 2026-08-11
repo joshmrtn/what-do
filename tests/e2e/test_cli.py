@@ -17,12 +17,14 @@ import pytest
 import yaml
 
 from src.models.event import Event
-from src.models.recommendation import Recommendation, make_recommendation_id
+from src.models.event_score import EventScore
+from src.models.ranking import Ranking
 from src.presentation.cli import ViewSettings, run
 from src.scoring.similarity import Reason
 from src.storage.db import init_db
 from src.storage.events import save_events
-from src.storage.recommendations import save_recommendations
+from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.scores import SqliteScoreRepository
 
 TZ = timezone(timedelta(hours=-4))
 RUN_DATE = date(2025, 6, 21)
@@ -66,27 +68,33 @@ def _event(event_id: str, title: str, start: datetime | None, venue: str = "The 
     )
 
 
-def _recommendation(event_id: str, rank: int, score: float) -> Recommendation:
-    return Recommendation(
-        recommendation_id=make_recommendation_id(RUN_DATE, event_id),
-        event_id=event_id,
-        run_date=RUN_DATE,
-        base_score=score,
-        weather_adjustment=0.05,
-        tag_confidence=1.0,
-        final_score=score,
-        match="yes",
-        rank=rank,
-        reasons=[
-            Reason(
-                factor="like_similarity",
-                matched_preference="karaoke night",
-                similarity=0.87,
-                contribution=score,
-                direction="positive",
-                tag="karaoke",
-            )
-        ],
+def _recommendation(event_id: str, rank: int, score: float) -> tuple[EventScore, Ranking]:
+    """One event's verdict and its placement, which are now stored apart."""
+    return (
+        EventScore(
+            event_id=event_id,
+            run_date=RUN_DATE,
+            base_score=score,
+            tag_confidence=1.0,
+            match="yes",
+            reasons=[
+                Reason(
+                    factor="like_similarity",
+                    matched_preference="karaoke night",
+                    similarity=0.87,
+                    contribution=score,
+                    direction="positive",
+                    tag="karaoke",
+                )
+            ],
+        ),
+        Ranking(
+            event_id=event_id,
+            run_date=RUN_DATE,
+            weather_adjustment=0.05,
+            final_score=score,
+            rank=rank,
+        ),
     )
 
 
@@ -126,7 +134,8 @@ def db_path(tmp_path: Path) -> Path:
         _recommendation("t5", 9, 0.02),
         _recommendation("t6", 10, -0.30),
     ]
-    save_recommendations(recommendations, path)
+    SqliteScoreRepository(path).save([score for score, _ in recommendations])
+    SqliteRankingRepository(path).save([ranking for _, ranking in recommendations])
 
     return path
 

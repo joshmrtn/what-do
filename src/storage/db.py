@@ -253,12 +253,16 @@ CREATE TABLE IF NOT EXISTS feedback (
 );
 
 CREATE TABLE IF NOT EXISTS event_scores (
-    event_id      TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    run_date      TEXT NOT NULL,
-    tag_score     REAL,
-    summary_score REAL,
-    base_score    REAL NOT NULL,
-    match         TEXT NOT NULL,
+    event_id       TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    run_date       TEXT NOT NULL,
+    tag_score      REAL,
+    summary_score  REAL,
+    base_score     REAL NOT NULL,
+    -- A pure function of the event's own tag count, so it belongs with the
+    -- verdict rather than with the placement. It sat on `recommendations`
+    -- until 2026-08-11, which is what made the score/ranking split look muddy.
+    tag_confidence REAL NOT NULL DEFAULT 1.0,
+    match          TEXT NOT NULL,
     PRIMARY KEY (event_id, run_date)
 );
 
@@ -277,11 +281,13 @@ CREATE TABLE IF NOT EXISTS score_reasons (
         REFERENCES event_scores(event_id, run_date) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS recommendations (
+-- Only in-scope events get a row. An event that was scored but fell outside
+-- the night's window has an `event_scores` row and no ranking, which is what
+-- lets a score outlive the run that declined to rank it.
+CREATE TABLE IF NOT EXISTS rankings (
     event_id           TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     run_date           TEXT NOT NULL,
     weather_adjustment REAL NOT NULL,
-    tag_confidence     REAL NOT NULL,
     final_score        REAL NOT NULL,
     rank               INTEGER NOT NULL,
     PRIMARY KEY (event_id, run_date),
@@ -292,7 +298,7 @@ CREATE TABLE IF NOT EXISTS recommendations (
 CREATE INDEX IF NOT EXISTS idx_events_start_time        ON events (start_time);
 CREATE INDEX IF NOT EXISTS idx_events_venue_id          ON events (venue_id);
 CREATE INDEX IF NOT EXISTS idx_event_tags_tag           ON event_tags (tag);
-CREATE INDEX IF NOT EXISTS idx_recommendations_run_rank ON recommendations (run_date, rank);
+CREATE INDEX IF NOT EXISTS idx_rankings_run_rank        ON rankings (run_date, rank);
 CREATE INDEX IF NOT EXISTS idx_event_scores_run_date    ON event_scores (run_date);
 CREATE INDEX IF NOT EXISTS idx_candidates_source        ON event_candidates (source);
 CREATE INDEX IF NOT EXISTS idx_candidates_start_time    ON event_candidates (start_time);
@@ -333,7 +339,7 @@ def has_schema(db_path: Path | str) -> bool:
         db_path: Path to the SQLite file.
 
     Returns:
-        True if the file exists and carries the events and recommendations
+        True if the file exists and carries the events and rankings
         tables, meaning a batch has initialised it.
     """
     path = Path(db_path)
@@ -344,7 +350,7 @@ def has_schema(db_path: Path | str) -> bool:
     try:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name IN ('events', 'recommendations')"
+            "AND name IN ('events', 'rankings')"
         ).fetchall()
     except sqlite3.DatabaseError:
         return False

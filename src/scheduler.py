@@ -27,7 +27,8 @@ from src.enrichment.service import EnrichmentService
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
-from src.models.recommendation import Recommendation
+from src.models.event_score import EventScore
+from src.models.ranking import Ranking
 from src.normalization.reconcile import reconcile
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.normalization.service import NormalizationService
@@ -37,10 +38,16 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.candidates import load_candidates
 from src.storage.db import DEFAULT_DB_PATH, init_db
-from src.storage.protocols import EventRepository, RunRepository
+from src.storage.protocols import (
+    EventRepository,
+    RankingRepository,
+    RunRepository,
+    ScoreRepository,
+)
 from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.runs import SqliteRunRepository
-from src.storage.recommendations import save_recommendations
+from src.storage.sqlite.scores import SqliteScoreRepository
 from src.utils.llm_transcript import LLMTranscript
 from src.utils.logging import StructuredLogger, get_logger
 
@@ -72,7 +79,8 @@ class BatchResult:
     stage_counts: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     skipped_sources: list[str] = field(default_factory=list)
-    recommendations: list[Recommendation] = field(default_factory=list)
+    scores: list[EventScore] = field(default_factory=list)
+    rankings: list[Ranking] = field(default_factory=list)
     #: What each source fetched and kept. A total cannot say which of seventeen
     #: sources went quiet, and that is the question a failed run always asks.
     per_source: dict[str, SourceTally] = field(default_factory=dict)
@@ -102,8 +110,9 @@ def run_batch(
     raw_dump_fn: Callable[[list[Any]], None] | None = None,
     load_candidates_fn: Callable[..., list[EventCandidate]] = load_candidates,
     event_repository: EventRepository | None = None,
-    save_recommendations_fn: Callable[..., None] = save_recommendations,
     run_repository: RunRepository | None = None,
+    score_repository: ScoreRepository | None = None,
+    ranking_repository: RankingRepository | None = None,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -137,10 +146,12 @@ def run_batch(
         event_repository: Where events are read and written. Defaults to the
             SQLite repository over `db_path`; injected for testing, which is
             what lets the pipeline run without a database at all.
-        save_recommendations_fn: Injected for testing.
         run_repository: Where the run's history row is written. Defaults to the
             SQLite repository over `db_path`, on the same terms as
             `event_repository`.
+        score_repository: Where each event's verdict is written, same terms.
+        ranking_repository: Where each in-scope event's placement is written,
+            same terms.
 
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
@@ -150,6 +161,14 @@ def run_batch(
     )
     runs_repo: RunRepository = (
         run_repository if run_repository is not None else SqliteRunRepository(db_path)
+    )
+    scores_repo: ScoreRepository = (
+        score_repository if score_repository is not None else SqliteScoreRepository(db_path)
+    )
+    rankings_repo: RankingRepository = (
+        ranking_repository
+        if ranking_repository is not None
+        else SqliteRankingRepository(db_path)
     )
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
@@ -306,13 +325,17 @@ def run_batch(
     rankable = [e for e in events if in_scope(e)]
     result.stage_counts["ranked"] = len(rankable)
 
-    recommendations = _stage(
-        "ranking", lambda: ranking_engine.rank(rankable, run_date), default=[]
+    scores, rankings = _stage(
+        "ranking", lambda: ranking_engine.rank(rankable, run_date), default=([], [])
     )
-    result.recommendations = recommendations
+    result.scores = scores
+    result.rankings = rankings
 
-    if not dry_run and recommendations:
-        _stage("save_recommendations", lambda: save_recommendations_fn(recommendations, db_path))
+    # Scores first: a ranking references its score by (event_id, run_date), and
+    # the foreign key refuses the write otherwise.
+    if not dry_run and scores:
+        _stage("save_scores", lambda: scores_repo.save(scores))
+        _stage("save_rankings", lambda: rankings_repo.save(rankings))
 
     return _finish()
 

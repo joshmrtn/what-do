@@ -3,7 +3,9 @@
 from datetime import date, datetime, timedelta, timezone
 
 from src.models.event import Event
-from src.models.recommendation import Recommendation
+from src.models.event_score import EventScore
+from src.models.ranked_event import RankedEvent
+from src.models.ranking import Ranking
 from src.presentation.render import render_raw, render_recommendations
 from src.scoring.similarity import Reason
 
@@ -58,20 +60,25 @@ def _pair(
     reasons: list[Reason] | None = None,
     start: datetime | None = datetime(2025, 6, 21, 20, 0, tzinfo=TZ),
     **event_kwargs,
-) -> tuple[Recommendation, Event]:
-    recommendation = Recommendation(
-        recommendation_id=f"{TODAY.isoformat()}:{event_id}",
-        event_id=event_id,
-        run_date=TODAY,
-        base_score=0.42,
-        weather_adjustment=0.05,
-        tag_confidence=1.0,
-        final_score=0.68,
-        match="yes",
-        rank=rank,
-        reasons=reasons if reasons is not None else [_reason()],
+) -> RankedEvent:
+    return RankedEvent(
+        event=_event(event_id, start=start, **event_kwargs),
+        score=EventScore(
+            event_id=event_id,
+            run_date=TODAY,
+            base_score=0.42,
+            tag_confidence=1.0,
+            match="yes",
+            reasons=reasons if reasons is not None else [_reason()],
+        ),
+        ranking=Ranking(
+            event_id=event_id,
+            run_date=TODAY,
+            weather_adjustment=0.05,
+            final_score=0.68,
+            rank=rank,
+        ),
     )
-    return recommendation, _event(event_id, start=start, **event_kwargs)
 
 
 class TestRankedList:
@@ -115,7 +122,7 @@ class TestRankedList:
 class TestLimit:
     """Ten by default, with the remainder counted rather than silently dropped."""
 
-    def _many(self, count: int) -> list[tuple[Recommendation, Event]]:
+    def _many(self, count: int) -> list[RankedEvent]:
         return [_pair(f"e{i}", rank=i, title=f"Event {i}") for i in range(1, count + 1)]
 
     def test_only_the_first_ten_are_shown_by_default(self):

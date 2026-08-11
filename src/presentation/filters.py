@@ -14,11 +14,11 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, tzinfo
 
 from src.models.event import Event
+from src.models.ranked_event import RankedEvent
 from src.utils.nights import night_of
-from src.models.recommendation import Recommendation
 
 __all__ = [
-    "RankedPair",
+    "RankedEvent",
     "after_sunset",
     "dated",
     "during_night",
@@ -30,7 +30,6 @@ __all__ = [
 ]
 
 #: One ranked event as the CLI reads it: the run's decision, plus what it decided about.
-RankedPair = tuple[Recommendation, Event]
 
 _WINDOW_FORMAT = "HH:MM-HH:MM"
 
@@ -67,35 +66,35 @@ def parse_time_window(spec: str) -> tuple[time, time]:
     return start, end
 
 
-def dated(pairs: list[RankedPair]) -> list[RankedPair]:
+def dated(pairs: list[RankedEvent]) -> list[RankedEvent]:
     """Select pairs whose event has a start time."""
-    return [pair for pair in pairs if pair[1].start_time is not None]
+    return [pair for pair in pairs if pair.event.start_time is not None]
 
 
-def undated(pairs: list[RankedPair]) -> list[RankedPair]:
+def undated(pairs: list[RankedEvent]) -> list[RankedEvent]:
     """Select pairs whose event has no start time.
 
     These are ranked like any other event; only their timing is unknown, so the
     CLI shows them apart from events it can honestly place on a clock.
     """
-    return [pair for pair in pairs if pair[1].start_time is None]
+    return [pair for pair in pairs if pair.event.start_time is None]
 
 
-def on_date(pairs: list[RankedPair], day: date) -> list[RankedPair]:
+def on_date(pairs: list[RankedEvent], day: date) -> list[RankedEvent]:
     """Select pairs whose event starts on the given local date."""
     return [
         pair
         for pair in pairs
-        if pair[1].start_time is not None and pair[1].start_time.date() == day
+        if pair.event.start_time is not None and pair.event.start_time.date() == day
     ]
 
 
 def during_night(
-    pairs: list[RankedPair],
+    pairs: list[RankedEvent],
     night: date,
     day_starts_at: time,
     zone: tzinfo,
-) -> list[RankedPair]:
+) -> list[RankedEvent]:
     """Select pairs whose event falls in the night named by `night`.
 
     The window runs from `night` at `day_starts_at` to the same wall-clock time
@@ -127,7 +126,7 @@ def during_night(
 
     kept = []
     for pair in pairs:
-        start = pair[1].start_time
+        start = pair.event.start_time
         if start is None:
             continue
         if start.tzinfo is None:
@@ -137,7 +136,7 @@ def during_night(
             start = start.replace(tzinfo=zone)
         # No end time means instantaneous rather than an invented duration,
         # matching `overlapping`.
-        end = pair[1].end_time or start
+        end = pair.event.end_time or start
         if end.tzinfo is None:
             end = end.replace(tzinfo=zone)
         if start < window_to and end >= window_from:
@@ -145,7 +144,7 @@ def during_night(
     return kept
 
 
-def overlapping(pairs: list[RankedPair], window_start: time, window_end: time) -> list[RankedPair]:
+def overlapping(pairs: list[RankedEvent], window_start: time, window_end: time) -> list[RankedEvent]:
     """Select pairs whose event overlaps a time-of-day window, both ends inclusive.
 
     The window is anchored to each event's own date, so it means the same thing
@@ -155,18 +154,18 @@ def overlapping(pairs: list[RankedPair], window_start: time, window_end: time) -
     """
     kept = []
     for pair in pairs:
-        start = pair[1].start_time
+        start = pair.event.start_time
         if start is None:
             continue
         window_from = _combine(start, window_start)
         window_to = _combine(start, window_end)
-        end = pair[1].end_time or start
+        end = pair.event.end_time or start
         if start <= window_to and end >= window_from:
             kept.append(pair)
     return kept
 
 
-def after_sunset(pairs: list[RankedPair]) -> list[RankedPair]:
+def after_sunset(pairs: list[RankedEvent]) -> list[RankedEvent]:
     """Select pairs whose event starts after sunset on its own date.
 
     Sunset is read from the event's own `astronomical_data` rather than from
@@ -175,8 +174,8 @@ def after_sunset(pairs: list[RankedPair]) -> list[RankedPair]:
     """
     kept = []
     for pair in pairs:
-        start = pair[1].start_time
-        sunset = _sunset_of(pair[1])
+        start = pair.event.start_time
+        sunset = _sunset_of(pair.event)
         if start is not None and sunset is not None and start > sunset:
             kept.append(pair)
     return kept

@@ -17,7 +17,8 @@ from datetime import date
 
 from src.config import AppConfig
 from src.models.event import Event
-from src.models.recommendation import Recommendation, make_recommendation_id
+from src.models.event_score import EventScore
+from src.models.ranking import Ranking
 from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.weather_score import weather_adjustment
 from src.utils.blocklist import is_blocked
@@ -57,31 +58,52 @@ class RankingEngine:
         self._blocklist = blocklist or []
         self._logger = logger or get_logger("ranking")
 
-    def rank(self, events: list[Event], run_date: date) -> list[Recommendation]:
-        """Score, order, and label every event for one batch run.
+    def rank(
+        self, events: list[Event], run_date: date
+    ) -> tuple[list[EventScore], list[Ranking]]:
+        """Score and order every event for one batch run.
+
+        The two halves are returned apart because they are stored apart and
+        answer different questions: a score is the verdict on an event under
+        the current preferences, a ranking is its place in one night's order.
 
         Args:
             events: Scored events, each carrying a `similarity` result.
-            run_date: The batch date to stamp on every recommendation.
+            run_date: The batch date to stamp on both halves.
 
         Returns:
-            Recommendations ordered best first, ranked 1..N.
+            Every event's score, and a placement for each, ordered best first
+            and numbered 1..N. Scores are returned in the same order as the
+            placements so the two can be zipped.
         """
-        scored = [
+        pairs = [
             self._score(event, run_date)
             for event in events
             if not self._drop_as_blocked(event)
         ]
 
-        ordered = sorted(scored, key=lambda r: (-r.final_score, r.event_id))
+        ordered = sorted(pairs, key=lambda pair: (-pair[1], pair[0].event_id))
 
-        return [
-            replace(recommendation, rank=position)
-            for position, recommendation in enumerate(ordered, start=1)
+        scores = [score for score, _, _ in ordered]
+        rankings = [
+            Ranking(
+                event_id=score.event_id,
+                run_date=run_date,
+                weather_adjustment=adjustment,
+                final_score=final_score,
+                rank=position,
+            )
+            for position, (score, final_score, adjustment) in enumerate(ordered, start=1)
         ]
+        return scores, rankings
 
-    def _score(self, event: Event, run_date: date) -> Recommendation:
-        """Build one event's recommendation. `rank` is filled in once ordered."""
+    def _score(self, event: Event, run_date: date) -> tuple[EventScore, float, float]:
+        """One event's score, its final score and its weather adjustment.
+
+        The latter two are not on `EventScore` — they belong to the placement —
+        but ordering needs them before a `Ranking` can be built, so they ride
+        along until `rank` is known.
+        """
         similarity = event.similarity or _UNSCORED
         base_score = similarity.base_score
         reasons = list(similarity.reasons)
@@ -124,18 +146,17 @@ class RankingEngine:
 
         final_score = adjusted + adjustment
 
-        return Recommendation(
-            recommendation_id=make_recommendation_id(run_date, event.event_id),
+        score = EventScore(
             event_id=event.event_id,
             run_date=run_date,
+            tag_score=similarity.tag_score,
+            summary_score=similarity.summary_score,
             base_score=base_score,
-            weather_adjustment=adjustment,
             tag_confidence=confidence,
-            final_score=final_score,
             match=similarity.match,
-            rank=0,
             reasons=reasons,
         )
+        return score, final_score, adjustment
 
     def _tag_confidence(self, event: Event) -> float:
         """How much of the expected tag count the extraction actually produced.

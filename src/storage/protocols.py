@@ -8,10 +8,12 @@ spread across the modules that happen to need data.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from src.models.event import Event
+from src.models.event_score import EventScore
+from src.models.ranking import Ranking
 from src.models.run import RunRecord
 
 
@@ -129,4 +131,56 @@ class RunRepository(Protocol):
 
     def get(self, run_id: str) -> RunRecord | None:
         """One run's record, or None if no such run exists."""
+        ...
+
+
+class ScoreRepository(Protocol):
+    """Persistence for `event_scores` and the reasons behind them.
+
+    Scores and reasons are one aggregate: a reason is meaningless without the
+    score it explains, they are written together, and `score_reasons` cascades
+    from `event_scores`.
+    """
+
+    def save(self, scores: list[EventScore]) -> None:
+        """Insert scores for one or more run dates, replacing those runs.
+
+        A re-run of the same date supersedes its earlier attempt rather than
+        accumulating a second copy, or the CLI would read two conflicting
+        orderings. Replacement is scoped to the run dates being written, so
+        previous nights are untouched.
+
+        Args:
+            scores: The run's scores. Empty is a no-op — "nothing to save" is
+                never "clear the table".
+        """
+        ...
+
+    def for_run(self, run_date: date) -> list[EventScore]:
+        """Every score stored for one batch date, with its reasons reattached."""
+        ...
+
+
+class RankingRepository(Protocol):
+    """Persistence for `rankings` — where each in-scope event landed."""
+
+    def save(self, rankings: list[Ranking]) -> None:
+        """Insert placements for one or more run dates, replacing those runs.
+
+        Rankings reference `event_scores` by `(event_id, run_date)`, so the
+        matching scores must already be saved. Empty is a no-op.
+        """
+        ...
+
+    def for_run(self, run_date: date) -> list[Ranking]:
+        """One batch date's placements, in the rank the batch assigned."""
+        ...
+
+    def latest_run_date(self) -> date | None:
+        """The most recent batch date that produced a ranking, if any.
+
+        Deliberately not "the most recent run": a run that died before ranking
+        leaves a `run_history` row and nothing to show, and the CLI wants the
+        last night it can actually display.
+        """
         ...

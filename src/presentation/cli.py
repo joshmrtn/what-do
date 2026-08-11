@@ -22,7 +22,7 @@ import yaml
 from src.config import DEFAULT_DAY_STARTS_AT, ConfigError, load_config
 from src.models.event import Event
 from src.presentation.filters import (
-    RankedPair,
+    RankedEvent,
     after_sunset,
     during_night,
     night_of,
@@ -32,14 +32,31 @@ from src.presentation.filters import (
 from src.presentation.render import DEFAULT_LIMIT, render_raw, render_recommendations
 from src.storage.db import DEFAULT_DB_PATH, has_schema
 from src.storage.events import load_events
-from src.storage.recommendations import load_ranked
+from src.storage.queries import load_ranked_events
+from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.scores import SqliteScoreRepository
 
 _DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
 
 _NO_DATABASE_MESSAGE = "No database yet — run the overnight batch to build one."
 _NO_RECOMMENDATIONS_MESSAGE = "No recommendations yet — run the overnight batch to populate them."
 
-PairLoader = Callable[..., list[RankedPair]]
+PairLoader = Callable[..., list[RankedEvent]]
+
+
+def _default_pairs(db_path: Path, run_date: date | None = None) -> list[RankedEvent]:
+    """Build the three stores over one database and join them.
+
+    The CLI names concrete repositories only here; everything below takes the
+    loader as a parameter, which is what lets the view be tested without SQLite.
+    """
+    return load_ranked_events(
+        SqliteEventRepository(db_path),
+        SqliteScoreRepository(db_path),
+        SqliteRankingRepository(db_path),
+        run_date=run_date,
+    )
 EventLoader = Callable[..., list[Event]]
 ReadinessCheck = Callable[[Path], bool]
 
@@ -196,9 +213,9 @@ def _cmd_recommend(
     # filtered: a missing start time is a gap in what we know, not evidence
     # about when.
     selected = during_night(pairs, tonight, view.day_starts_at, view.zone) + [
-        p for p in pairs if p[1].start_time is None
+        p for p in pairs if p.event.start_time is None
     ]
-    selected.sort(key=lambda pair: pair[0].rank)
+    selected.sort(key=lambda ranked: ranked.rank)
 
     if window is not None:
         selected = overlapping(selected, *window)
@@ -267,7 +284,7 @@ def run(
     get_now: Callable[[], datetime] = datetime.now,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
-    load_pairs: PairLoader = load_ranked,
+    load_pairs: PairLoader = _default_pairs,
     load_all_events: EventLoader = load_events,
     db_ready: ReadinessCheck = has_schema,
     load_view_settings: ViewSettingsLoader = default_view_settings,
@@ -282,7 +299,8 @@ def run(
         get_now: Clock, injected. Decides which day "today" means.
         stdout: Where the rendered view goes.
         stderr: Where usage errors go.
-        load_pairs: Reads (recommendation, event) pairs for a run.
+        load_pairs: Reads a run's ranked events — the event, its score and
+            its placement, joined.
         load_all_events: Reads every stored event, for `--raw`.
         db_ready: Reports whether the database has been initialised. Injected
             with the loaders it guards, so a test that substitutes them does not

@@ -18,7 +18,7 @@ def test_all_tables_exist(tmp_path):
         "candidate_entities",
         "event_candidates",
         "events",
-        "recommendations",
+        "rankings",
         "preference_embeddings_cache",
         "weather_cache",
         "run_history",
@@ -41,26 +41,39 @@ def test_events_table_has_blob_columns(tmp_path):
     assert "tag_embeddings" not in columns
 
 
-def test_recommendations_table_columns(tmp_path):
+def test_rankings_table_columns(tmp_path):
 
     init_db(db_path=tmp_path / "test.db")
     conn = sqlite3.connect(tmp_path / "test.db")
-    cursor = conn.execute("PRAGMA table_info(recommendations)")
+    cursor = conn.execute("PRAGMA table_info(rankings)")
     columns = {row[1]: row[2] for row in cursor.fetchall()}
     conn.close()
 
-    # `recommendations` is the ranking output alone. The semantic verdict lives
-    # in `event_scores` and its breakdown in `score_reasons`, so both survive
-    # for events that were scored but fell outside the ranked window.
-    for score_column in ("weather_adjustment", "tag_confidence", "final_score"):
-        assert columns.get(score_column) == "REAL"
+    # `rankings` is the placement alone — what depends on the night. The verdict
+    # on the event lives in `event_scores` and its breakdown in `score_reasons`,
+    # so both survive for events that were scored but fell outside the window.
+    for placement_column in ("weather_adjustment", "final_score"):
+        assert columns.get(placement_column) == "REAL"
     assert columns.get("rank") == "INTEGER"
+    # The verdict and its breakdown stay on `event_scores` / `score_reasons`,
+    # so both survive for events scored but outside the ranked window.
     assert "base_score" not in columns
     assert "reasons" not in columns
     assert "match" not in columns
-    # tier is derived from final_score at render time, never stored: a threshold
-    # change must relabel history rather than disagree with it.
-    assert "tier" not in columns
+    # tag_confidence is a pure function of the event's own tags, so it belongs
+    # with the verdict, not the placement.
+    assert "tag_confidence" not in columns
+
+
+def test_event_scores_carries_the_confidence_and_both_components(tmp_path):
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    columns = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(event_scores)")}
+    conn.close()
+
+    for column in ("tag_score", "summary_score", "base_score", "tag_confidence"):
+        assert columns.get(column) == "REAL", column
+    assert columns.get("match") == "TEXT"
 
 
 def test_init_db_idempotent(tmp_path):

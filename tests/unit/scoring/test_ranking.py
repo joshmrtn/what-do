@@ -1,6 +1,8 @@
 """Tests for the deterministic ranking engine."""
 
 import random
+from dataclasses import replace
+from types import SimpleNamespace
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -144,9 +146,37 @@ def _event(
     )
 
 
+def _rank_split(events, config=None, blocklist=None):
+    """The engine's output as it really is: (scores, placements)."""
+    return RankingEngine(config or _config(), blocklist=blocklist).rank(events, RUN_DATE)
+
+
 def _rank(events: list[Event], config: AppConfig | None = None, blocklist=None):
+    """Scores and placements zipped into one view, for assertions about numbers.
+
+    The engine returns the two halves apart because they are stored apart. Most
+    tests here are about the scoring arithmetic, which does not care which half
+    a field ended up on; the tests at the bottom of this file assert the split
+    itself against the real objects.
+    """
     engine = RankingEngine(config or _config(), blocklist=blocklist)
-    return engine.rank(events, RUN_DATE)
+    scores, rankings = engine.rank(events, RUN_DATE)
+    return [
+        SimpleNamespace(
+            event_id=score.event_id,
+            run_date=score.run_date,
+            tag_score=score.tag_score,
+            summary_score=score.summary_score,
+            base_score=score.base_score,
+            tag_confidence=score.tag_confidence,
+            match=score.match,
+            reasons=score.reasons,
+            weather_adjustment=ranking.weather_adjustment,
+            final_score=ranking.final_score,
+            rank=ranking.rank,
+        )
+        for score, ranking in zip(scores, rankings)
+    ]
 
 
 def _scores(events: list[Event], config: AppConfig | None = None) -> dict[str, float]:
@@ -470,11 +500,12 @@ def test_weather_is_explained_when_it_applies():
     assert [r for r in reasons if r.factor == "weather_adjustment"]
 
 
-def test_recommendation_id_is_derived_from_the_run_and_event():
+def test_a_score_is_keyed_by_the_event_and_the_run():
+    """Two runs over the same events must be identical, so nothing is generated."""
     first = _rank([_event("evt-1")])[0]
     second = _rank([_event("evt-1")])[0]
 
-    assert first.recommendation_id == second.recommendation_id
+    assert (first.event_id, first.run_date) == (second.event_id, second.run_date)
 
 
 # --- degraded input ---------------------------------------------------------
@@ -492,3 +523,59 @@ def test_unscored_event_is_labelled_maybe():
     ranked = _rank([_event("unscored", scored=False)])
 
     assert ranked[0].match == "maybe"
+
+
+# --- the score/ranking split ------------------------------------------------
+
+
+def test_rank_returns_a_score_and_a_placement_for_each_event():
+    scores, rankings = _rank_split([_event("a", base_score=0.6)])
+
+    assert [s.event_id for s in scores] == ["a"]
+    assert [r.event_id for r in rankings] == ["a"]
+
+
+def test_the_components_behind_base_score_are_carried_not_discarded():
+    """`event_scores` has columns for both and stored NULL in all 861 rows.
+
+    The scorer computes them; only the model in between dropped them.
+    """
+    event = _event("a", base_score=0.6)
+    event.similarity = replace(event.similarity, tag_score=0.5, summary_score=0.33)
+
+    scores, _ = _rank_split([event])
+
+    assert scores[0].tag_score == 0.5
+    assert scores[0].summary_score == 0.33
+
+
+def test_tag_confidence_belongs_to_the_score_not_the_placement():
+    """It is a pure function of the event's own tags — nothing to do with tonight."""
+    scores, rankings = _rank_split([_event("a", base_score=0.6, tag_count=1)])
+
+    assert scores[0].tag_confidence < 1.0
+    assert not hasattr(rankings[0], "tag_confidence")
+
+
+def test_weather_belongs_to_the_placement_not_the_score():
+    """It depends on tonight's forecast, so it cannot be a property of the event."""
+    scores, rankings = _rank_split([_event("a", base_score=0.6)])
+
+    assert hasattr(rankings[0], "weather_adjustment")
+    assert not hasattr(scores[0], "weather_adjustment")
+
+
+def test_placements_are_ordered_best_first_and_numbered_from_one():
+    _, rankings = _rank_split(
+        [
+            _event("low", base_score=0.1),
+            _event("high", base_score=0.9),
+            _event("mid", base_score=0.5),
+        ]
+    )
+
+    assert [(r.event_id, r.rank) for r in rankings] == [
+        ("high", 1),
+        ("mid", 2),
+        ("low", 3),
+    ]

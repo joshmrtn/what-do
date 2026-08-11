@@ -21,12 +21,15 @@ from src.config import (
 from src.ingestion.ingestion_service import IngestionResult
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
-from src.models.recommendation import Recommendation
 from src.models.tag import Tag
 from src.normalization.service import NormalizationResult
 from src.scheduler import run_batch
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
+from src.models.event_score import EventScore
+from src.models.ranking import Ranking
+from src.storage.memory.rankings import InMemoryRankingRepository
+from src.storage.memory.scores import InMemoryScoreRepository
 from src.storage.sqlite.events import SqliteEventRepository
 from src.utils.logging import get_logger
 
@@ -163,21 +166,28 @@ class _FakeRanking:
 
     def rank(self, events, run_date):
         self.ranked.append([e.event_id for e in events])
-        return [
-            Recommendation(
-                recommendation_id=f"{run_date}:{e.event_id}",
+        scores = [
+            EventScore(
                 event_id=e.event_id,
                 run_date=run_date,
                 base_score=1.0,
-                weather_adjustment=0.0,
                 tag_confidence=1.0,
-                final_score=1.0,
                 match="yes",
-                rank=i + 1,
                 reasons=[],
+            )
+            for e in events
+        ]
+        rankings = [
+            Ranking(
+                event_id=e.event_id,
+                run_date=run_date,
+                weather_adjustment=0.0,
+                final_score=1.0,
+                rank=i + 1,
             )
             for i, e in enumerate(events)
         ]
+        return scores, rankings
 
 
 class _Spy:
@@ -199,6 +209,30 @@ class _Spy:
     @property
     def calls(self) -> int:
         return len(self.snapshots)
+
+
+class _SpyRankingRepository:
+    """An in-memory ranking repository that records every write.
+
+    Replaces the old save-function spy: rankings now go through a repository,
+    and the in-memory one is the official fake.
+    """
+
+    def __init__(self) -> None:
+        self._inner = InMemoryRankingRepository()
+        self.calls = 0
+        self.snapshots: list[list[Ranking]] = []
+
+    def save(self, rankings: list[Ranking]) -> None:
+        self.calls += 1
+        self.snapshots.append(list(rankings))
+        self._inner.save(rankings)
+
+    def for_run(self, run_date):
+        return self._inner.for_run(run_date)
+
+    def latest_run_date(self):
+        return self._inner.latest_run_date()
 
 
 class _SpyRepository:
@@ -311,7 +345,7 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
     save_spy = _SpyRepository(
         SqliteEventRepository(db), on_save=kwargs.pop("on_save", None)
     )
-    recs_spy = _Spy(lambda items, path: None)
+    recs_spy = _SpyRankingRepository()
 
     result = run_batch(
         config=_config(),
@@ -323,7 +357,8 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
             EventCandidate(id="c1", source="@v", source_type="apify", discovered_at=NOW)
         ],
         event_repository=save_spy,
-        save_recommendations_fn=recs_spy,
+        score_repository=InMemoryScoreRepository(),
+        ranking_repository=recs_spy,
         **fakes,
         **kwargs,
     )

@@ -9,7 +9,9 @@ import pytest
 import yaml
 
 from src.models.event import Event
-from src.models.recommendation import Recommendation
+from src.models.event_score import EventScore
+from src.models.ranked_event import RankedEvent
+from src.models.ranking import Ranking
 from src.config import (
     AppConfig,
     ConfigError,
@@ -57,29 +59,34 @@ def _pair(
     sunset: datetime | None = None,
     source_type: str = "instagram",
     url: str | None = None,
-) -> tuple[Recommendation, Event]:
-    recommendation = Recommendation(
-        recommendation_id=f"{TODAY.isoformat()}:{event_id}",
-        event_id=event_id,
-        run_date=TODAY,
-        base_score=0.42,
-        weather_adjustment=0.05,
-        tag_confidence=1.0,
-        final_score=0.68,
-        match="yes",
-        rank=rank,
-        reasons=[
-            Reason(
-                factor="like_similarity",
-                matched_preference="karaoke night",
-                similarity=0.87,
-                contribution=0.8,
-                direction="positive",
-                tag="karaoke",
-            )
-        ],
+) -> RankedEvent:
+    return RankedEvent(
+        event=_event(event_id, title, start, sunset, source_type, url),
+        score=EventScore(
+            event_id=event_id,
+            run_date=TODAY,
+            base_score=0.42,
+            tag_confidence=1.0,
+            match="yes",
+            reasons=[
+                Reason(
+                    factor="like_similarity",
+                    matched_preference="karaoke night",
+                    similarity=0.87,
+                    contribution=0.8,
+                    direction="positive",
+                    tag="karaoke",
+                )
+            ],
+        ),
+        ranking=Ranking(
+            event_id=event_id,
+            run_date=TODAY,
+            weather_adjustment=0.05,
+            final_score=0.68,
+            rank=rank,
+        ),
     )
-    return recommendation, _event(event_id, title, start, sunset, source_type, url)
 
 
 SUNSET = datetime(2025, 6, 21, 20, 15, tzinfo=TZ)
@@ -92,7 +99,7 @@ PAIRS = [
     _pair("e", "Low Ranked", datetime(2025, 6, 21, 19, 0, tzinfo=TZ), rank=5, sunset=SUNSET),
 ]
 
-ALL_EVENTS = [e for _, e in PAIRS]
+ALL_EVENTS = [ranked.event for ranked in PAIRS]
 
 ZONE = ZoneInfo("America/New_York")
 VIEW = ViewSettings(zone=ZONE, day_starts_at=time(4, 0))

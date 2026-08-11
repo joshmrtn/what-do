@@ -6,7 +6,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.models.event import Event
-from src.models.recommendation import Recommendation
+from src.models.event_score import EventScore
+from src.models.ranked_event import RankedEvent
+from src.models.ranking import Ranking
 from src.presentation.filters import (
     after_sunset,
     dated,
@@ -27,7 +29,7 @@ def _pair(
     start: datetime | None = None,
     end: datetime | None = None,
     sunset: datetime | None = None,
-) -> tuple[Recommendation, Event]:
+) -> RankedEvent:
     astro = {"sunset": sunset.isoformat()} if sunset is not None else None
     event = Event(
         event_id=event_id,
@@ -39,18 +41,15 @@ def _pair(
         end_time=end,
         astronomical_data=astro,
     )
-    recommendation = Recommendation(
-        recommendation_id=f"{TODAY.isoformat()}:{event_id}",
-        event_id=event_id,
-        run_date=TODAY,
-        base_score=0.4,
-        weather_adjustment=0.0,
-        tag_confidence=1.0,
-        final_score=0.4,
-        match="yes",
-        rank=1,
+    return RankedEvent(
+        event=event,
+        score=EventScore(
+            event_id=event_id, run_date=TODAY, base_score=0.4, match="yes"
+        ),
+        ranking=Ranking(
+            event_id=event_id, run_date=TODAY, final_score=0.4, rank=1
+        ),
     )
-    return recommendation, event
 
 
 def _at(hour: int, minute: int = 0, day: int = 21) -> datetime:
@@ -58,7 +57,7 @@ def _at(hour: int, minute: int = 0, day: int = 21) -> datetime:
 
 
 def _ids(pairs) -> list[str]:
-    return [e.event_id for _, e in pairs]
+    return [ranked.event.event_id for ranked in pairs]
 
 
 class TestParseTimeWindow:
