@@ -112,7 +112,8 @@ Tier thresholds, summary_weight, and match_multipliers live in `config.yaml`, no
 
 1. **TDD always.** Write failing tests first. Never implement without a red test.
 2. **No network calls in tests.** All external services injected as dependencies so tests
-   substitute fakes. Violation = bug.
+   substitute fakes. Violation = bug. The `model` and `external` tiers are the only
+   exception, they are excluded from every default run, and neither may gate a commit.
 3. **Injectable time.** Never call `datetime.now()` directly. Pass a `get_now` callable as
    a parameter to anything time-sensitive. Critical for testing time filters and lookback windows.
 4. **Phase gates.** No phase begins until all previous phase tests are green AND the smoke
@@ -136,6 +137,11 @@ tests/
     test_smoke.py
   e2e/              ← full CLI invocations against a populated DB
     test_cli.py
+  model/            ← does a model comply with our prompts; deleted by #2
+    test_extraction_compliance.py
+  external/         ← third-party API, needs a key; never a gate
+    test_gemini_live_path.py
+  tier_plugin.py    ← the integration probe and its loud skip
 ```
 
 Rules:
@@ -145,6 +151,32 @@ Rules:
   or template file will surface immediately as an import error or runtime failure
 - No phase-labelled test names (e.g. `test_phase0_*`, `describe('P0: ...')`) —
   plan structure belongs in the plan file, not in source
+
+### Markers name the reason to run, not the cost
+
+Cost is why a test gets skipped; *reason to run* is what decides when it runs.
+Registered in `pyproject.toml`, enforced with `--strict-markers`, so an
+unregistered marker fails collection instead of silently joining the default run.
+
+| marker | what it is | when it runs |
+|---|---|---|
+| *(unmarked)* | mocked; tests our code | every run |
+| `integration` | real SQLite, real Ollama **embeddings**, seconds | every run; skips **loudly** without Ollama |
+| `model` | real LLM **inference**; does a model comply with our prompts | selecting a model. Never a gate |
+| `external` | third-party API and a key | by hand. Never a gate |
+
+`model` and `external` are orthogonal and **stack** — a Gemini compliance test
+carries both. Default selection is `-m "not model and not external"`, so either
+marker alone is enough to keep a test out of the commit gate.
+
+**The dividing line for what gets mocked:** anything asserting a qualitative or
+quantitative property of an LLM belongs in `model` (and ultimately the bench in
+issue #2, which owns deleting that tier). Everything else — transport, contract,
+prompt construction, JSON parsing, fence stripping, retry — is our code, is
+mocked, and runs every time.
+
+**The commit gate is the default suite**, which now includes `integration`. It
+is seconds, which is the point: a gate expensive enough to skip is not a gate.
 
 ---
 
@@ -228,6 +260,8 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Keying a candidate id on an event URL alone | A recurring programme keeps one page across every date it runs — PEM's 97 listings are 61 URLs — so the id must carry the start too, or a whole season collapses into one candidate |
 | Concluding a site has no events because it has no feed | Autodiscovery cannot see `application/ld+json`. PEM publishes 97 events that way and was written off twice. Grep for it before writing any bespoke parser |
 | Matching the word `cancelled` anywhere in a title | Throws away `Cancelled Culture: A Comedy Show` and a `Never Cancelled Tour`. A cancellation is the feed's *marker* — asterisk-delimited, or leading with a separator |
+| A tier that is deselected by default and never run | It reports green having checked nothing. The FK bug in `event_scores` shipped this way: 1,777 fast tests passed while the one test that would have caught it sat behind a multi-minute marker. Cheap cross-module tests belong in the default run; anything excluded must be excluded for a *reason to run*, not for its cost |
+| Testing a marker with `item.keywords` | `keywords` holds the name of every parent node, so `"integration" in item.keywords` matches the `tests/integration/` **directory** and skips the whole file. Use `item.get_closest_marker(...)` |
 
 ---
 
