@@ -90,6 +90,10 @@ class FeedConfig:
             itself declares none — a summary that names a venue is more specific
             and wins.
         city: City for the same, on the same terms.
+        site_url: Human-facing page to attribute this source's events to when an
+            event carries no URL of its own. Declared separately because `url` is
+            whatever we fetch, which is often not something to hand a person — a
+            Google Calendar ICS export is a correct feed and a useless link.
     """
 
     name: str
@@ -98,6 +102,7 @@ class FeedConfig:
     min_fetch_interval_hours: float = 6.0
     venue: str | None = None
     city: str | None = None
+    site_url: str | None = None
 
 
 @dataclass
@@ -129,6 +134,33 @@ class SourcesConfig:
     #: Pages publishing schema.org events as JSON-LD — the richest markup a
     #: site can offer, stating offsets and cancellations outright.
     jsonld_pages: list[FeedConfig] = field(default_factory=list)
+
+    def all_feeds(self) -> list[FeedConfig]:
+        """Every declared feed, across all parser groups, in declaration order."""
+        feeds: list[FeedConfig] = []
+        for value in vars(self).values():
+            if isinstance(value, list):
+                feeds.extend(value)
+        return feeds
+
+    def site_url_by_source_type(self) -> dict[str, str]:
+        """Human-facing page per source_type, for events carrying no URL.
+
+        Only unambiguous source types get an entry. Several feeds may share a
+        `source_type` — two Veezi cinemas both produce `cinema_veezi` — and an
+        event records only that label, so where the feeds disagree there is no
+        way to tell which site an event came from. A wrong link is worse than
+        none, so a disagreement yields no entry at all.
+        """
+        candidates: dict[str, set[str]] = {}
+        for feed in self.all_feeds():
+            candidates.setdefault(feed.source_type, set()).add(feed.site_url or feed.url)
+
+        return {
+            source_type: next(iter(urls))
+            for source_type, urls in candidates.items()
+            if len(urls) == 1
+        }
 
 
 @dataclass(frozen=True)
@@ -451,6 +483,7 @@ def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
 
         venue = _optional_text(entry, "venue", kind, name)
         city = _optional_text(entry, "city", kind, name)
+        site_url = _optional_text(entry, "site_url", kind, name)
 
         source_type = str(entry.get("source_type", name))
         if source_type in RESERVED:
@@ -468,6 +501,7 @@ def _load_feeds(entries: Any, kind: str) -> list[FeedConfig]:
                 min_fetch_interval_hours=interval,
                 venue=venue,
                 city=city,
+                site_url=site_url,
             )
         )
 

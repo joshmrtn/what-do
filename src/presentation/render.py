@@ -11,6 +11,7 @@ flag away, not disappear.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from src.models.event import Event
@@ -62,6 +63,7 @@ def render_recommendations(
     verbose: bool = False,
     show_all: bool = False,
     color: bool = False,
+    source_urls: Mapping[str, str] | None = None,
 ) -> str:
     """Render ranked events as sectioned text.
 
@@ -71,6 +73,8 @@ def render_recommendations(
         verbose: Show every reason plus the score components behind the tier.
         show_all: Expand the bottom tier instead of folding it to a count.
         color: Emit ANSI styling. Off when stdout is not a terminal.
+        source_urls: Human-facing page per `source_type`, used only for events
+            carrying no URL of their own.
 
     Returns:
         The rendered view, ending in a newline.
@@ -90,11 +94,17 @@ def render_recommendations(
     for section, title in ((top, _SECTION_TITLES[TOP_PICK]),
                            (worth, _SECTION_TITLES[WORTH_CONSIDERING]),
                            (undated, _UNDATED_TITLE)):
-        lines += _render_section(section, title, verbose=verbose, color=color)
+        lines += _render_section(
+            section, title, verbose=verbose, color=color, source_urls=source_urls
+        )
 
     if show_all:
         lines += _render_section(
-            folded, _SECTION_TITLES[EVERYTHING_ELSE], verbose=verbose, color=color
+            folded,
+            _SECTION_TITLES[EVERYTHING_ELSE],
+            verbose=verbose,
+            color=color,
+            source_urls=source_urls,
         )
     elif folded:
         plural = "" if len(folded) == 1 else "s"
@@ -124,7 +134,12 @@ def render_raw(events: list[Event]) -> str:
 
 
 def _render_section(
-    pairs: list[RankedPair], title: str, *, verbose: bool, color: bool
+    pairs: list[RankedPair],
+    title: str,
+    *,
+    verbose: bool,
+    color: bool,
+    source_urls: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Render one titled section, or nothing at all when it is empty."""
     if not pairs:
@@ -142,6 +157,13 @@ def _render_section(
         # make it clickable.
         if event.url:
             lines.append(_style(f"      {event.url}", _DIM, color))
+        # No per-event link: name the source instead. 320 of 359 NSNO events
+        # publish no URL, so without this a listing's own error arrives with
+        # nothing to check it against and reads as ours. Labelled, because it
+        # opens the site rather than the event — an unlabelled URL here would
+        # promise more than it delivers.
+        elif source_urls and (site := source_urls.get(event.source_type)):
+            lines.append(_style(f"      source: {site}", _DIM, color))
         if verbose:
             lines.append(_style(f"      {_components(recommendation)}", _DIM, color))
         for reason in _visible_reasons(recommendation.reasons, verbose=verbose):

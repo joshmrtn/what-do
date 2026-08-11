@@ -518,3 +518,44 @@ class TestUnpublishedTimes:
 
         assert "all day" in out
         assert "20:00" not in out
+
+
+class TestSourceAttribution:
+    """Where an event came from, when the event itself carries no link.
+
+    A listing that publishes no per-event URL renders with nothing to check, so
+    a source's own error reads as ours. The site stands in.
+    """
+
+    SITES = {"northshorenightout": "https://northshorenightout.com/"}
+
+    def test_an_event_without_a_url_is_attributed_to_its_source_site(self):
+        pairs = [_pair(source_type="northshorenightout", url=None)]
+
+        output = render_recommendations(pairs, source_urls=self.SITES)
+
+        assert "source: https://northshorenightout.com/" in output
+
+    def test_the_events_own_url_wins_and_is_not_labelled_a_source(self):
+        # A per-event link goes to the event; the site only goes to the site.
+        # Labelling the former "source:" would overclaim what it opens.
+        pairs = [
+            _pair(source_type="northshorenightout", url="https://example.com/event/9")
+        ]
+
+        output = render_recommendations(pairs, source_urls=self.SITES)
+
+        assert "https://example.com/event/9" in output
+        assert "source:" not in output
+
+    def test_an_unmapped_source_renders_no_attribution_line(self):
+        pairs = [_pair(source_type="synthetic", url=None)]
+
+        output = render_recommendations(pairs, source_urls=self.SITES)
+
+        assert "source:" not in output
+
+    def test_attribution_is_absent_when_no_map_is_supplied(self):
+        pairs = [_pair(source_type="northshorenightout", url=None)]
+
+        assert "source:" not in render_recommendations(pairs)

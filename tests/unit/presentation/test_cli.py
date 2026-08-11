@@ -9,7 +9,16 @@ import yaml
 
 from src.models.event import Event
 from src.models.recommendation import Recommendation
-from src.presentation.cli import ViewSettings, run
+from src.config import (
+    AppConfig,
+    ConfigError,
+    FeedConfig,
+    LocationConfig,
+    ScrapingConfig,
+    SourcesConfig,
+    VenueDiscoveryConfig,
+)
+from src.presentation.cli import ViewSettings, default_view_settings, run
 from src.scoring.similarity import Reason
 
 TZ = timezone(timedelta(hours=-4))
@@ -22,16 +31,19 @@ def _event(
     title: str,
     start: datetime | None,
     sunset: datetime | None = None,
+    source_type: str = "instagram",
+    url: str | None = None,
 ) -> Event:
     return Event(
         event_id=event_id,
         source_event_candidates=[],
-        source_type="instagram",
+        source_type=source_type,
         created_at=NOW,
         updated_at=NOW,
         title=title,
         venue="Somewhere",
         start_time=start,
+        url=url,
         astronomical_data={"sunset": sunset.isoformat()} if sunset else None,
     )
 
@@ -43,6 +55,8 @@ def _pair(
     tier: str = "top_pick",
     rank: int = 1,
     sunset: datetime | None = None,
+    source_type: str = "instagram",
+    url: str | None = None,
 ) -> tuple[Recommendation, Event]:
     recommendation = Recommendation(
         recommendation_id=f"{TODAY.isoformat()}:{event_id}",
@@ -66,7 +80,7 @@ def _pair(
             )
         ],
     )
-    return recommendation, _event(event_id, title, start, sunset)
+    return recommendation, _event(event_id, title, start, sunset, source_type, url)
 
 
 SUNSET = datetime(2025, 6, 21, 20, 15, tzinfo=TZ)
@@ -84,6 +98,22 @@ ALL_EVENTS = [e for _, e in PAIRS]
 
 ZONE = ZoneInfo("America/New_York")
 VIEW = ViewSettings(zone=ZONE, day_starts_at=time(4, 0))
+
+
+def _config_with(sources: SourcesConfig) -> AppConfig:
+    """Minimal real AppConfig — only the view loader's inputs need to be true."""
+    return AppConfig(
+        location=LocationConfig(
+            latitude=0.0,
+            longitude=0.0,
+            postal_code="00000",
+            search_radius_miles=25.0,
+            timezone="America/New_York",
+        ),
+        scraping=ScrapingConfig(),
+        venue_discovery=VenueDiscoveryConfig(),
+        sources=sources,
+    )
 
 
 class _Harness:
@@ -482,3 +512,55 @@ class TestViewSettingsFallback:
         harness.invoke("--raw")
 
         assert harness.err == ""
+
+
+
+class TestSourceAttributionWiring:
+    """The site map reaches the renderer, and it comes from config."""
+
+    def test_the_views_site_map_reaches_the_rendered_output(self):
+        view = ViewSettings(
+            zone=ZONE,
+            day_starts_at=time(4, 0),
+            source_urls={"northshorenightout": "https://northshorenightout.com/"},
+        )
+        pair = _pair(
+            "evt-nsno",
+            "Trivia",
+            datetime(2025, 6, 21, 20, 0, tzinfo=TZ),
+            source_type="northshorenightout",
+        )
+        harness = _Harness(pairs=[pair], view=view)
+
+        assert harness.invoke() == 0
+        assert "source: https://northshorenightout.com/" in harness.out
+
+    def test_default_view_settings_builds_the_map_from_config(self, monkeypatch):
+        config = _config_with(
+            SourcesConfig(
+                html_calendars=[
+                    FeedConfig(
+                        name="nsno",
+                        url="https://calendar.google.com/calendar/ical/x/basic.ics",
+                        source_type="northshorenightout",
+                        site_url="https://northshorenightout.com/",
+                    )
+                ]
+            )
+        )
+        monkeypatch.setattr("src.presentation.cli.load_config", lambda: config)
+
+        assert default_view_settings().source_urls == {
+            "northshorenightout": "https://northshorenightout.com/"
+        }
+
+    def test_an_unusable_config_degrades_to_no_attribution(self, monkeypatch):
+        def boom():
+            raise ConfigError("no config")
+
+        monkeypatch.setattr("src.presentation.cli.load_config", boom)
+
+        settings = default_view_settings()
+
+        assert settings.source_urls == {}
+        assert settings.warning is not None

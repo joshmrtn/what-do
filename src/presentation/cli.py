@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, tzinfo
 from pathlib import Path
 from typing import Any, Callable, TextIO
@@ -62,6 +63,9 @@ class ViewSettings:
             Both live here because a tier is derived at render time, never
             stored — a threshold change must relabel history, not disagree
             with it.
+        source_urls: Human-facing page per `source_type`, for events that carry
+            no URL of their own. Empty when config is unreadable — attribution is
+            a convenience, and losing it must never cost the listing.
         warning: Emitted to stderr when the settings had to be guessed. Carried
             on the value rather than printed by the loader, so the loader stays
             substitutable in tests without capturing a stream.
@@ -71,6 +75,7 @@ class ViewSettings:
     day_starts_at: time
     top_picks_min: float = DEFAULT_TOP_PICKS_MIN
     worth_considering_min: float = DEFAULT_WORTH_CONSIDERING_MIN
+    source_urls: Mapping[str, str] = field(default_factory=dict)
     warning: str | None = None
 
 
@@ -92,6 +97,7 @@ def default_view_settings() -> ViewSettings:
             day_starts_at=config.day_starts_at,
             top_picks_min=config.scoring.top_picks_min,
             worth_considering_min=config.scoring.worth_considering_min,
+            source_urls=config.sources.site_url_by_source_type(),
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
         system_zone = datetime.now().astimezone().tzinfo
@@ -229,6 +235,7 @@ def _cmd_recommend(
             verbose=args.verbose,
             show_all=args.all,
             color=_supports_color(stdout),
+            source_urls=view.source_urls,
         ),
         file=stdout,
         end="",

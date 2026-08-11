@@ -7,6 +7,8 @@ import yaml
 from src.config import (
     DEFAULT_HORIZON_DAYS,
     ConfigError,
+    FeedConfig,
+    SourcesConfig,
     _timezone_finder,
     load_config,
 )
@@ -1040,3 +1042,76 @@ def test_the_request_parameters_can_be_configured(tmp_path):
 def test_an_out_of_range_request_parameter_is_rejected(tmp_path, key, value):
     with pytest.raises(ConfigError):
         _load(tmp_path, {"models": {key: value}})
+
+
+class TestSiteUrlBySourceType:
+    """The human-facing page a source's events can fall back to.
+
+    An event without its own URL is unattributable in the CLI, which is how a
+    wrong listing looked like our mistake rather than the source's.
+    """
+
+    def _sources(self, feeds):
+        return SourcesConfig(html_calendars=[FeedConfig(**f) for f in feeds])
+
+    def test_a_feeds_url_stands_in_when_it_declares_no_site(self):
+        sources = self._sources(
+            [{"name": "pem", "url": "https://www.pem.org/events", "source_type": "pem"}]
+        )
+
+        assert sources.site_url_by_source_type() == {"pem": "https://www.pem.org/events"}
+
+    def test_a_declared_site_wins_over_the_feed_url(self):
+        # The NSNO case: the feed is a Google Calendar ICS link, useless to a
+        # human who wants to check what the listing actually said.
+        sources = self._sources(
+            [{
+                "name": "nsno",
+                "url": "https://calendar.google.com/calendar/ical/abc/public/basic.ics",
+                "source_type": "northshorenightout",
+                "site_url": "https://northshorenightout.com/",
+            }]
+        )
+
+        assert sources.site_url_by_source_type() == {
+            "northshorenightout": "https://northshorenightout.com/"
+        }
+
+    def test_feeds_sharing_a_source_type_and_a_site_collapse_to_one_entry(self):
+        sources = self._sources(
+            [
+                {"name": "a", "url": "https://do617.com/venues/koto",
+                 "source_type": "do617", "site_url": "https://do617.com/"},
+                {"name": "b", "url": "https://do617.com/venues/notch",
+                 "source_type": "do617", "site_url": "https://do617.com/"},
+            ]
+        )
+
+        assert sources.site_url_by_source_type() == {"do617": "https://do617.com/"}
+
+    def test_feeds_disagreeing_on_the_site_yield_no_entry_at_all(self):
+        # Two Veezi cinemas share `cinema_veezi`. Picking either would send half
+        # the showings to the wrong cinema — worse than offering no link.
+        sources = self._sources(
+            [
+                {"name": "warwick", "url": "https://veezi.example/?siteToken=aaa",
+                 "source_type": "cinema_veezi"},
+                {"name": "salem", "url": "https://veezi.example/?siteToken=bbb",
+                 "source_type": "cinema_veezi"},
+            ]
+        )
+
+        assert sources.site_url_by_source_type() == {}
+
+    def test_every_declared_feed_list_is_searched_not_just_the_first(self):
+        sources = SourcesConfig(
+            ics_calendars=[FeedConfig(name="i", url="https://i.example/f.ics",
+                                      source_type="ics_one")],
+            veezi_cinemas=[FeedConfig(name="v", url="https://v.example/s",
+                                      source_type="veezi_one")],
+        )
+
+        assert sources.site_url_by_source_type() == {
+            "ics_one": "https://i.example/f.ics",
+            "veezi_one": "https://v.example/s",
+        }

@@ -86,10 +86,25 @@ deduplication:
 # event arrives venue-less — costing blocklist matching, dedup, and the CLI's
 # `Title — Venue` line. They fill a gap only: an entry that names its own venue
 # is more specific and wins.
+#
+# site_url is where the CLI sends a reader whose event carries no link of its
+# own, shown as a `source:` line under the title. Not every listing publishes a
+# per-event URL — measured, one aggregator left 320 of its 359 events with none,
+# so a mistake in its data arrived with nothing to check it against and read as
+# ours. Declare it whenever `url` is a feed rather than a page: an ICS export is
+# a correct thing to fetch and a useless thing to hand a person.
+#
+# It is resolved per source_type, not per feed, because an event records only
+# that label. Where several feeds share a source_type they must agree on
+# site_url, or no link is offered for any of them — two cinemas behind one
+# source_type would otherwise send half the showings to the wrong cinema, and a
+# wrong link is worse than none. An event that has its own URL always shows that
+# instead, unlabelled, because it opens the event rather than the site.
 sources:
   ics_calendars: []
     # - name: example_calendar
     #   url: "https://calendar.google.com/calendar/ical/<id>/public/basic.ics"
+    #   site_url: "https://example.com/"
     #   min_fetch_interval_hours: 6
     #   venue: "The Example Cinema"
     #   city: "Gloucester"
@@ -102,6 +117,8 @@ sources:
     # - name: example_listing
     #   url: "https://example.com/"
     #   min_fetch_interval_hours: 6
+    #   # Needed only when `url` is not itself a page worth opening. A listing
+    #   # page already is one, so this can be left out here.
 
   # Veezi public ticketing pages — used by many independent cinemas and needing
   # no credentials. The siteToken appears in the cinema's own booking links, so
@@ -141,9 +158,20 @@ sources:
   # The schema.org markup states each event's own UTC offset, so nothing here
   # is inferred. A venue the aggregator has no listings for is not an error;
   # it costs one request and starts producing when listings appear.
+  #
+  # Note how every entry repeats the same site_url. They share one source_type,
+  # so they have to agree before the CLI will attribute any of them — see the
+  # site_url note above. Omitting it from one entry silences the `source:` line
+  # for all of them.
   do617_venues: []
     # - name: do617_example_cafe
     #   url: "https://do617.com/venues/example-cafe"
+    #   site_url: "https://do617.com/"
+    #   source_type: do617
+    #   min_fetch_interval_hours: 6
+    # - name: do617_example_bar
+    #   url: "https://do617.com/venues/example-bar"
+    #   site_url: "https://do617.com/"
     #   source_type: do617
     #   min_fetch_interval_hours: 6
 
