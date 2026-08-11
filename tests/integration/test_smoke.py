@@ -422,7 +422,7 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 def test_semantic_matching_smoke(tmp_path: Path) -> None:
     """Embedding -> semantic dedup -> similarity -> persist -> reload.
 
@@ -645,7 +645,7 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
     assert scores["crisp"] > scores["drizzle"] > scores["muggy_storm"]
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 def test_ranking_smoke(tmp_path: Path) -> None:
     """Embeddings -> similarity -> ranking -> persist -> reload.
 

@@ -335,11 +335,11 @@ def test_input_text_combines_title_and_description():
 
 
 # ---------------------------------------------------------------------------
-# Slow smoke test
+# Model compliance -- moves to the bench in #2
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
+@pytest.mark.model
 def test_real_extraction_produces_valid_result():
     """Confirm real Ollama extraction works end-to-end with gemma4:e4b."""
 
@@ -367,7 +367,6 @@ def test_real_extraction_produces_valid_result():
     assert result.summary is not None and len(result.summary) > 0
 
 
-@pytest.mark.slow
 def test_bypass_not_called_when_the_input_is_unchanged():
     """Confirm Ollama is not reached when the stored hash still matches."""
 

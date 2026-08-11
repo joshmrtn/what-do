@@ -92,7 +92,7 @@ def test_raises_on_unknown_classification_value():
         provider.classify(handle="@x", context="context")
 
 
-@pytest.mark.slow
+@pytest.mark.model
 def test_real_ollama_classifies_venue_handle():
     """Confirm real Ollama can classify an obvious venue handle."""
 

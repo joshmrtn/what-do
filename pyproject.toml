@@ -41,10 +41,13 @@ what-do-run-batch = "src.scheduler:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-p tests.tier_plugin -p pytester -m 'not slow'"
+addopts = "-p tests.tier_plugin -p pytester --strict-markers -m 'not model and not external'"
+# Tiers are named for the reason to run a test, not for what it costs.
+# `model` and `external` are orthogonal and stack: a Gemini compliance test is both.
 markers = [
-    "slow: requires a running Ollama instance; skipped by default",
-    "integration: real SQLite and real Ollama embeddings; skips loudly without Ollama",
+    "integration: real SQLite and real Ollama embeddings; runs by default, skips loudly without Ollama",
+    "model: asserts a model's compliance with our prompts; run when selecting a model, never a gate. Migrates to the bench in #2",
+    "external: needs a third-party API and a key; run by hand, never a gate",
 ]
 
 [tool.mypy]

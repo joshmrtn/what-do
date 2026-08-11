@@ -1,7 +1,9 @@
 """Unit tests for GeminiClient (hermetic — injected fake genai client).
 
-The ``slow`` tests at the bottom hit the real Gemini API and are skipped unless
+The tests at the bottom hit the real Gemini API and are skipped unless
 ``GEMINI_API_KEY`` is available (from the environment or a local ``.env``).
+Two are model-compliance checks and carry ``model`` as well as ``external``;
+the third only proves the live API path works at all.
 """
 
 from __future__ import annotations
@@ -149,7 +151,8 @@ def _require_gemini() -> tuple[str, str]:
     return key, os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 
 
-@pytest.mark.slow
+@pytest.mark.model
+@pytest.mark.external
 def test_real_gemini_extraction():
     """Real Gemini extraction produces a structurally valid result."""
 
@@ -162,7 +165,8 @@ def test_real_gemini_extraction():
     assert result.summary is not None and len(result.summary) > 0
 
 
-@pytest.mark.slow
+@pytest.mark.model
+@pytest.mark.external
 def test_real_gemini_resolves_relative_date():
     """Gemini resolves 'this Saturday' against an injected reference date."""
 
@@ -179,7 +183,7 @@ def test_real_gemini_resolves_relative_date():
     assert result.start_time.date() == date(2026, 8, 8)
 
 
-@pytest.mark.slow
+@pytest.mark.external
 def test_real_gemini_disambiguation():
     """Real Gemini classifies an obvious venue handle as 'venue'."""
 
