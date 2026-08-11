@@ -48,7 +48,6 @@ def _pair(
         tag_confidence=1.0,
         final_score=0.4,
         match="yes",
-        tier="top_pick",
         rank=1,
     )
     return recommendation, event

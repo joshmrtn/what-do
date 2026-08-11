@@ -238,8 +238,6 @@ def test_weather_provider_reads_from_config(tmp_path):
 
 def test_scoring_section_absent_uses_defaults(tmp_path):
     cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
-    assert cfg.scoring.top_picks_min == 0.5
-    assert cfg.scoring.worth_considering_min == 0.1
     assert cfg.scoring.summary_weight == 0.3
     assert cfg.scoring.match_multiplier_yes == 1.5
     assert cfg.scoring.match_multiplier_maybe == 1.0
@@ -250,14 +248,11 @@ def test_scoring_section_absent_uses_defaults(tmp_path):
 def test_scoring_reads_from_config(tmp_path):
     data = _valid_location_data()
     data["scoring"] = {
-        "tiers": {"top_picks_min": 0.7, "worth_considering_min": 0.2},
         "summary_weight": 0.4,
         "match_multipliers": {"yes": 2.0, "maybe": 1.0, "no": 0.25},
         "min_tags_per_event": 8,
     }
     cfg = load_config(config_path=_write_config(tmp_path, data))
-    assert cfg.scoring.top_picks_min == 0.7
-    assert cfg.scoring.worth_considering_min == 0.2
     assert cfg.scoring.summary_weight == 0.4
     assert cfg.scoring.match_multiplier_yes == 2.0
     assert cfg.scoring.match_multiplier_no == 0.25

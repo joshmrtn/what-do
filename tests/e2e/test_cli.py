@@ -66,7 +66,7 @@ def _event(event_id: str, title: str, start: datetime | None, venue: str = "The 
     )
 
 
-def _recommendation(event_id: str, rank: int, tier: str, score: float) -> Recommendation:
+def _recommendation(event_id: str, rank: int, score: float) -> Recommendation:
     return Recommendation(
         recommendation_id=make_recommendation_id(RUN_DATE, event_id),
         event_id=event_id,
@@ -76,7 +76,6 @@ def _recommendation(event_id: str, rank: int, tier: str, score: float) -> Recomm
         tag_confidence=1.0,
         final_score=score,
         match="yes",
-        tier=tier,
         rank=rank,
         reasons=[
             Reason(
@@ -116,16 +115,16 @@ def db_path(tmp_path: Path) -> Path:
     save_events(events, path)
 
     recommendations = [
-        _recommendation("t1", 1, "top_pick", 0.81),
-        _recommendation("t2", 2, "top_pick", 0.72),
-        _recommendation("t3", 3, "top_pick", 0.64),
-        _recommendation("u1", 4, "top_pick", 0.58),
-        _recommendation("m1", 5, "top_pick", 0.55),
-        _recommendation("m2", 6, "worth_considering", 0.31),
-        _recommendation("t4", 7, "worth_considering", 0.22),
-        _recommendation("m3", 8, "worth_considering", 0.14),
-        _recommendation("t5", 9, "everything_else", 0.02),
-        _recommendation("t6", 10, "everything_else", -0.30),
+        _recommendation("t1", 1, 0.81),
+        _recommendation("t2", 2, 0.72),
+        _recommendation("t3", 3, 0.64),
+        _recommendation("u1", 4, 0.58),
+        _recommendation("m1", 5, 0.55),
+        _recommendation("m2", 6, 0.31),
+        _recommendation("t4", 7, 0.22),
+        _recommendation("m3", 8, 0.14),
+        _recommendation("t5", 9, 0.02),
+        _recommendation("t6", 10, -0.30),
     ]
     save_recommendations(recommendations, path)
 
@@ -160,31 +159,33 @@ def test_default_view_shows_only_todays_events(db_path):
 
 
 def test_default_view_keeps_undated_events(db_path):
+    """Ranked among the rest, with the column saying the time is unpublished."""
     _, out, _ = _invoke(db_path)
 
     assert "Open Studio Weekend" in out
-    assert "UNDATED" in out
+    assert "time TBC" in out
 
 
-def test_default_view_separates_the_tiers(db_path):
+def test_the_view_is_one_ranked_list_with_no_bands(db_path):
     _, out, _ = _invoke(db_path)
 
-    assert out.index("TOP PICKS") < out.index("WORTH CONSIDERING")
-    assert "Afternoon Market" in out
+    for banner in ("TOP PICKS", "WORTH CONSIDERING", "EVERYTHING ELSE", "UNDATED"):
+        assert banner not in out
 
 
-def test_default_view_folds_the_bottom_tier_but_reports_its_size(db_path):
-    _, out, _ = _invoke(db_path)
+def test_the_default_view_is_cut_at_ten_and_counts_the_rest(db_path):
+    _, out, _ = _invoke(db_path, "--limit", "3")
 
     assert "Dull Mixer" not in out
-    assert "2 more" in out
+    assert "ranked lower (--all)" in out
 
 
-def test_all_expands_the_bottom_tier(db_path):
+def test_all_shows_every_ranked_event(db_path):
     _, out, _ = _invoke(db_path, "--all")
 
     assert "Dull Mixer" in out
     assert "Duller Meetup" in out
+    assert "ranked lower (--all)" not in out
 
 
 def test_reasons_are_shown(db_path):
@@ -193,7 +194,7 @@ def test_reasons_are_shown(db_path):
     assert "karaoke night" in out
 
 
-def test_verbose_shows_the_score_behind_the_tier(db_path):
+def test_verbose_shows_the_score_the_order_was_built_on(db_path):
     _, out, _ = _invoke(db_path, "-v")
 
     assert "+0.81" in out

@@ -77,7 +77,6 @@ def _make(event_id: str = "evt-1", run_date: date = RUN_DATE, rank: int = 1, **o
         "tag_confidence": 1.0,
         "final_score": 0.68,
         "match": "yes",
-        "tier": "top_pick",
         "rank": rank,
         "reasons": [_reason()],
     }

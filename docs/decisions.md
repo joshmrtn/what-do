@@ -984,6 +984,10 @@ never demoted invisibly.
 
 ## The bottom tier is `everything_else`, not `excluded`
 
+**Superseded 2026-08-11 — tiers were removed entirely. See "Tiers are removed from the
+project" below.** Kept because the reasoning about never withholding an event outlived
+the mechanism.
+
 **Decision:** the tier below `worth_considering_min` is named `everything_else`.
 
 **Rationale:** ranking withholds nothing. `tier` is a label the CLI renders, and the old name
@@ -1034,6 +1038,9 @@ means "nothing to add", and interpreting it as "delete everything" would be both
 ---
 
 ## The CLI folds the bottom tier; it never hides it
+
+**Superseded 2026-08-11 — tiers were removed entirely, but the rule survives in a new
+form: the list is cut at `--limit` and whatever is cut is still counted on screen.**
 
 **Decision:** the default view renders `TOP PICKS` and `WORTH CONSIDERING`, then a single line
 reporting how many events sit below them: `+ 14 more events ranked lower (--all)`. `--all` expands
@@ -1640,3 +1647,36 @@ two large models resident at once is how the box starts thrashing.
 `Category: Music` and nothing else lead every model tested to invent specifics — "Ryan O'Connell"
 became *irish music*, "Tyler Bard" became *indie* and *acoustic*. Gemini confabulates too, more
 plausibly. This predates the request parameters and is not fixed by them.
+
+---
+
+## Tiers are removed from the project
+
+**Decision:** `top_pick` / `worth_considering` / `everything_else` are deleted — the
+labels, `scoring/tiers.py`, `Recommendation.tier`, the `top_picks_min` and
+`worth_considering_min` config, and the CLI's sections. `what-do` shows one list, ordered
+by score, cut at `--limit` (default 10), always printing how many it cut. Undated events
+rank inline with `time TBC` in the time column.
+
+**Rationale:** tiers were never a requirement. They were added speculatively in an early
+session and every session since re-opened the same argument, each time concluding that
+only the ranking mattered — and each time the concept was reframed rather than removed.
+
+The substantive argument is that a tier can never be better than the ranking it is derived
+from. It is a threshold laid over a score that already carries strictly more information,
+so calibrating it can at best reproduce the order and at worst disagree with it. That the
+thresholds were never calibrated is not the problem; a perfectly calibrated band would
+still add nothing.
+
+**What made it leak everywhere:** `tier` was never stored — there is no column in any of
+the 19 tables — but it was a *required* field on the `Recommendation` dataclass. Every
+construction had to invent one, so the storage layer had to apply a presentation policy
+(`TierFor`) just to build the object it returned. A required field with no source of truth
+pulls its dependencies into every layer that touches the type.
+
+**Consequence:** the `UNDATED` section went with it. An undated event now ranks among the
+rest rather than being set aside, because a separate section takes it out of the ordering,
+which is the one thing the ordering is for. The time column carries what the heading used
+to say.
+
+**Not to be re-proposed.** Recorded in the CLAUDE.md footgun table for the same reason.

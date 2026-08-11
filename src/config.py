@@ -227,8 +227,6 @@ GENERAL_DOMAIN_DEFAULT = "general"
 class ScoringConfig:
     """Scoring thresholds, multipliers, and similarity shaping."""
 
-    top_picks_min: float = 0.5
-    worth_considering_min: float = 0.1
     summary_weight: float = 0.3
     match_multiplier_yes: float = 1.5
     match_multiplier_maybe: float = 1.0
@@ -721,7 +719,6 @@ def load_config(
     weather = _load_weather(data.get("weather", {}))
 
     scoring_data = data.get("scoring", {})
-    tiers_data = scoring_data.get("tiers", {})
     multipliers_data = scoring_data.get("match_multipliers", {})
     match_data = scoring_data.get("match", {})
 
@@ -746,8 +743,6 @@ def load_config(
             )
 
     scoring = ScoringConfig(
-        top_picks_min=float(tiers_data.get("top_picks_min", 0.5)),
-        worth_considering_min=float(tiers_data.get("worth_considering_min", 0.1)),
         summary_weight=float(scoring_data.get("summary_weight", 0.3)),
         match_multiplier_yes=multipliers["yes"],
         match_multiplier_maybe=multipliers["maybe"],

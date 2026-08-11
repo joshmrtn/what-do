@@ -694,19 +694,16 @@ Scoring factors (post-v1 candidates):
 | Prior feedback | + / − | Adjust scores based on user ratings of similar past events |
 | Novelty | − | Small penalty for recurring events the user has not attended |
 
-Score range and tiers:
+Score range:
 
 The scoring formula produces an unbounded float. Higher is always better. Negative scores are valid.
 
 Scores shall not be normalized relative to the current batch — this would make events discovered across different runs incomparable (an event found today for a date two weeks away cannot be compared against events not yet discovered).
 
-Tier classification (configurable thresholds in `config.yaml`):
+Configurable scoring values in `config.yaml`:
 
 ```yaml
 scoring:
-  tiers:
-    top_picks_min: 0.5
-    worth_considering_min: 0.1
   summary_weight: 0.3
   match_multipliers:
     yes: 1.5
@@ -714,7 +711,11 @@ scoring:
     no: 0.5
 ```
 
-Events below `worth_considering_min` fall into the `everything_else` tier, which the default CLI view collapses. They are still scored, ranked, and persisted — the tier is a label the CLI renders, never a filter applied at ranking. Tune thresholds after observing real score distributions.
+**There are no tiers, bands or score labels.** They were removed on 2026-08-11: no
+calibration of a threshold ever beats ordering by the score itself, so a band is a
+second and less reliable judgement laid over the only one that matters. Every event
+is scored, ranked and persisted, and the CLI shows the top `--limit` (default 10) of
+them for the night, always printing how many it cut.
 
 Domain-scoped preferences:
 
@@ -935,19 +936,16 @@ tag_confidence (0.0-1.0; how much of min_tags_per_event the extraction produced)
 
 final_score (unbounded float — higher is always better, may be negative)
 
-tier (derived: "top_pick" | "worth_considering" | "everything_else")
-
 match ("yes" | "maybe" | "no" — from Stage 4 classification)
 
 rank (1-based position within the run, persisted so a reader cannot reorder the batch's decision)
 
 reasons[] (list of structured reason objects)
 
-Every score component is stored rather than the total alone: a retuned curve or
-threshold can then be explained against history instead of guessed at. The tier
-below `worth_considering_min` is named `everything_else` and not `excluded` —
-nothing is ever withheld from the CLI, and the old name invited a
-`WHERE tier != 'excluded'` that would silently hide events.
+Every score component is stored rather than the total alone: a retuned curve can
+then be explained against history instead of guessed at. Nothing is ever withheld
+from the CLI — the ranking expresses the judgement, and an event the batch scored
+badly simply sorts low rather than disappearing.
 
 Reason schema:
 
@@ -1095,9 +1093,6 @@ scraping:
   candidate_promotion_threshold: 3   # mentions from distinct trusted sources
 
 scoring:
-  tiers:
-    top_picks_min: 0.5
-    worth_considering_min: 0.1
   summary_weight: 0.3
   match_multipliers:
     yes: 1.5
@@ -1175,7 +1170,7 @@ Manual execution: `what-do-run-batch` runs the full pipeline immediately.
 
 Default CLI behaviour:
 
-`what-do` with no arguments displays today's events sorted by score, grouped into Top Picks and Worth Considering sections. Events in the `everything_else` tier are collapsed by default.
+`what-do` with no arguments displays tonight's events as one list, ordered by score, cut at `--limit` (default 10). Whatever is cut is counted on screen and shown by `--all`. Undated events rank among the rest, with `time TBC` in the time column.
 
 Required secrets (`.env.example`):
 
@@ -1312,7 +1307,7 @@ Parallelizable (independent per-item work):
 Must remain sequential (set operations):
 - Dedup Pass 1 — needs all events in memory
 - Dedup Pass 2 — needs all embeddings in memory
-- Final tier assignment — needs all scores for threshold comparison
+- Final rank assignment — needs all scores before an order exists
 
 The pipeline stage interface (`process(events) → events`) is already compatible with
 future executor-based parallelism. No architectural change required — only the orchestrator

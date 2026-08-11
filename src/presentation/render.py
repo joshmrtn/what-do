@@ -4,9 +4,12 @@ Pure: strings in, one string out. Nothing here reads a clock, touches the
 database, or reorders anything — sections are emitted in tier order and events
 within them in the rank the batch assigned.
 
-The bottom tier is folded rather than dropped, and its count is always printed.
-Thresholds are uncalibrated this early, so a low-ranked event has to stay one
-flag away, not disappear.
+One list, in the rank the batch assigned. There are no bands and no sections:
+the ordering is the whole product, and grouping it into named tiers added a
+second, less reliable judgement on top of the only one that matters.
+
+The list is cut at `limit`, and whatever is cut is always counted on screen —
+a hidden event is invisible, a counted one is a flag away.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from src.models.recommendation import Recommendation
 from src.models.timing import ALL_DAY, UNKNOWN
 from src.presentation.filters import RankedPair
 from src.scoring.ranking import CONFIDENCE_FACTOR, MATCH_FACTOR
-from src.scoring.tiers import EVERYTHING_ELSE, TOP_PICK, WORTH_CONSIDERING
 from src.scoring.similarity import DISLIKE_FACTOR, LIKE_FACTOR, Reason
 from src.scoring.weather_score import WEATHER_FACTOR
 
@@ -27,12 +29,9 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
 
-_SECTION_TITLES = {
-    TOP_PICK: "TOP PICKS",
-    WORTH_CONSIDERING: "WORTH CONSIDERING",
-    EVERYTHING_ELSE: "EVERYTHING ELSE",
-}
-_UNDATED_TITLE = "UNDATED — timing unconfirmed"
+#: How many events the default view shows. The question `what-do` answers is
+#: "what is on tonight", and a screenful answers it.
+DEFAULT_LIMIT = 10
 
 #: Semantic reasons shown per event before `--verbose`. Two is enough to say
 #: what an event is; the rest is an audit trail.
@@ -61,17 +60,19 @@ def render_recommendations(
     *,
     heading: str | None = None,
     verbose: bool = False,
-    show_all: bool = False,
+    limit: int | None = DEFAULT_LIMIT,
     color: bool = False,
     source_urls: Mapping[str, str] | None = None,
 ) -> str:
-    """Render ranked events as sectioned text.
+    """Render ranked events as one list, in the order given.
 
     Args:
-        pairs: Ranked pairs, already filtered and in rank order.
-        heading: Optional line above the sections, e.g. the date being shown.
-        verbose: Show every reason plus the score components behind the tier.
-        show_all: Expand the bottom tier instead of folding it to a count.
+        pairs: Ranked pairs, already filtered and in rank order. Undated events
+            are ranked among the rest: a missing start time is a gap in what we
+            know, not a reason to set an event aside from the ordering.
+        heading: Optional line above the list, e.g. the date being shown.
+        verbose: Show every reason plus the score components.
+        limit: How many to show; None shows all. Whatever is cut is counted.
         color: Emit ANSI styling. Off when stdout is not a terminal.
         source_urls: Human-facing page per `source_type`, used only for events
             carrying no URL of their own.
@@ -82,71 +83,14 @@ def render_recommendations(
     if not pairs:
         return _join([_style("No events to show.", _DIM, color)])
 
-    top = [p for p in pairs if p[0].tier == TOP_PICK and p[1].start_time is not None]
-    worth = [p for p in pairs if p[0].tier == WORTH_CONSIDERING and p[1].start_time is not None]
-    undated = [p for p in pairs if p[0].tier != EVERYTHING_ELSE and p[1].start_time is None]
-    folded = [p for p in pairs if p[0].tier == EVERYTHING_ELSE]
+    shown = pairs if limit is None else pairs[:limit]
+    hidden = len(pairs) - len(shown)
 
     lines: list[str] = []
     if heading:
         lines += [_style(heading, _BOLD, color), ""]
 
-    for section, title in ((top, _SECTION_TITLES[TOP_PICK]),
-                           (worth, _SECTION_TITLES[WORTH_CONSIDERING]),
-                           (undated, _UNDATED_TITLE)):
-        lines += _render_section(
-            section, title, verbose=verbose, color=color, source_urls=source_urls
-        )
-
-    if show_all:
-        lines += _render_section(
-            folded,
-            _SECTION_TITLES[EVERYTHING_ELSE],
-            verbose=verbose,
-            color=color,
-            source_urls=source_urls,
-        )
-    elif folded:
-        plural = "" if len(folded) == 1 else "s"
-        lines.append(
-            _style(f"+ {len(folded)} more event{plural} ranked lower (--all)", _DIM, color)
-        )
-
-    return _join(lines)
-
-
-def render_raw(events: list[Event]) -> str:
-    """Render events with no scoring applied, earliest first, undated last.
-
-    The escape hatch from ranking entirely: what the batch collected, before any
-    judgement about it.
-    """
-    if not events:
-        return _join(["No events in the database."])
-
-    ordered = sorted(events, key=_start_sort_key)
-    lines = [f"{len(events)} event{'' if len(events) == 1 else 's'}", ""]
-    for event in ordered:
-        when = _when_of(event) or "  --  "
-        lines.append(f"  {when}  {_describe(event)}  [{event.source_type}]")
-
-    return _join(lines)
-
-
-def _render_section(
-    pairs: list[RankedPair],
-    title: str,
-    *,
-    verbose: bool,
-    color: bool,
-    source_urls: Mapping[str, str] | None = None,
-) -> list[str]:
-    """Render one titled section, or nothing at all when it is empty."""
-    if not pairs:
-        return []
-
-    lines = [_style(title, _BOLD, color), ""]
-    for recommendation, event in pairs:
+    for recommendation, event in shown:
         when = _when_of(event)
         prefix = f"  {recommendation.rank}. "
         lines.append(f"{prefix}{when + '  ' if when else ''}{_describe(event)}")
@@ -170,7 +114,31 @@ def _render_section(
             lines.append(_style(f"      {_format_reason(reason)}", _DIM, color))
         lines.append("")
 
-    return lines
+    if hidden:
+        plural = "" if hidden == 1 else "s"
+        lines.append(
+            _style(f"+ {hidden} more event{plural} ranked lower (--all)", _DIM, color)
+        )
+
+    return _join(lines)
+
+
+def render_raw(events: list[Event]) -> str:
+    """Render events with no scoring applied, earliest first, undated last.
+
+    The escape hatch from ranking entirely: what the batch collected, before any
+    judgement about it.
+    """
+    if not events:
+        return _join(["No events in the database."])
+
+    ordered = sorted(events, key=_start_sort_key)
+    lines = [f"{len(events)} event{'' if len(events) == 1 else 's'}", ""]
+    for event in ordered:
+        when = _when_of(event)
+        lines.append(f"  {when}  {_describe(event)}  [{event.source_type}]")
+
+    return _join(lines)
 
 
 def _visible_reasons(reasons: list[Reason], *, verbose: bool) -> list[Reason]:
@@ -235,9 +203,13 @@ def _when_of(event: Event) -> str:
     was never published. Printing it as a clock time would be the most
     convincing kind of wrong, so the label says which it is: a source that
     declared a whole day reads differently from one that simply has not said.
+
+    An event with no start at all reads the same way. It used to be told apart
+    by sitting under an `UNDATED` heading; ranked inline among the rest, the
+    column is the only thing left to say so.
     """
     if event.start_time is None:
-        return ""
+        return _UNKNOWN_TIME_LABEL
     if event.timing == ALL_DAY:
         return _ALL_DAY_LABEL
     if event.timing == UNKNOWN:

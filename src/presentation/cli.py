@@ -18,14 +18,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from functools import partial
 
 from src.config import DEFAULT_DAY_STARTS_AT, ConfigError, load_config
-from src.scoring.tiers import (
-    DEFAULT_TOP_PICKS_MIN,
-    DEFAULT_WORTH_CONSIDERING_MIN,
-    tier_for_score,
-)
 from src.models.event import Event
 from src.presentation.filters import (
     RankedPair,
@@ -35,7 +29,7 @@ from src.presentation.filters import (
     overlapping,
     parse_time_window,
 )
-from src.presentation.render import render_raw, render_recommendations
+from src.presentation.render import DEFAULT_LIMIT, render_raw, render_recommendations
 from src.storage.db import DEFAULT_DB_PATH, has_schema
 from src.storage.events import load_events
 from src.storage.recommendations import load_ranked
@@ -58,11 +52,6 @@ class ViewSettings:
         zone: The timezone events are judged in. From `config.location`, which
             derives it from the coordinates rather than from the machine.
         day_starts_at: Local time of day at which the listing rolls over.
-        top_picks_min: Score at or above which an event is a top pick.
-        worth_considering_min: Score at or above which it is worth considering.
-            Both live here because a tier is derived at render time, never
-            stored — a threshold change must relabel history, not disagree
-            with it.
         source_urls: Human-facing page per `source_type`, for events that carry
             no URL of their own. Empty when config is unreadable — attribution is
             a convenience, and losing it must never cost the listing.
@@ -73,8 +62,6 @@ class ViewSettings:
 
     zone: tzinfo
     day_starts_at: time
-    top_picks_min: float = DEFAULT_TOP_PICKS_MIN
-    worth_considering_min: float = DEFAULT_WORTH_CONSIDERING_MIN
     source_urls: Mapping[str, str] = field(default_factory=dict)
     warning: str | None = None
 
@@ -95,8 +82,6 @@ def default_view_settings() -> ViewSettings:
         return ViewSettings(
             zone=ZoneInfo(config.location.timezone),
             day_starts_at=config.day_starts_at,
-            top_picks_min=config.scoring.top_picks_min,
-            worth_considering_min=config.scoring.worth_considering_min,
             source_urls=config.sources.site_url_by_source_type(),
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
@@ -191,15 +176,7 @@ def _cmd_recommend(
         print(f"Error: {exc}", file=stderr)
         return 1
 
-    pairs = load_pairs(
-        db_path,
-        run_date=run_date,
-        tier_for=partial(
-            tier_for_score,
-            top_picks_min=view.top_picks_min,
-            worth_considering_min=view.worth_considering_min,
-        ),
-    )
+    pairs = load_pairs(db_path, run_date=run_date)
     if not pairs:
         print(_NO_RECOMMENDATIONS_MESSAGE, file=stdout)
         return 0
@@ -233,7 +210,7 @@ def _cmd_recommend(
             selected,
             heading=tonight.strftime("%A %-d %B"),
             verbose=args.verbose,
-            show_all=args.all,
+            limit=None if args.all else (args.limit or DEFAULT_LIMIT),
             color=_supports_color(stdout),
             source_urls=view.source_urls,
         ),
@@ -260,7 +237,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--raw", action="store_true", help="Every stored event, unranked and unfiltered"
     )
     parser.add_argument(
-        "--all", action="store_true", help="Expand the lower-ranked events instead of folding them"
+        "--all", action="store_true", help="Show every ranked event, not just the top ones"
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help=f"How many events to show (default: {DEFAULT_LIMIT})",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show score components and every reason"

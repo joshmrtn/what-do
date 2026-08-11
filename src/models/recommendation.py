@@ -26,7 +26,6 @@ class Recommendation:
         tag_confidence: How much of the expected tag count the extraction produced.
         final_score: What the ordering is actually built on.
         match: "yes", "maybe", or "no" — the advisory classification.
-        tier: Presentation label only. Never a filter.
         rank: 1-based position within this run.
         reasons: Every contribution that produced final_score.
     """
@@ -39,7 +38,6 @@ class Recommendation:
     tag_confidence: float
     final_score: float
     match: str
-    tier: str
     rank: int
     reasons: list[Reason] = field(default_factory=list)
 

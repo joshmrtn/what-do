@@ -4,9 +4,10 @@ The ordering is the product. Everything here is reproducible from its inputs:
 no clock, no randomness, no network, and ties broken explicitly so upstream
 iteration order can never leak into the result.
 
-Nothing is excluded. Every event ranks, including deeply negative ones, because
-`tier` is a label the CLI renders and never a filter. The single exception is a
-blocklisted venue, which is user intent rather than a scoring judgement.
+Nothing is excluded. Every event ranks, including deeply negative ones — the
+order is the whole product, and withholding an event would hide a judgement
+rather than express one. The single exception is a blocklisted venue, which is
+user intent rather than a scoring judgement.
 """
 
 from __future__ import annotations
@@ -18,12 +19,6 @@ from src.config import AppConfig
 from src.models.event import Event
 from src.models.recommendation import Recommendation, make_recommendation_id
 from src.scoring.similarity import Reason, SimilarityResult
-from src.scoring.tiers import (
-    EVERYTHING_ELSE,
-    TOP_PICK,
-    WORTH_CONSIDERING,
-    tier_for_score,
-)
 from src.scoring.weather_score import weather_adjustment
 from src.utils.blocklist import is_blocked
 from src.utils.logging import StructuredLogger, get_logger
@@ -138,7 +133,6 @@ class RankingEngine:
             tag_confidence=confidence,
             final_score=final_score,
             match=similarity.match,
-            tier=self._tier(final_score),
             rank=0,
             reasons=reasons,
         )
@@ -168,13 +162,6 @@ class RankingEngine:
             "maybe": scoring.match_multiplier_maybe,
             "no": scoring.match_multiplier_no,
         }.get(match, scoring.match_multiplier_maybe)
-
-    def _tier(self, final_score: float) -> str:
-        """Label the score. Presentation only — never a filter."""
-        scoring = self._config.scoring
-        return tier_for_score(
-            final_score, scoring.top_picks_min, scoring.worth_considering_min
-        )
 
     def _drop_as_blocked(self, event: Event) -> bool:
         """Whether this event's venue is blocklisted.

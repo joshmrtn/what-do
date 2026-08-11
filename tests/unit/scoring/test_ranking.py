@@ -18,9 +18,6 @@ from src.config import (
 from src.models.event import Event
 from src.models.tag import Tag
 from src.scoring.ranking import (
-    EVERYTHING_ELSE,
-    TOP_PICK,
-    WORTH_CONSIDERING,
     RankingEngine,
 )
 from src.scoring.similarity import Reason, SimilarityResult
@@ -69,8 +66,6 @@ def _curve(
 
 def _config(**scoring_overrides: Any) -> AppConfig:
     scoring = ScoringConfig(
-        top_picks_min=0.5,
-        worth_considering_min=0.1,
         match_multiplier_yes=1.5,
         match_multiplier_maybe=1.0,
         match_multiplier_no=0.5,
@@ -373,44 +368,11 @@ def test_confidence_does_not_scale_the_weather_adjustment():
     assert thin.weather_adjustment == pytest.approx(full.weather_adjustment)
 
 
-# --- tiers ------------------------------------------------------------------
-
-
-def test_tiers_are_assigned_from_the_configured_thresholds():
-    ranked = _rank(
-        [
-            _event("top", base_score=0.9),
-            _event("middle", base_score=0.3),
-            _event("bottom", base_score=0.05),
-        ]
-    )
-    tiers = {r.event_id: r.tier for r in ranked}
-
-    assert tiers == {
-        "top": TOP_PICK,
-        "middle": WORTH_CONSIDERING,
-        "bottom": EVERYTHING_ELSE,
-    }
-
-
-def test_threshold_boundaries_belong_to_the_higher_tier():
-    ranked = _rank([_event("at-top", base_score=0.5), _event("at-worth", base_score=0.1)])
-    tiers = {r.event_id: r.tier for r in ranked}
-
-    assert tiers == {"at-top": TOP_PICK, "at-worth": WORTH_CONSIDERING}
-
-
-def test_tier_thresholds_are_read_from_config():
-    ranked = _rank([_event(base_score=0.3)], _config(top_picks_min=0.2))
-
-    assert ranked[0].tier == TOP_PICK
-
-
-def test_a_below_threshold_event_is_present_not_dropped():
+def test_a_deeply_negative_event_is_present_not_dropped():
+    """Nothing is ever withheld — the order expresses the judgement."""
     ranked = _rank([_event("bad", base_score=-2.0)])
 
     assert [r.event_id for r in ranked] == ["bad"]
-    assert ranked[0].tier == EVERYTHING_ELSE
 
 
 # --- blocklist and completeness ---------------------------------------------

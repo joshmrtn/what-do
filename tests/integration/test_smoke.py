@@ -5,6 +5,7 @@ One test per phase; they accumulate as phases complete.
 """
 
 from datetime import date, datetime, timedelta, timezone
+import re
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -47,7 +48,7 @@ from src.normalization.service import NormalizationService
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
-from src.scoring.ranking import EVERYTHING_ELSE, TOP_PICK, WORTH_CONSIDERING, RankingEngine
+from src.scoring.ranking import RankingEngine
 from src.presentation.cli import run
 from src.config import FeedConfig
 from src.ingestion.calendars.html_source import HtmlListingSource
@@ -787,16 +788,10 @@ def test_ranking_smoke(tmp_path: Path) -> None:
             assert "weather_adjustment" in factors
     assert "low_tag_confidence" in {r.factor for r in by_id["karaoke-thin"].reasons}
 
-    # Tiers come from the shipped thresholds, and never reorder the list.
-    tier_rank = {TOP_PICK: 0, WORTH_CONSIDERING: 1, EVERYTHING_ELSE: 2}
-    assert [tier_rank[r.tier] for r in ranked] == sorted(tier_rank[r.tier] for r in ranked)
-    for recommendation in ranked:
-        if recommendation.final_score >= config.scoring.top_picks_min:
-            assert recommendation.tier == TOP_PICK
-        elif recommendation.final_score >= config.scoring.worth_considering_min:
-            assert recommendation.tier == WORTH_CONSIDERING
-        else:
-            assert recommendation.tier == EVERYTHING_ELSE
+    # The order is the product: ranks run 1..n, descending by score.
+    assert [r.rank for r in ranked] == list(range(1, len(ranked) + 1))
+    scores = [r.final_score for r in ranked]
+    assert scores == sorted(scores, reverse=True)
 
     # Re-ranking the same batch is identical, whatever order the events arrive in.
     shuffled = list(events)
@@ -919,25 +914,29 @@ def test_cli_smoke(tmp_path: Path) -> None:
 
     assert elapsed < 1.0, f"the CLI took {elapsed:.3f}s reading precomputed rows"
 
-    # Only tonight, plus the undated event under its own heading.
+    # Only tonight, plus the undated event ranked among the rest.
     assert "Karaoke Night" in default_view
     assert "Tomorrow Gig" not in default_view
     assert "Tomorrow Matinee" not in default_view
     assert "Open Studio Weekend" in default_view
-    assert "UNDATED" in default_view
+    assert "time TBC" in default_view
 
     # The engine's order survives to the screen, and its reasons with it.
     assert default_view.index("Karaoke Night") < default_view.index("Open Mic")
     assert "karaoke night" in default_view
 
-    # Nothing is lost: what the default view folds, it counts, and --all shows.
-    folded = [r for r in ranked if r.tier == EVERYTHING_ELSE]
-    assert folded, "the shipped thresholds should leave something below the fold"
-    assert f"{len(folded)} more" in default_view
-    for recommendation in folded:
-        title = next(e.title for e in events if e.event_id == recommendation.event_id)
-        assert title not in default_view
-        assert title in _invoke("--all")
+    # Nothing is lost: what the view cuts, it counts, and --all shows.
+    # The count is checked against the view itself, not against `ranked` — the
+    # night window filters before the limit applies, so the two differ.
+    limited = _invoke("--limit", "2")
+    everything = _invoke("--all")
+    listed = re.findall(r"^  \d+\. .*$", limited, re.M)
+    assert len(listed) == 2
+
+    hidden = re.search(r"\+ (\d+) more events? ranked lower", limited)
+    assert hidden, "a cut list must always say how much it cut"
+    assert len(re.findall(r"^  \d+\. .*$", everything, re.M)) == 2 + int(hidden.group(1))
+    assert "ranked lower (--all)" not in everything
 
     # Raw ignores ranking entirely and shows every stored event.
     raw_view = _invoke("--raw")

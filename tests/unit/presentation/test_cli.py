@@ -1,6 +1,7 @@
 """Unit tests for CLI argument handling and dispatch."""
 
 import io
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -52,7 +53,6 @@ def _pair(
     event_id: str,
     title: str,
     start: datetime | None,
-    tier: str = "top_pick",
     rank: int = 1,
     sunset: datetime | None = None,
     source_type: str = "instagram",
@@ -67,7 +67,6 @@ def _pair(
         tag_confidence=1.0,
         final_score=0.68,
         match="yes",
-        tier=tier,
         rank=rank,
         reasons=[
             Reason(
@@ -90,8 +89,7 @@ PAIRS = [
     _pair("b", "Tonight Late", datetime(2025, 6, 21, 21, 0, tzinfo=TZ), rank=2, sunset=SUNSET),
     _pair("c", "Tomorrow", datetime(2025, 6, 22, 20, 0, tzinfo=TZ), rank=3, sunset=SUNSET),
     _pair("d", "Undated", None, rank=4),
-    _pair("e", "Low Ranked", datetime(2025, 6, 21, 19, 0, tzinfo=TZ), tier="everything_else",
-          rank=5, sunset=SUNSET),
+    _pair("e", "Low Ranked", datetime(2025, 6, 21, 19, 0, tzinfo=TZ), rank=5, sunset=SUNSET),
 ]
 
 ALL_EVENTS = [e for _, e in PAIRS]
@@ -131,10 +129,9 @@ class _Harness:
         self.load_ranked_calls = 0
         self.load_events_calls = 0
 
-    def _load_ranked(self, db_path, run_date=None, tier_for=None):
+    def _load_ranked(self, db_path, run_date=None):
         self.load_ranked_calls += 1
         self.requested_run_date = run_date
-        self.tier_for = tier_for
         return self.pairs
 
     def _load_events(self, db_path):
@@ -182,18 +179,19 @@ class TestDefaultView:
 
         assert "Undated" in harness.out
 
-    def test_folds_the_bottom_tier_but_keeps_its_count_visible(self):
+    def test_the_list_is_cut_at_the_limit_and_the_rest_counted(self):
         harness = _Harness()
-        harness.invoke()
+        harness.invoke("--limit", "1")
 
-        assert "Low Ranked" not in harness.out
-        assert "1 more" in harness.out
+        shown = re.findall(r"^  \d+\. ", harness.out, re.M)
+        assert len(shown) == 1
+        assert "3 more" in harness.out
 
-    def test_all_expands_the_bottom_tier(self):
+    def test_all_shows_every_ranked_event(self):
         harness = _Harness()
         harness.invoke("--all")
 
-        assert "Low Ranked" in harness.out
+        assert "ranked lower (--all)" not in harness.out
 
     def test_heading_names_the_day_being_shown(self):
         harness = _Harness()

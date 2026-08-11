@@ -961,7 +961,7 @@ Ranking shall always be reproducible.
 Ordering correctness is the only goal that matters here. Tier thresholds are cosmetic labels at
 this stage and are explicitly not tuned.
 
-Nothing is ever excluded. Every scored event is persisted and appears in the output at every tier,
+Nothing is ever excluded. Every scored event is persisted and ranked,
 negative scores included. The single exception is a blocklisted venue, which is user intent rather
 than a scoring judgement.
 
@@ -1001,10 +1001,8 @@ Scoring:
 
 Tiers:
 
-- score above `top_picks_min` -> tier = `top_pick`
-- score between `worth_considering_min` and `top_picks_min` -> tier = `worth_considering`
-- score below `worth_considering_min` -> tier = `everything_else`, still present in the output
-- tier thresholds read from `config.yaml` (not hardcoded)
+- events are ordered by `final_score`, descending; `rank` is 1-based within the run
+- there are no tiers, bands or score labels — see `docs/decisions.md`
 
 Output:
 
@@ -1030,7 +1028,7 @@ All score factors applied correctly, and every one of them explained by a `Reaso
 
 Score 10 mock events with known similarity values against real Ollama embeddings. Confirm ordering
 matches expected ranking. Run the scorer twice over a shuffled list — confirm output is identical.
-Confirm the blocklisted venue is absent and every other event present. Confirm tier assignments
+Confirm the blocklisted venue is absent and every other event present. Confirm rank order
 match configured thresholds and that recommendations survive a round trip through SQLite.
 
 ---

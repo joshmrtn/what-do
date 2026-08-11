@@ -104,7 +104,7 @@ one-tag event lands mid-ranking, which is where something we know almost nothing
 Scores are unbounded floats (higher = better, negatives valid). Never normalize relative to
 current batch — events must stay comparable across runs.
 
-Tier thresholds, summary_weight, and match_multipliers live in `config.yaml`, not code.
+summary_weight and match_multipliers live in `config.yaml`, not code.
 
 ---
 
@@ -251,10 +251,11 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Making tag confidence direction-aware "to match the multiplier" | Inverts its meaning — a thin *negative* would deepen, punishing an event for evidence we never gathered. Confidence multiplies both signs |
 | Applying tag confidence to synthetic activities | Their tags come from hand-written `config.yaml` rules, so a low count is authoring, not extraction failure. `source_type == "synthetic"` is exempt |
 | Serving a cached forecast without checking its age | An event found a week out would score on the forecast issued that day, forever. `weather.cache_ttl_hours` must stay under 24 so a nightly batch refetches |
-| `tier` used as a filter in a query | Nothing is ever withheld by ranking. The tier below `worth_considering_min` is `everything_else` precisely so `WHERE tier != 'excluded'` cannot be written by accident |
+| Reintroducing tiers, bands or score labels | Removed entirely on 2026-08-11 and **not** to be re-proposed. They were never asked for, were speculative from the start, and no calibration ever beats ranking by score. The order is the product; a band is a second, worse judgement laid on top |
 | Blocklist `@handle` entries at ranking time | An `Event` carries no handle — normalization drops it. Handles are enforced at ingestion; ranking matches venue names only. See #15 |
 | Checking a database exists with `Path.exists()` | `sqlite3.connect` creates a zero-byte file for any path, so a stray read leaves one that then fails with `no such table`. Use `has_schema()` |
-| Hiding the bottom tier in the CLI instead of folding it | The count must stay on screen (`+ N more (--all)`). Thresholds are uncalibrated; a folded event is recoverable, a hidden one is invisible |
+| Cutting the CLI list without saying what was cut | The count must stay on screen (`+ N more events ranked lower (--all)`). A counted event is one flag away; a silently dropped one is invisible |
+| Giving an undated event its own section | It takes the event out of the ranking, which is the one thing the order is for. It ranks inline; the time column reads `time TBC` |
 | A default argument that no test ever uses | `get_now=datetime.now` was naive while every test injected an aware clock, so production was the only naive path and the suite stayed green. It killed the first live fetch. Defaults that only production reaches are untested by construction |
 | Comparing a datetime without localising it | Sources genuinely differ — Do617 and JSON-LD state an offset, HTML listings do not. Two filters over the same field must read naivety the same way, or one raises on input the other accepted |
 | Keying a candidate id on an event URL alone | A recurring programme keeps one page across every date it runs — PEM's 97 listings are 61 URLs — so the id must carry the start too, or a whole season collapses into one candidate |
@@ -271,7 +272,7 @@ v1 is single-threaded. When parallelism is added later, natural boundaries are:
 
 - **Parallelizable:** scraping multiple sources, embedding multiple events, enrichment per event
 - **Must remain sequential:** dedup pass 1 (needs full set), dedup pass 2 (needs all embeddings),
-  final scoring (needs all similarity scores for tier assignment)
+  final scoring (needs all similarity scores to assign rank)
 
 Wire these as sequential today using plain lists. The pipeline stage interface
 (`process(events) → events`) is already compatible with future executor-based parallelism.

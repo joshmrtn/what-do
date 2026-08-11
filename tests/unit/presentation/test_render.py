@@ -54,7 +54,6 @@ def _event(
 
 def _pair(
     event_id: str = "evt-1",
-    tier: str = "top_pick",
     rank: int = 1,
     reasons: list[Reason] | None = None,
     start: datetime | None = datetime(2025, 6, 21, 20, 0, tzinfo=TZ),
@@ -69,37 +68,16 @@ def _pair(
         tag_confidence=1.0,
         final_score=0.68,
         match="yes",
-        tier=tier,
         rank=rank,
         reasons=reasons if reasons is not None else [_reason()],
     )
     return recommendation, _event(event_id, start=start, **event_kwargs)
 
 
-class TestSections:
-    def test_top_picks_and_worth_considering_are_separate_sections(self):
-        out = render_recommendations(
-            [_pair("a", tier="top_pick"), _pair("b", tier="worth_considering", rank=2)]
-        )
+class TestRankedList:
+    """One list, ordered by the rank the batch assigned. No bands, no sections."""
 
-        assert "TOP PICKS" in out
-        assert "WORTH CONSIDERING" in out
-        assert out.index("TOP PICKS") < out.index("WORTH CONSIDERING")
-
-    def test_a_section_with_no_events_is_not_printed(self):
-        out = render_recommendations([_pair("a", tier="top_pick")])
-
-        assert "WORTH CONSIDERING" not in out
-
-    def test_events_appear_under_their_own_tier(self):
-        out = render_recommendations(
-            [_pair("a", tier="top_pick", title="Top Thing"),
-             _pair("b", tier="worth_considering", rank=2, title="Maybe Thing")]
-        )
-
-        assert out.index("Top Thing") < out.index("WORTH CONSIDERING") < out.index("Maybe Thing")
-
-    def test_rank_order_within_a_section_is_preserved(self):
+    def test_events_render_in_the_order_given(self):
         out = render_recommendations(
             [
                 _pair("a", rank=1, title="First"),
@@ -110,6 +88,13 @@ class TestSections:
 
         assert out.index("First") < out.index("Second") < out.index("Third")
 
+    def test_nothing_is_grouped_into_a_band(self):
+        # The whole point of removing tiers: score order is the only structure.
+        out = render_recommendations([_pair("a"), _pair("b", rank=2)])
+
+        for banner in ("TOP PICKS", "WORTH CONSIDERING", "EVERYTHING ELSE"):
+            assert banner not in out
+
     def test_heading_is_rendered_when_given(self):
         out = render_recommendations([_pair()], heading="Tonight - Saturday 21 June")
 
@@ -119,85 +104,88 @@ class TestSections:
         out = render_recommendations([])
 
         assert "No events" in out
-        assert "TOP PICKS" not in out
+
+    def test_the_batchs_rank_is_shown_not_a_position_in_the_list(self):
+        # Filters run before rendering, so the visible list can start at rank 4.
+        out = render_recommendations([_pair("a", rank=4, title="Fourth")])
+
+        assert "4. " in out
 
 
-class TestBottomTierIsFoldedNotHidden:
-    def _mixed(self) -> list[tuple[Recommendation, Event]]:
-        return [
-            _pair("a", tier="top_pick", rank=1, title="Great Thing"),
-            _pair("b", tier="everything_else", rank=2, title="Dull Thing"),
-            _pair("c", tier="everything_else", rank=3, title="Duller Thing"),
-        ]
+class TestLimit:
+    """Ten by default, with the remainder counted rather than silently dropped."""
 
-    def test_bottom_tier_events_are_not_listed_by_default(self):
-        out = render_recommendations(self._mixed())
+    def _many(self, count: int) -> list[tuple[Recommendation, Event]]:
+        return [_pair(f"e{i}", rank=i, title=f"Event {i}") for i in range(1, count + 1)]
 
-        assert "Dull Thing" not in out
+    def test_only_the_first_ten_are_shown_by_default(self):
+        out = render_recommendations(self._many(12))
 
-    def test_the_count_of_folded_events_is_always_visible(self):
-        """Thresholds are uncalibrated; a low-ranked event may be folded, never invisible."""
-        out = render_recommendations(self._mixed())
+        assert "Event 10" in out
+        assert "Event 11" not in out
+
+    def test_the_count_of_the_rest_is_always_visible(self):
+        out = render_recommendations(self._many(12))
 
         assert "2 more" in out
         assert "--all" in out
 
-    def test_show_all_expands_them(self):
-        out = render_recommendations(self._mixed(), show_all=True)
+    def test_no_limit_shows_everything(self):
+        out = render_recommendations(self._many(12), limit=None)
 
-        assert "Dull Thing" in out
-        assert "Duller Thing" in out
-        assert "EVERYTHING ELSE" in out
+        assert "Event 12" in out
+        assert "ranked lower (--all)" not in out
 
-    def test_show_all_drops_the_folded_count_line(self):
-        out = render_recommendations(self._mixed(), show_all=True)
+    def test_no_count_line_when_nothing_is_hidden(self):
+        out = render_recommendations(self._many(3))
 
-        assert "2 more" not in out
+        assert "ranked lower (--all)" not in out
 
-    def test_no_count_line_when_nothing_is_folded(self):
-        out = render_recommendations([_pair("a", tier="top_pick")])
+    def test_an_explicit_limit_is_honoured(self):
+        out = render_recommendations(self._many(12), limit=2)
 
-        assert "more (--all)" not in out
-
-    def test_folded_events_keep_their_rank_when_expanded(self):
-        out = render_recommendations(self._mixed(), show_all=True)
-
-        assert out.index("Dull Thing") < out.index("Duller Thing")
+        assert "Event 2" in out
+        assert "Event 3" not in out
+        assert "10 more" in out
 
 
 class TestUndatedEvents:
-    def test_undated_events_get_their_own_labelled_section(self):
-        out = render_recommendations([_pair("a", start=None, title="Sometime Thing")])
+    """An undated event ranks with everything else.
 
-        assert "UNDATED" in out
-        assert "Sometime Thing" in out
+    A separate section would take it out of the ranking, which is the one thing
+    the ordering is for. A missing start time is a gap in what we know, not
+    evidence about when.
+    """
 
-    def test_undated_section_follows_the_timed_sections(self):
+    def test_an_undated_event_ranks_inline_with_the_rest(self):
         out = render_recommendations(
-            [_pair("a", title="Timed Thing"), _pair("b", rank=2, start=None, title="Untimed")]
+            [
+                _pair("a", rank=1, title="Timed Thing"),
+                _pair("b", rank=2, start=None, title="Untimed Thing"),
+            ]
         )
 
-        assert out.index("Timed Thing") < out.index("UNDATED") < out.index("Untimed")
+        assert out.index("Timed Thing") < out.index("Untimed Thing")
 
-    def test_undated_section_says_the_timing_is_unconfirmed(self):
-        """The caveat belongs on the heading, so the list is not read as tonight's."""
+    def test_an_undated_event_outranks_a_timed_one_when_it_scores_higher(self):
+        out = render_recommendations(
+            [
+                _pair("a", rank=1, start=None, title="Untimed Thing"),
+                _pair("b", rank=2, title="Timed Thing"),
+            ]
+        )
+
+        assert out.index("Untimed Thing") < out.index("Timed Thing")
+
+    def test_an_undated_event_says_its_time_is_unpublished(self):
         out = render_recommendations([_pair("a", start=None)])
 
-        assert "timing unconfirmed" in out.lower()
+        assert "time TBC" in out
 
-    def test_a_bottom_tier_undated_event_folds_like_any_other(self):
-        out = render_recommendations(
-            [_pair("a", tier="everything_else", start=None, title="Dull Undated")]
-        )
-
-        assert "Dull Undated" not in out
-        assert "1 more" in out
-
-    def test_no_undated_section_when_every_event_has_a_time(self):
-        out = render_recommendations([_pair("a")])
+    def test_there_is_no_separate_undated_section(self):
+        out = render_recommendations([_pair("a", start=None)])
 
         assert "UNDATED" not in out
-
 
 class TestEventLines:
     def test_start_time_is_shown_for_a_timed_event(self):
@@ -450,26 +438,22 @@ class TestEventUrl:
 
         assert out.count(LINK) == 1
 
-    def test_the_folded_count_is_unaffected(self):
-        """The bottom tier stays a count; a URL must not leak into it."""
+    def test_a_url_beyond_the_limit_does_not_leak_into_the_count(self):
         out = render_recommendations(
-            [_pair("a"), _pair("b", tier="everything_else", rank=2, url=LINK)]
+            [_pair("a"), _pair("b", rank=2, url=LINK)], limit=1
         )
 
-        assert "+ 1 more event ranked lower (--all)" in out
+        assert "1 more" in out
         assert LINK not in out
 
-    def test_the_url_shows_in_the_expanded_bottom_tier(self):
-        out = render_recommendations(
-            [_pair("b", tier="everything_else", url=LINK)], show_all=True
-        )
+    def test_the_url_shows_once_the_limit_is_lifted(self):
+        out = render_recommendations([_pair("b", url=LINK)], limit=None)
 
         assert LINK in out
 
-    def test_the_url_shows_in_the_undated_section(self):
+    def test_an_undated_event_still_shows_its_url(self):
         out = render_recommendations([_pair("a", start=None, url=LINK)])
 
-        assert "UNDATED" in out
         assert LINK in out
 
     def test_the_raw_view_stays_one_line_per_event(self):

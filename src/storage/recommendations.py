@@ -11,21 +11,19 @@ Storage splits what was one table into three, along the line between what was
 * `score_reasons` — each contribution, one row rather than a JSON blob
 * `recommendations` — the ranking output alone
 
-`tier` is not stored at all. It is a label derived from `final_score` and the
-configured thresholds, so persisting it would let a threshold change leave every
-stored tier disagreeing with what the config now says.
+Nothing here derives a presentation label. The ordering is the product; how it
+is displayed is the CLI's business alone.
 """
 
 from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from src.models.event import Event
 from src.models.recommendation import Recommendation
 from src.scoring.similarity import Reason
-from src.scoring.tiers import default_tier
 from src.storage.db import connect
 from src.storage.events import EVENT_COLUMNS, load_events, row_to_event
 
@@ -35,8 +33,6 @@ _REASON_COLUMNS = (
     "event_id, run_date, position, factor, tag, matched_preference, "
     "similarity, contribution, direction"
 )
-
-TierFor = Callable[[float], str]
 
 
 def save_recommendations(
@@ -136,7 +132,6 @@ def _group_reasons(rows: list[tuple[Any, ...]]) -> dict[str, list[Reason]]:
 def load_recommendations(
     db_path: Path | str,
     run_date: date | None = None,
-    tier_for: TierFor = default_tier,
 ) -> list[Recommendation]:
     """Load persisted recommendations in rank order.
 
@@ -144,8 +139,6 @@ def load_recommendations(
         db_path: Path to the SQLite database.
         run_date: Restrict to one batch date. Defaults to every stored run —
             `load_ranked` is the one that narrows to the latest.
-        tier_for: Derives the presentation label from `final_score`. Defaults to
-            the shipped thresholds; the CLI passes one built from config.
 
     Returns:
         Recommendations ordered by run date, then by the rank the batch assigned.
@@ -178,11 +171,11 @@ def load_recommendations(
         conn.close()
 
     reasons = _group_reasons(reason_rows)
-    return [_to_recommendation(row, reasons, tier_for) for row in rows]
+    return [_to_recommendation(row, reasons) for row in rows]
 
 
 def _to_recommendation(
-    row: tuple[Any, ...], reasons: dict[str, list[Reason]], tier_for: TierFor
+    row: tuple[Any, ...], reasons: dict[str, list[Reason]]
 ) -> Recommendation:
     """Rebuild a Recommendation from a joined score and ranking row."""
     event_id, run_date, base_score, match, weather, confidence, final_score, rank = row
@@ -194,7 +187,6 @@ def _to_recommendation(
         weather_adjustment=weather,
         tag_confidence=confidence,
         final_score=final_score,
-        tier=tier_for(final_score),
         match=match,
         rank=rank,
         reasons=reasons.get(event_id, []),
@@ -215,7 +207,6 @@ def latest_run_date(db_path: Path | str) -> date | None:
 def load_ranked(
     db_path: Path | str,
     run_date: date | None = None,
-    tier_for: TierFor = default_tier,
 ) -> list[tuple[Recommendation, Event]]:
     """Load one run's recommendations alongside the events they rank.
 
@@ -227,7 +218,6 @@ def load_ranked(
     Args:
         db_path: Path to the SQLite database.
         run_date: Which batch to read. Defaults to the latest one.
-        tier_for: Derives the presentation label from `final_score`.
 
     Returns:
         (recommendation, event) pairs in the rank order the batch assigned.
@@ -237,7 +227,7 @@ def load_ranked(
     if target is None:
         return []
 
-    recommendations = load_recommendations(db_path, target, tier_for)
+    recommendations = load_recommendations(db_path, target)
     if not recommendations:
         return []
 

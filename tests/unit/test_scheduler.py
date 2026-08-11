@@ -173,7 +173,6 @@ class _FakeRanking:
                 tag_confidence=1.0,
                 final_score=1.0,
                 match="yes",
-                tier="top_picks",
                 rank=i + 1,
                 reasons=[],
             )
