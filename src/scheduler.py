@@ -37,10 +37,10 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.candidates import load_candidates
 from src.storage.db import DEFAULT_DB_PATH, init_db
-from src.storage.protocols import EventRepository
+from src.storage.protocols import EventRepository, RunRepository
 from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.recommendations import save_recommendations
-from src.storage.runs import finish_run, start_run
 from src.utils.llm_transcript import LLMTranscript
 from src.utils.logging import StructuredLogger, get_logger
 
@@ -103,8 +103,7 @@ def run_batch(
     load_candidates_fn: Callable[..., list[EventCandidate]] = load_candidates,
     event_repository: EventRepository | None = None,
     save_recommendations_fn: Callable[..., None] = save_recommendations,
-    start_run_fn: Callable[..., str] = start_run,
-    finish_run_fn: Callable[..., None] = finish_run,
+    run_repository: RunRepository | None = None,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -139,8 +138,9 @@ def run_batch(
             SQLite repository over `db_path`; injected for testing, which is
             what lets the pipeline run without a database at all.
         save_recommendations_fn: Injected for testing.
-        start_run_fn: Injected for testing.
-        finish_run_fn: Injected for testing.
+        run_repository: Where the run's history row is written. Defaults to the
+            SQLite repository over `db_path`, on the same terms as
+            `event_repository`.
 
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
@@ -148,12 +148,15 @@ def run_batch(
     events_repo: EventRepository = (
         event_repository if event_repository is not None else SqliteEventRepository(db_path)
     )
+    runs_repo: RunRepository = (
+        run_repository if run_repository is not None else SqliteRunRepository(db_path)
+    )
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
 
     # Neither a dry run nor an ingest-only run did a batch, so recording one
     # would pollute the only durable record of what the nightly runs actually did.
-    run_id = None if dry_run or ingest_only else start_run_fn(db_path, now)
+    run_id = None if dry_run or ingest_only else runs_repo.start(now)
 
     def _finish() -> BatchResult:
         """Complete the history row and hand back the result.
@@ -165,8 +168,7 @@ def run_batch(
         exists to give.
         """
         if run_id is not None:
-            finish_run_fn(
-                db_path,
+            runs_repo.finish(
                 run_id,
                 outcome=result.outcome,
                 completed_at=get_now(),

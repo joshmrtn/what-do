@@ -8,9 +8,11 @@ spread across the modules that happen to need data.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from src.models.event import Event
+from src.models.run import RunRecord
 
 
 class EventRepository(Protocol):
@@ -74,4 +76,57 @@ class EventRepository(Protocol):
         A vector is a pure function of its text and the embedding model, so a
         tag embedded on a previous night never needs embedding again.
         """
+        ...
+
+
+class RunRepository(Protocol):
+    """Persistence for `run_history`, the only durable record of a batch run."""
+
+    def start(self, started_at: datetime) -> str:
+        """Record that a batch has begun, returning its run id.
+
+        Written at the start rather than the end so a run killed mid-flight
+        still leaves evidence that it began.
+        """
+        ...
+
+    def finish(
+        self,
+        run_id: str,
+        *,
+        outcome: str,
+        completed_at: datetime,
+        stage_counts: dict[str, int] | None = None,
+        errors: list[str] | None = None,
+        skipped_sources: list[str] | None = None,
+    ) -> None:
+        """Complete a run's row with its outcome, counts, errors and skips.
+
+        An unknown `run_id` updates nothing rather than raising: the batch must
+        never die trying to record that it died.
+
+        Args:
+            run_id: The id returned by `start`.
+            outcome: One of `success`, `partial`, `failed`.
+            completed_at: When the run ended. The duration is derived against
+                the stored `started_at`, not a passed-in value, so a resumed
+                process still records real elapsed time.
+            stage_counts: Per-stage counts.
+            errors: Stage failure messages.
+            skipped_sources: Sources not built, normally a missing credential.
+        """
+        ...
+
+    def open_run(self) -> RunRecord | None:
+        """The most recent run that began and never finished, if any.
+
+        A started row with no `completed_at` is a crash, and this is the only
+        way the system can learn one happened. Candidates are the *unfinished*
+        rows, not the latest row overall — a run that succeeded after a crash
+        must not report that all is well while the crash sits unexamined.
+        """
+        ...
+
+    def get(self, run_id: str) -> RunRecord | None:
+        """One run's record, or None if no such run exists."""
         ...
