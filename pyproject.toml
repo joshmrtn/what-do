@@ -41,9 +41,10 @@ what-do-run-batch = "src.scheduler:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-m 'not slow'"
+addopts = "-p tests.tier_plugin -p pytester -m 'not slow'"
 markers = [
     "slow: requires a running Ollama instance; skipped by default",
+    "integration: real SQLite and real Ollama embeddings; skips loudly without Ollama",
 ]
 
 [tool.mypy]
