@@ -80,8 +80,14 @@ def _reachable() -> bool:
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Skip an `integration` test when Ollama is not there to answer it."""
-    if "integration" in item.keywords and not _reachable():
+    """Skip an `integration` test when Ollama is not there to answer it.
+
+    Reads the marker, not `item.keywords`: keywords carry the names of every
+    parent node too, so a keyword check skips everything under our
+    `tests/integration/` directory — including the smoke tests there that need
+    no Ollama at all.
+    """
+    if item.get_closest_marker("integration") is not None and not _reachable():
         pytest.skip(_SKIP_REASON.format(host=ollama_host()))
 
 

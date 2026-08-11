@@ -144,6 +144,27 @@ def test_unmarked_tests_run_when_ollama_is_unreachable(
     result.stdout.fnmatch_lines(["*test_unmarked*PASSED*"])
 
 
+def test_a_directory_named_integration_does_not_imply_the_marker(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`item.keywords` carries every parent's name, not only markers.
+
+    Our real suite keeps these tests in `tests/integration/`, so a keyword
+    check skips the whole directory — including the nine unmarked smoke tests
+    that need no Ollama at all.
+    """
+    pytester.makeini(_INI)
+    pytester.makeconftest('pytest_plugins = ["tests.tier_plugin"]')
+    pytester.mkpydir("integration").joinpath("test_inside.py").write_text(
+        "def test_unmarked_but_in_the_directory():\n    pass\n"
+    )
+    monkeypatch.setenv("OLLAMA_HOST", CLOSED_HOST)
+
+    result = pytester.runpytest("-v")
+
+    result.assert_outcomes(passed=1, skipped=0)
+
+
 def test_probe_is_resolved_once_per_session(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
