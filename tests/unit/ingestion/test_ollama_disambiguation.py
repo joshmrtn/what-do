@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.ingestion.disambiguation import DisambiguationError, OllamaDisambiguationProvider
-from src.utils.ollama_client import OllamaClient
 
 
 def _make_client(response_text: str):
@@ -90,17 +89,3 @@ def test_raises_on_unknown_classification_value():
 
     with pytest.raises(DisambiguationError):
         provider.classify(handle="@x", context="context")
-
-
-@pytest.mark.model
-def test_real_ollama_classifies_venue_handle():
-    """Confirm real Ollama can classify an obvious venue handle."""
-
-    client = OllamaClient(host="http://localhost:11434", timeout=3600)
-    provider = OllamaDisambiguationProvider(client=client, model="gemma4:e2b")
-
-    result = provider.classify(
-        handle="@thevaultlounge",
-        context="Come enjoy live jazz at @thevaultlounge this Saturday — doors open at 7pm!",
-    )
-    assert result == "venue"

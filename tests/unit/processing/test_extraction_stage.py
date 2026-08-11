@@ -15,7 +15,6 @@ from src.processing.extraction import ExtractionError, ExtractionResult, OllamaE
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.processing.image_fetcher import ImageFetchError
 from src.utils.logging import get_logger
-from src.utils.ollama_client import OllamaClient
 
 
 def _now() -> datetime:
@@ -332,39 +331,6 @@ def test_input_text_combines_title_and_description():
     text_arg = provider.extract.call_args[0][0]
     assert "Jazz Night" in text_arg
     assert "Live jazz at the waterfront." in text_arg
-
-
-# ---------------------------------------------------------------------------
-# Model compliance -- moves to the bench in #2
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.model
-def test_real_extraction_produces_valid_result():
-    """Confirm real Ollama extraction works end-to-end with gemma4:e4b."""
-
-    client = OllamaClient(host="http://localhost:11434", timeout=3600)
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
-    stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
-
-    event = _make_event(
-        title=None,
-        description=(
-            "🎵 Live jazz with the Salem Jazz Collective this Saturday at The Vault Lounge! "
-            "Doors open at 7pm, music starts at 8pm. $15 cover. "
-            "Great cocktails, cozy atmosphere, perfect for date night. "
-            "Follow @salemsjazcollective for updates!"
-        ),
-    )
-    results = stage.process([event])
-
-    assert len(results) == 1
-    result = results[0]
-    assert not result.metadata.get("llm_extraction_failed"), (
-        f"Extraction failed: {result.metadata}"
-    )
-    assert len(result.tags) >= 5
-    assert result.summary is not None and len(result.summary) > 0
 
 
 def test_bypass_not_called_when_the_input_is_unchanged():

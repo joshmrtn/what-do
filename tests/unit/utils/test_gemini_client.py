@@ -1,22 +1,17 @@
-"""Unit tests for GeminiClient (hermetic — injected fake genai client).
+"""Unit tests for GeminiClient — hermetic, against an injected fake genai client.
 
-The tests at the bottom hit the real Gemini API and are skipped unless
-``GEMINI_API_KEY`` is available (from the environment or a local ``.env``).
-Two are model-compliance checks and carry ``model`` as well as ``external``;
-the third only proves the live API path works at all.
+These cover the translation layer: role mapping, image attachment, error
+wrapping, protocol conformance. Whether Gemini itself answers well is a
+question for ``tests/model/``; whether the live API is reachable is one for
+``tests/external/``.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
 from unittest.mock import MagicMock
-import os
 
-from dotenv import load_dotenv
 import pytest
 
-from src.ingestion.disambiguation import OllamaDisambiguationProvider
-from src.processing.extraction import OllamaExtractionProvider
 from src.utils.chat_client import ChatClient, LLMError
 from src.utils.gemini_client import GeminiClient, GeminiError
 from src.utils.ollama_client import OllamaError
@@ -130,68 +125,3 @@ def test_gemini_client_satisfies_chat_client_protocol():
 
     gc = GeminiClient(api_key="x", client=MagicMock())
     assert isinstance(gc, ChatClient)
-
-
-# --- live tests (real Gemini API; require GEMINI_API_KEY) ---
-
-_SAMPLE_CAPTION = (
-    "🎵 Live jazz with the Salem Jazz Collective this Saturday at The Vault Lounge! "
-    "Doors open at 7pm, music starts at 8pm. $15 cover. "
-    "Great cocktails, cozy atmosphere, perfect for date night. "
-    "Follow @salemsjazcollective for updates!"
-)
-
-
-def _require_gemini() -> tuple[str, str]:
-    """Load the key/model or skip the test if no key is configured."""
-    load_dotenv()
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        pytest.skip("GEMINI_API_KEY not set")
-    return key, os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
-
-
-@pytest.mark.model
-@pytest.mark.external
-def test_real_gemini_extraction():
-    """Real Gemini extraction produces a structurally valid result."""
-
-    key, model = _require_gemini()
-    provider = OllamaExtractionProvider(client=GeminiClient(api_key=key), model=model, min_tags=5)
-
-    result = provider.extract(_SAMPLE_CAPTION)
-
-    assert len(result.tags) >= 5
-    assert result.summary is not None and len(result.summary) > 0
-
-
-@pytest.mark.model
-@pytest.mark.external
-def test_real_gemini_resolves_relative_date():
-    """Gemini resolves 'this Saturday' against an injected reference date."""
-
-
-    key, model = _require_gemini()
-    provider = OllamaExtractionProvider(client=GeminiClient(api_key=key), model=model, min_tags=5)
-
-    result = provider.extract(
-        "Live music this Saturday at 8pm at The Vault Lounge in Salem.",
-        reference_date=datetime(2026, 8, 3),  # a Monday
-    )
-
-    assert result.start_time is not None
-    assert result.start_time.date() == date(2026, 8, 8)
-
-
-@pytest.mark.external
-def test_real_gemini_disambiguation():
-    """Real Gemini classifies an obvious venue handle as 'venue'."""
-
-    key, model = _require_gemini()
-    provider = OllamaDisambiguationProvider(client=GeminiClient(api_key=key), model=model)
-
-    result = provider.classify(
-        handle="@thevaultlounge",
-        context="Come enjoy live jazz at @thevaultlounge this Saturday — doors open at 7pm!",
-    )
-    assert result == "venue"
