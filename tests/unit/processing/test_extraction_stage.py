@@ -12,7 +12,11 @@ from src.models.event import Event
 from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
 from src.processing.extraction import ExtractionError, ExtractionResult, OllamaExtractionProvider
-from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
+from src.processing.extraction_stage import (
+    ExtractionStage,
+    extraction_input,
+    extraction_input_hash,
+)
 from src.processing.image_fetcher import ImageFetchError
 from src.utils.logging import get_logger
 
@@ -609,3 +613,46 @@ class TestAuthoredContentIsNotOverwritten:
         ExtractionStage(provider, None, logger=_make_logger()).process([event])
 
         assert event.summary == "fresh summary"
+
+
+class TestListingCategoryReachesTheModel:
+    """A category recorded but never emitted is worse than one never recorded.
+
+    Dropping the fake `Category: Music` description without emitting the real
+    thing left a music listing's input as a bare performer's name — strictly
+    less than before, and the prompt's rule about "Event category" referring to
+    nothing.
+    """
+
+    def test_the_category_is_a_labelled_line_of_its_own(self):
+        event = _make_event(
+            title="Fred Ellsworth",
+            description=None,
+            metadata={"listing_category": "Music"},
+        )
+
+        assert extraction_input(event) == "Fred Ellsworth\nEvent category: Music"
+
+    def test_an_event_without_one_is_unchanged(self):
+        event = _make_event(title="Jazz Night", description="A night of jazz.")
+
+        assert extraction_input(event) == "Jazz Night\nA night of jazz."
+
+    def test_a_real_description_and_a_category_both_appear(self):
+        event = _make_event(
+            title="Show",
+            description="Doors at seven.",
+            metadata={"listing_category": "Music"},
+        )
+
+        assert extraction_input(event) == "Show\nDoors at seven.\nEvent category: Music"
+
+    def test_the_hash_changes_when_the_category_does(self):
+        """Otherwise a corrected category would never trigger a re-extraction."""
+        without = _make_event(title="Fred Ellsworth", description=None)
+        with_music = _make_event(
+            title="Fred Ellsworth", description=None,
+            metadata={"listing_category": "Music"},
+        )
+
+        assert extraction_input_hash(without) != extraction_input_hash(with_music)

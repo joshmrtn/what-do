@@ -120,7 +120,16 @@ CREATE TABLE IF NOT EXISTS event_candidates (
     start_time       TEXT,
     end_time         TEXT,
     discovered_at    TEXT NOT NULL,
-    raw_data         TEXT
+    raw_data         TEXT,
+    -- How much is known about *when*. Missing until 2026-08-11, which is why
+    -- every ICS `all_day` was reloaded as `exact`: the candidate round trip
+    -- dropped it, and the batch prefers the loaded copy.
+    timing           TEXT NOT NULL DEFAULT 'exact',
+    -- Authored by adapters for sources that state everything they know. NULL
+    -- and empty for every source that leaves both to extraction.
+    summary          TEXT,
+    tags             TEXT,
+    metadata         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS weather_cache (

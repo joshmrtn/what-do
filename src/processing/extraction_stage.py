@@ -16,8 +16,20 @@ from src.processing.image_fetcher import ImageFetchError, ImageFetcher
 
 
 def extraction_input(event: Event) -> str:
-    """The text LLM Pass 1 runs over, and the thing whose hash gates a re-run."""
-    return "\n".join(filter(None, [event.title, event.description]))
+    """The text LLM Pass 1 runs over, and the thing whose hash gates a re-run.
+
+    A listing's section heading is appended as its own labelled line rather than
+    folded into the description. The prompt names that label and says what it is
+    — a taxonomy from a listing site, not a claim about this event — which is
+    the whole reason it stopped being stored as prose.
+    """
+    category = event.metadata.get("listing_category")
+    parts = [
+        event.title,
+        event.description,
+        f"Event category: {category}" if category else None,
+    ]
+    return "\n".join(filter(None, parts))
 
 
 def _has_authored_tags(event: Event) -> bool:

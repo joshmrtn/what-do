@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from src.storage.candidates import write_candidates
 from src.storage.db import connect
 import uuid
 from dataclasses import dataclass, field as dataclass_field
@@ -390,27 +391,14 @@ class IngestionService:
     # ------------------------------------------------------------------
 
     def _persist_candidate(self, conn: sqlite3.Connection, ec: EventCandidate) -> None:
-        conn.execute(
-            """INSERT OR REPLACE INTO event_candidates
-               (id, source, source_type, url, image_url, raw_published_at,
-                title, description, venue, location, start_time, end_time, discovered_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                ec.id,
-                ec.source,
-                ec.source_type,
-                ec.url,
-                ec.image_url,
-                ec.raw_published_at.isoformat() if ec.raw_published_at else None,
-                ec.title,
-                ec.description,
-                ec.venue,
-                ec.location,
-                ec.start_time.isoformat() if ec.start_time else None,
-                ec.end_time.isoformat() if ec.end_time else None,
-                ec.discovered_at.isoformat(),
-            ),
-        )
+        """Write one candidate through the shared row mapper.
+
+        The column list lives with the reader (issue #22). Two hand-written
+        lists in two modules drift silently — and did: `timing`, and later the
+        authored summary and tags, reached the writer's table and never the
+        reader's, so the batch reloaded them as defaults and preferred that copy.
+        """
+        write_candidates(conn, [ec])
 
     # ------------------------------------------------------------------
     # Promotion
