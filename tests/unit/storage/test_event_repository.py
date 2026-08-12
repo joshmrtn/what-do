@@ -52,6 +52,24 @@ def _event(event_id="e1", **kwargs) -> Event:
 
 
 def _full_event(event_id="e1") -> Event:
+    """An event with **every** stored field at a non-default value.
+
+    Non-default is the whole point. A round-trip test that leaves a field at its
+    default passes happily against a column that does not exist: the writer
+    drops it, the reader returns the default, and the assertion still holds.
+    `EventCandidate.timing` was lost that way for weeks, and it is worse for
+    events because `_merge_candidates` prefers the reloaded copy, so the
+    impoverished one is what the pipeline runs on.
+
+    `image_bytes` and `similarity` are deliberately absent — neither is stored,
+    and there are tests below saying so.
+
+    `venue_id` and `weather_cache_id` are absent for a different reason: both
+    are foreign keys, so a non-default value needs a row this repository has no
+    way to create. Only the SQLite implementation enforces that, which is worth
+    knowing — it is a place the two implementations genuinely differ, and it is
+    why those two columns are the ones a missing-column bug could still hide in.
+    """
     event = _event(
         event_id,
         url="https://example.com/e",
@@ -63,6 +81,13 @@ def _full_event(event_id="e1") -> Event:
         end_time=datetime(2026, 8, 26, 23, 30, tzinfo=_TZ),
         tags=[Tag("karaoke", 1.0), Tag("bar", 0.2)],
         summary="A karaoke night at Koto.",
+        setting="outdoor",
+        timing="all_day",
+        weather={"condition": "clear", "temperature_f": 68.0},
+        astronomical_data={"sunset": "20:15"},
+        extraction_input_hash="extraction-hash-value",
+        embedding_input_hash="embedding-hash-value",
+        metadata={"listing_category": "Music", "authored_summary": True},
     )
     event.tag_embeddings = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
     event.summary_embedding = encode_vector([7.0, 8.0, 9.0])
@@ -93,6 +118,25 @@ def test_round_trip_preserves_scalar_fields(repo):
     assert loaded.location == "Salem, MA"
     assert loaded.summary == "A karaoke night at Koto."
     assert loaded.source_type == "apify"
+
+
+def test_round_trip_preserves_every_other_stored_field(repo):
+    """The fields a scalar check forgets, each at a non-default value.
+
+    These are the ones that go missing silently: add a field to the model and
+    forget the column, the writer, or the reader, and nothing throws.
+    """
+    repo.save([_full_event()])
+
+    loaded = _only(repo)
+
+    assert loaded.setting == "outdoor"
+    assert loaded.timing == "all_day"
+    assert loaded.weather == {"condition": "clear", "temperature_f": 68.0}
+    assert loaded.astronomical_data == {"sunset": "20:15"}
+    assert loaded.extraction_input_hash == "extraction-hash-value"
+    assert loaded.embedding_input_hash == "embedding-hash-value"
+    assert loaded.metadata == {"listing_category": "Music", "authored_summary": True}
 
 
 def test_round_trip_preserves_tag_order_and_weights(repo):

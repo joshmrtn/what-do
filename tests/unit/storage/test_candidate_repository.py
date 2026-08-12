@@ -85,6 +85,19 @@ class TestRoundTrip:
         assert [(t.text, t.weight) for t in stored.tags] == [("trivia", 1.0)]
         assert stored.metadata == {"authored_tags": True}
 
+    def test_datetimes_come_back_timezone_aware(self, repo):
+        """SQLite has no datetime type, so awareness is the storage layer's job.
+
+        A naive timestamp reaching the pipeline is what killed the first live
+        fetch, and comparing one against an aware clock raises rather than
+        quietly misfiling.
+        """
+        repo.save([_candidate(start_time=_NOW + timedelta(days=1))])
+
+        loaded = repo.for_window(discovered_since=_LOOKBACK, starting_after=_NOW)[0]
+        assert loaded.discovered_at.tzinfo is not None
+        assert loaded.start_time is not None and loaded.start_time.tzinfo is not None
+
     def test_absent_optional_fields_read_back_as_defaults(self, repo):
         repo.save([_candidate()])
 
@@ -134,6 +147,29 @@ class TestWindow:
         repo.save(
             [_candidate(discovered_at=_NOW - timedelta(days=90),
                         start_time=_NOW + timedelta(days=5))]
+        )
+
+        assert len(_in_window(repo)) == 1
+
+    def test_an_old_candidate_with_no_start_is_dropped(self, repo):
+        """The undated arm expires; otherwise every social post lives forever."""
+        repo.save([_candidate(discovered_at=_NOW - timedelta(days=45), start_time=None)])
+
+        assert _in_window(repo) == []
+
+    def test_a_recently_discovered_candidate_that_has_passed_is_kept(self, repo):
+        """Either arm alone qualifies it — the window is a union, not a pair."""
+        repo.save(
+            [_candidate(discovered_at=_NOW - timedelta(days=1),
+                        start_time=_NOW - timedelta(hours=6))]
+        )
+
+        assert len(_in_window(repo)) == 1
+
+    def test_a_candidate_starting_exactly_now_is_kept(self, repo):
+        """The boundary is inclusive: an event beginning this instant is on."""
+        repo.save(
+            [_candidate(discovered_at=_NOW - timedelta(days=45), start_time=_NOW)]
         )
 
         assert len(_in_window(repo)) == 1
