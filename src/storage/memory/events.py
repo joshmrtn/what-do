@@ -40,7 +40,14 @@ class InMemoryEventRepository:
             # by serialising; without it this fake would be more permissive than
             # the thing it stands in for, and round-trip tests would pass by
             # comparing an object with itself.
-            self._events[event.event_id] = copy.deepcopy(event)
+            stored = copy.deepcopy(event)
+            # `similarity` has no column, by decision: it is derived, cheap to
+            # recompute, and owned by `event_scores`. Keeping it here would make
+            # this store remember something the real one cannot, which is the
+            # one way an in-memory implementation quietly stops being a
+            # substitute for the thing it doubles.
+            stored.similarity = None
+            self._events[event.event_id] = stored
 
     def save_one(self, event: Event) -> None:
         """Persist a single event. See `EventRepository.save_one`."""

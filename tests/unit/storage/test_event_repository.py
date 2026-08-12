@@ -21,6 +21,7 @@ import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
+from src.scoring.similarity import SimilarityResult
 from src.storage.sqlite.connection import init_db
 from src.storage.memory.events import InMemoryEventRepository
 from src.storage.sqlite.events import SqliteEventRepository
@@ -213,6 +214,27 @@ def test_round_trip_preserves_unicode(repo):
     assert loaded.title == "Café Sessions 🎷"
     assert loaded.venue == "Grüner Löwe"
     assert [t.text for t in loaded.tags] == ["jazz café"]
+
+
+def test_similarity_is_not_persisted(repo):
+    """A derived score, cheap to recompute, and owned by `event_scores`.
+
+    Lifted from a SQLite-only module: an in-memory store could just as easily
+    hand back the object it was given, so the claim belongs to both.
+    """
+    event = _full_event()
+    event.similarity = SimilarityResult(base_score=0.8, match="yes")
+    repo.save([event])
+
+    assert _only(repo).similarity is None
+
+
+def test_setting_defaults_to_unknown_when_never_set(repo):
+    """"unknown" earns no weather adjustment in either direction, so the
+    default has to survive storage rather than arriving as None."""
+    repo.save([_event()])
+
+    assert _only(repo).setting == "unknown"
 
 
 def test_event_with_no_tags_round_trips_as_an_empty_list(repo):
