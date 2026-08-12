@@ -20,7 +20,7 @@ from src.config import (
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.normalization.service import NormalizationService
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 

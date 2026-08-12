@@ -17,7 +17,7 @@ from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.do617_listing import parse_do617
 from src.ingestion.aggregators.do617_source import Do617VenueSource
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"

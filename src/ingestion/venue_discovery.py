@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 from src.storage.protocols import EntityRepository
 import uuid
 from datetime import datetime, timezone

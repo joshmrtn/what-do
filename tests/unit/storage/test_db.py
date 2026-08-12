@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from src.storage.db import connect, has_schema, init_db, transaction
+from src.storage.sqlite.connection import connect, has_schema, init_db, transaction
 
 
 def test_all_tables_exist(tmp_path):

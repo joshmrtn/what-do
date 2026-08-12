@@ -7,8 +7,7 @@ import sqlite3
 
 from src.storage.protocols import EntityRepository
 from src.storage.sqlite.candidates import write_candidates
-from src.storage.db import connect
-import uuid
+from src.storage.sqlite.connection import connect
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timedelta, tzinfo, timezone
 from pathlib import Path

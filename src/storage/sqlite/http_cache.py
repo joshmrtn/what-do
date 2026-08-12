@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 from src.storage.http_cache import CachedResponse
 
 

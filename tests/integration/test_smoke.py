@@ -60,7 +60,7 @@ from src.processing.extraction_stage import ExtractionStage
 from src.scheduler import run_batch
 from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.similarity_stage import SimilarityStage
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.events import SqliteEventRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository

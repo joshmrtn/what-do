@@ -8,7 +8,7 @@ from typing import Any
 
 from src.models.event_score import EventScore
 from src.scoring.similarity import Reason
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 
 _SCORE_COLUMNS = (
     "event_id, run_date, tag_score, summary_score, base_score, tag_confidence, match"

@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 
 
 class SqliteWeatherCache:

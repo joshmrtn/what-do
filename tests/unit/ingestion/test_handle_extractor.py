@@ -13,7 +13,7 @@ import pytest
 
 from src.ingestion.handle_extractor import HandleExtractor
 from src.storage.sqlite.entities import SqliteEntityRepository
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 

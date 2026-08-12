@@ -18,7 +18,7 @@ import pytest
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.scoring.similarity import Reason
-from src.storage.db import connect, init_db
+from src.storage.sqlite.connection import connect, init_db
 from src.storage.memory.rankings import InMemoryRankingRepository
 from src.storage.memory.scores import InMemoryScoreRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository

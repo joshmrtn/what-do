@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import pytest
 
 from src.models.candidate_entity import ACTIVE, DISCARDED, PROBATIONARY
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.memory.entities import InMemoryEntityRepository
 from src.storage.sqlite.entities import SqliteEntityRepository
 

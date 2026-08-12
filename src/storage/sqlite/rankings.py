@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from src.models.ranking import Ranking
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 
 _COLUMNS = "event_id, run_date, weather_adjustment, final_score, rank"
 

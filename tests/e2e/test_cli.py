@@ -21,7 +21,7 @@ from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.presentation.cli import ViewSettings, run
 from src.scoring.similarity import Reason
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.events import save_events
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.scores import SqliteScoreRepository

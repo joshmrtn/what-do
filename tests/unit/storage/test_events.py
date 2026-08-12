@@ -13,7 +13,7 @@ from src.models.tag import Tag
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.scoring.embedding_stage import EmbeddingStage, embedding_input_hash
 from src.scoring.similarity import SimilarityResult
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.events import delete_events, load_events, save_events
 from src.utils.vectors import decode_vector, encode_vector
 

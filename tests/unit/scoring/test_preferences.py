@@ -14,7 +14,7 @@ from src.scoring.preferences import (
     PreferenceRepository,
     parse_preferences,
 )
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 

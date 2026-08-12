@@ -24,7 +24,7 @@ from src.enrichment.movies import MovieMetadataProvider
 from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import WeatherProvider
 from src.models.event import Event
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import StructuredLogger
 
 # ---------------------------------------------------------------------------

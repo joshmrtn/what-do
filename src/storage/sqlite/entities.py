@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.models.candidate_entity import ACTIVE, PROBATIONARY, CandidateEntity
-from src.storage.db import connect, has_schema
+from src.storage.sqlite.connection import connect, has_schema
 
 _COLUMNS = (
     "id, handle, state, depth, mention_count, mention_sources, "

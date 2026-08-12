@@ -13,7 +13,7 @@ from src.config import FeedConfig
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.models.event_candidate import EventCandidate
 from src.models.timing import EXACT
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 #: 02:00 in New York, so the night in progress began the previous day.

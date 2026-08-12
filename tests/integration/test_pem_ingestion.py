@@ -20,7 +20,7 @@ from src.config import FeedConfig
 from src.ingestion.aggregators.jsonld_listing import parse_jsonld_events
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.models.timing import EXACT
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "pem_events.html"

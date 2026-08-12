@@ -16,7 +16,7 @@ import pytest
 
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.memory.candidates import InMemoryCandidateRepository
 from src.storage.sqlite.candidates import SqliteCandidateRepository
 

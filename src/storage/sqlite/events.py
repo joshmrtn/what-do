@@ -15,7 +15,7 @@ from pathlib import Path
 
 from src.config import DEFAULT_EMBEDDING_MODEL
 from src.models.event import Event
-from src.storage.db import connect, transaction
+from src.storage.sqlite.connection import connect, transaction
 from src.storage.events import (
     delete_events,
     load_events,

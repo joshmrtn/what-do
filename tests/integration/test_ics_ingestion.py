@@ -24,7 +24,7 @@ from src.config import (
 )
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.normalization.service import NormalizationService
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 FIXTURE = Path("tests/fixtures/northshorenightout.ics")

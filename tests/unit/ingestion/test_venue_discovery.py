@@ -16,7 +16,7 @@ from src.ingestion.geocoder import GeocoderProvider
 from src.ingestion.venue_discovery import VenueDiscoveryService
 from src.ingestion.venue_source import VenueSource
 from src.models.venue import Venue
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 # ~1 mile north of Salem city center — well within any reasonable radius

@@ -19,7 +19,7 @@ from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.models.timing import EXACT
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "salempl_upcoming.rss"

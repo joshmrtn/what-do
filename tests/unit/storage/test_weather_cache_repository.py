@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from src.storage.db import connect, init_db
+from src.storage.sqlite.connection import connect, init_db
 from src.storage.memory.weather_cache import InMemoryWeatherCache
 from src.storage.sqlite.weather_cache import SqliteWeatherCache
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 from datetime import datetime
 from pathlib import Path
 from typing import Any

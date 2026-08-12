@@ -27,7 +27,7 @@ from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 FULL_ENV = {

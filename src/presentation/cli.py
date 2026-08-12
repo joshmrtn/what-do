@@ -35,7 +35,7 @@ from src.presentation.render import (
     render_recommendations,
     staleness_notice,
 )
-from src.storage.db import DEFAULT_DB_PATH, has_schema
+from src.storage.sqlite.connection import DEFAULT_DB_PATH, has_schema
 from src.storage.events import load_events
 from src.storage.queries import load_ranked_events
 from src.storage.sqlite.events import SqliteEventRepository

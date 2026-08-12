@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone

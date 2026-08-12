@@ -14,7 +14,7 @@ from src.ingestion.calendars.rss_source import RssEvent, RssFeedSource
 from src.ingestion.rss import RssItem
 from src.models.event_candidate import EventCandidate
 from src.models.timing import EXACT, UNKNOWN
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 #: 02:00 in New York, so the night in progress began the previous day.

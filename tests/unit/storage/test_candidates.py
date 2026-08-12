@@ -17,7 +17,7 @@ from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
 from src.storage.sqlite.candidates import SqliteCandidateRepository
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 
 _NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
 

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.memory.runs import InMemoryRunRepository
 from src.storage.sqlite.runs import SqliteRunRepository
 

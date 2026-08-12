@@ -38,7 +38,7 @@ from src.scoring.similarity_stage import SimilarityStage
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.weather import WeatherProvider
 from src.storage.memory.weather_cache import InMemoryWeatherCache
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking

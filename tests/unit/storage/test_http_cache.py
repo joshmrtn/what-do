@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.http_cache import CachedResponse
 from src.storage.sqlite.http_cache import SqliteHttpCache
 

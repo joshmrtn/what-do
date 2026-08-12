@@ -12,7 +12,7 @@ from src.config import FeedConfig
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.rss import RssItem
 from src.models.timing import EXACT
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 EASTERN = timezone(timedelta(hours=-4))

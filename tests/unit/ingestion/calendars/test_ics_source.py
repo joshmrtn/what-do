@@ -13,7 +13,7 @@ from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.models.event_candidate import EventCandidate
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 FIXED_NOW = datetime(2026, 8, 5, 2, 0, tzinfo=timezone.utc)

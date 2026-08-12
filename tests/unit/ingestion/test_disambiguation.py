@@ -14,7 +14,7 @@ import pytest
 
 from src.storage.sqlite.entities import SqliteEntityRepository
 from src.ingestion.disambiguation import DisambiguationProvider, DisambiguationStep
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 

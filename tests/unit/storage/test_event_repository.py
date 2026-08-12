@@ -21,7 +21,7 @@ import pytest
 
 from src.models.event import Event
 from src.models.tag import Tag
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.storage.memory.events import InMemoryEventRepository
 from src.storage.sqlite.events import SqliteEventRepository
 from src.utils.vectors import encode_vector

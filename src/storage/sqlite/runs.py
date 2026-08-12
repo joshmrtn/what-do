@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.models.run import RunRecord
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 
 _COLUMNS = (
     "id, started_at, completed_at, duration_ms, outcome, "

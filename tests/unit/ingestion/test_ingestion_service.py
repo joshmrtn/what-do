@@ -18,7 +18,7 @@ from src.config import AppConfig, LocationConfig, ScrapingConfig, VenueDiscovery
 from src.ingestion.ingestion_service import IngestionService
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 

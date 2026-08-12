@@ -10,7 +10,7 @@ import pytest
 
 from src.storage.memory.http_cache import InMemoryHttpCache
 from src.ingestion.calendars.fetching import fetch_document
-from src.storage.db import init_db
+from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
 NOW = datetime(2026, 8, 8, 4, 0, tzinfo=timezone.utc)

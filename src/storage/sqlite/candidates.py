@@ -12,7 +12,7 @@ from src.storage.candidates import (
     candidate_to_row,
     row_to_candidate,
 )
-from src.storage.db import connect
+from src.storage.sqlite.connection import connect
 
 
 def write_candidates(

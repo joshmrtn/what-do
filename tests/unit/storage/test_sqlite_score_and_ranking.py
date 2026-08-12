@@ -14,7 +14,7 @@ import sqlite3
 
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
-from src.storage.db import connect, init_db
+from src.storage.sqlite.connection import connect, init_db
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 

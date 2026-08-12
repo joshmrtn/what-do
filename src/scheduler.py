@@ -36,7 +36,7 @@ from src.processing.extraction_stage import ExtractionStage
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
-from src.storage.db import DEFAULT_DB_PATH, init_db
+from src.storage.sqlite.connection import DEFAULT_DB_PATH, init_db
 from src.storage.protocols import (
     CandidateRepository,
     EventRepository,
