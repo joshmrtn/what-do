@@ -47,6 +47,7 @@ from src.storage.memory.entities import InMemoryEntityRepository
 from src.storage.memory.rankings import InMemoryRankingRepository
 from src.storage.memory.scores import InMemoryScoreRepository
 from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.runs import SqliteRunRepository
 from src.utils.logging import get_logger
 
 NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -556,6 +557,7 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
         get_now=lambda: NOW,
         run_date=RUN_DATE,
         candidate_repository=_seeded_candidates(stored),
+        run_repository=SqliteRunRepository(db),
         event_repository=save_spy,
         score_repository=InMemoryScoreRepository(),
         ranking_repository=recs_spy,
@@ -1135,6 +1137,10 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             similarity_stage=_similarity_stage(),
             ranking_engine=_ranking_engine(),
             event_repository=_UnreadableRepository(),
+            candidate_repository=InMemoryCandidateRepository(),
+            run_repository=SqliteRunRepository(db),
+            score_repository=InMemoryScoreRepository(),
+            ranking_repository=InMemoryRankingRepository(),
         )
 
     row = _runs(db)[0]

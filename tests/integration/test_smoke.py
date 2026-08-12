@@ -19,6 +19,8 @@ import zoneinfo
 import pytest
 import yaml
 
+from src.storage.sqlite.weather_cache import SqliteWeatherCache
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.config import (
     AppConfig,
     DeduplicationConfig,
@@ -59,6 +61,11 @@ from src.scheduler import run_batch
 from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.db import init_db
+from src.storage.sqlite.candidates import SqliteCandidateRepository
+from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.runs import SqliteRunRepository
+from src.storage.sqlite.scores import SqliteScoreRepository
 from src.storage.memory.http_cache import InMemoryHttpCache
 from src.storage.events import load_events, save_events
 from src.storage.sqlite.rankings import SqliteRankingRepository
@@ -150,6 +157,7 @@ def test_venue_discovery_smoke(sample_config, tmp_path: Path) -> None:
     svc = VenueDiscoveryService(
         config=cfg,
         db_path=db_path,
+        entities=SqliteEntityRepository(db_path),
         seeds_path=seeds_path,
         blocklist_path=blocklist_path,
         sources=[provider],
@@ -213,6 +221,7 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
     svc = IngestionService(
         config=cfg,
         db_path=db_path,
+        entities=SqliteEntityRepository(db_path),
         seeds_path=seeds_path,
         failover_sources=[good_source],
         independent_sources=[],
@@ -234,6 +243,7 @@ def test_ingestion_smoke(tmp_path: Path) -> None:
     svc2 = IngestionService(
         config=cfg,
         db_path=db2,
+        entities=SqliteEntityRepository(db2),
         seeds_path=seeds_path,
         failover_sources=[failing, fallback],
         independent_sources=[],
@@ -390,6 +400,7 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
         synthetic_rules=[walk_rule],
         config=cfg,
         db_path=db_path,
+        weather_cache=SqliteWeatherCache(db_path),
         get_now=lambda: now,
     )
 
@@ -615,6 +626,7 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
             synthetic_rules=[],
             config=cfg,
             db_path=db_path,
+            weather_cache=SqliteWeatherCache(db_path),
             get_now=lambda: now,
         )
 
@@ -1091,6 +1103,7 @@ def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger
         "ingestion_service": IngestionService(
             config=config,
             db_path=db_path,
+            entities=SqliteEntityRepository(db_path),
             seeds_path=seeds,
             failover_sources=[],
             independent_sources=[ics, html],
@@ -1104,6 +1117,7 @@ def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger
             synthetic_rules=[],
             config=config,
             db_path=db_path,
+            weather_cache=SqliteWeatherCache(db_path),
             get_now=lambda: BATCH_NOW,
             logger=logger,
         ),
@@ -1138,6 +1152,11 @@ def test_batch_smoke(tmp_path: Path) -> None:
 
     deps, extraction = _batch_dependencies(tmp_path, db_path, config, logger)
     result = run_batch(
+        candidate_repository=SqliteCandidateRepository(db_path),
+        event_repository=SqliteEventRepository(db_path),
+        run_repository=SqliteRunRepository(db_path),
+        score_repository=SqliteScoreRepository(db_path),
+        ranking_repository=SqliteRankingRepository(db_path),
         config=config,
         db_path=db_path,
         logger=logger,
@@ -1171,6 +1190,11 @@ def test_batch_smoke(tmp_path: Path) -> None:
         tmp_path, db_path, config, logger
     )
     second = run_batch(
+        candidate_repository=SqliteCandidateRepository(db_path),
+        event_repository=SqliteEventRepository(db_path),
+        run_repository=SqliteRunRepository(db_path),
+        score_repository=SqliteScoreRepository(db_path),
+        ranking_repository=SqliteRankingRepository(db_path),
         config=config,
         db_path=db_path,
         logger=logger,

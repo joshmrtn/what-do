@@ -9,6 +9,7 @@ import zoneinfo
 
 import pytest
 
+from src.storage.sqlite.weather_cache import SqliteWeatherCache
 from src.config import (
     AppConfig,
     LocationConfig,
@@ -125,6 +126,7 @@ def _make_service(
         synthetic_rules=rules or [],
         config=cfg,
         db_path=db_path,
+        weather_cache=SqliteWeatherCache(db_path),
         get_now=lambda: now,
         logger=logger,
     )

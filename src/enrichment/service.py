@@ -27,15 +27,13 @@ class EnrichmentService:
         synthetic_rules: list[SyntheticActivityRule],
         config: AppConfig,
         db_path: Path,
-        weather_cache: WeatherCache | None = None,
+        weather_cache: WeatherCache,
         air_quality_provider: AirQualityProvider | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._weather_provider = weather_provider
-        self._weather_cache: WeatherCache = (
-            weather_cache if weather_cache is not None else SqliteWeatherCache(db_path)
-        )
+        self._weather_cache = weather_cache
         self._air_quality_provider = air_quality_provider
         self._movie_provider = movie_provider
         self._calculator = astronomical_calculator

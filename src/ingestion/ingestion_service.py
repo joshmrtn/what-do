@@ -82,8 +82,8 @@ class IngestionService:
         failover_sources: list[IngestionSource],
         independent_sources: list[IngestionSource],
         logger: Any,
+        entities: EntityRepository,
         blocklist: list[str] | None = None,
-        entities: EntityRepository | None = None,
     ) -> None:
         """
         Args:
@@ -103,9 +103,7 @@ class IngestionService:
         """
         self._config = config
         self._db_path = db_path
-        self._entities: EntityRepository = (
-            entities if entities is not None else SqliteEntityRepository(db_path)
-        )
+        self._entities = entities
         self._seeds_path = seeds_path
         self._failover_sources = failover_sources
         self._independent_sources = independent_sources

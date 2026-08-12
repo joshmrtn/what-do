@@ -10,6 +10,7 @@ import sqlite3
 import pytest
 import yaml
 
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.config import AppConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
 from src.ingestion.geocoder import GeocoderProvider
 from src.ingestion.venue_discovery import VenueDiscoveryService
@@ -69,6 +70,7 @@ def _make_service(
     return VenueDiscoveryService(
         config=config or _make_config(),
         db_path=db_path,
+        entities=SqliteEntityRepository(db_path),
         seeds_path=seeds_path,
         blocklist_path=blocklist_path,
         sources=sources or [],

@@ -10,6 +10,7 @@ import yaml
 
 import pytest
 
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.config import AppConfig, LocationConfig, ScrapingConfig, VenueDiscoveryConfig
 from src.ingestion.ingestion_service import IngestionService
 from src.ingestion.source import IngestionSource
@@ -249,6 +250,7 @@ def test_loads_what_the_ingestion_service_wrote(db, tmp_path):
             venue_discovery=VenueDiscoveryConfig(),
         ),
         db_path=db,
+        entities=SqliteEntityRepository(db),
         seeds_path=seeds,
         failover_sources=[_StubSource()],
         independent_sources=[],

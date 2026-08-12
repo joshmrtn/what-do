@@ -56,7 +56,20 @@ from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
+from src.storage.protocols import (
+    CandidateRepository,
+    EventRepository,
+    RankingRepository,
+    RunRepository,
+    ScoreRepository,
+)
+from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.entities import SqliteEntityRepository
+from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.runs import SqliteRunRepository
+from src.storage.sqlite.scores import SqliteScoreRepository
+from src.storage.sqlite.weather_cache import SqliteWeatherCache
 from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
@@ -77,6 +90,15 @@ class BatchDependencies:
     similarity_stage: SimilarityStage
     ranking_engine: RankingEngine
     skipped_sources: list[str]
+    #: Persistence. Named here and nowhere else: `run_batch` used to fall back
+    #: to constructing its own SQLite repository whenever one was not injected,
+    #: so a caller who forgot silently got a database anyway — the one thing the
+    #: repository split exists to prevent.
+    candidate_repository: CandidateRepository
+    event_repository: EventRepository
+    run_repository: RunRepository
+    score_repository: ScoreRepository
+    ranking_repository: RankingRepository
 
 
 def build_dependencies(
@@ -303,6 +325,7 @@ def build_dependencies(
             failover_sources=failover_sources,
             independent_sources=independent_sources,
             logger=logger,
+            entities=SqliteEntityRepository(db_path),
             blocklist=blocklist,
         ),
         normalization_service=NormalizationService(config, logger),
@@ -313,6 +336,7 @@ def build_dependencies(
             synthetic_rules=config.synthetic_activities,
             config=config,
             db_path=db_path,
+            weather_cache=SqliteWeatherCache(db_path),
             air_quality_provider=OpenMeteoAirQualityProvider(),
             get_now=get_now,
             logger=logger,
@@ -336,6 +360,11 @@ def build_dependencies(
         similarity_stage=SimilarityStage(preferences, config.scoring),
         ranking_engine=RankingEngine(config, blocklist, logger),
         skipped_sources=skipped,
+        candidate_repository=SqliteCandidateRepository(db_path),
+        event_repository=SqliteEventRepository(db_path, config.models.embeddings),
+        run_repository=SqliteRunRepository(db_path),
+        score_repository=SqliteScoreRepository(db_path),
+        ranking_repository=SqliteRankingRepository(db_path),
     )
 
 

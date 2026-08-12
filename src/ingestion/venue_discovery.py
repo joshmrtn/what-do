@@ -52,14 +52,12 @@ class VenueDiscoveryService:
         sources: list[VenueSource],
         geocoder: GeocoderProvider,
         logger: Any,
-        entities: EntityRepository | None = None,
+        entities: EntityRepository,
         get_now: Callable[[], datetime] = _default_now,
     ) -> None:
         self._config = config
         self._db_path = db_path
-        self._entities: EntityRepository = (
-            entities if entities is not None else SqliteEntityRepository(db_path)
-        )
+        self._entities = entities
         self._get_now = get_now
         self._seeds_path = seeds_path
         self._blocklist_path = blocklist_path

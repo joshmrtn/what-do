@@ -109,11 +109,11 @@ def run_batch(
     dry_run: bool = False,
     ingest_only: bool = False,
     raw_dump_fn: Callable[[list[Any]], None] | None = None,
-    candidate_repository: CandidateRepository | None = None,
-    event_repository: EventRepository | None = None,
-    run_repository: RunRepository | None = None,
-    score_repository: ScoreRepository | None = None,
-    ranking_repository: RankingRepository | None = None,
+    candidate_repository: CandidateRepository,
+    event_repository: EventRepository,
+    run_repository: RunRepository,
+    score_repository: ScoreRepository,
+    ranking_repository: RankingRepository,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -159,25 +159,11 @@ def run_batch(
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
     """
-    events_repo: EventRepository = (
-        event_repository if event_repository is not None else SqliteEventRepository(db_path)
-    )
-    runs_repo: RunRepository = (
-        run_repository if run_repository is not None else SqliteRunRepository(db_path)
-    )
-    scores_repo: ScoreRepository = (
-        score_repository if score_repository is not None else SqliteScoreRepository(db_path)
-    )
-    candidates_repo: CandidateRepository = (
-        candidate_repository
-        if candidate_repository is not None
-        else SqliteCandidateRepository(db_path)
-    )
-    rankings_repo: RankingRepository = (
-        ranking_repository
-        if ranking_repository is not None
-        else SqliteRankingRepository(db_path)
-    )
+    events_repo = event_repository
+    runs_repo = run_repository
+    scores_repo = score_repository
+    candidates_repo = candidate_repository
+    rankings_repo = ranking_repository
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
 
@@ -617,6 +603,11 @@ def run(
             semantic_deduplicator=dependencies.semantic_deduplicator,
             similarity_stage=dependencies.similarity_stage,
             ranking_engine=dependencies.ranking_engine,
+            candidate_repository=dependencies.candidate_repository,
+            event_repository=dependencies.event_repository,
+            run_repository=dependencies.run_repository,
+            score_repository=dependencies.score_repository,
+            ranking_repository=dependencies.ranking_repository,
             logger=logger,
             run_date=run_date,
             get_now=get_now,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,8 @@ from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.ingestion.calendars.moon_source import MoonRssSource
+from src.models.event import Event
+from src.models.event_candidate import EventCandidate
 from src.storage.db import init_db
 from src.utils.logging import get_logger
 
@@ -249,3 +253,77 @@ def test_the_llm_timeout_reaches_the_ollama_client(paths):
     deps = _build(paths, config=config)
 
     assert deps.extraction_stage._provider._client._timeout == 900
+
+
+class TestPersistenceIsWiredToTheDatabase:
+    """Composition is now the only place a concrete repository is named.
+
+    `run_batch` used to fall back to constructing its own SQLite repository
+    whenever one was not injected, so composition wiring the wrong thing was
+    harmless. Removing those fallbacks made this the single point of failure,
+    and nothing here was checking it: swapping the event repository for an
+    in-memory one — a batch that persists nothing, all night, every night —
+    left all 2056 tests green.
+
+    Asserted through behaviour rather than by type, so a repository that is
+    the right class but points at the wrong database still fails.
+    """
+
+    def _event(self) -> Event:
+        now = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        return Event(
+            event_id="wired-1",
+            source_event_candidates=[],
+            source_type="apify",
+            created_at=now,
+            updated_at=now,
+            title="Karaoke Night",
+        )
+
+    def test_events_reach_the_database_on_disk(self, paths):
+        deps = _build(paths)
+
+        deps.event_repository.save([self._event()])
+
+        conn = sqlite3.connect(paths["db_path"])
+        try:
+            titles = [r[0] for r in conn.execute("SELECT title FROM events")]
+        finally:
+            conn.close()
+        assert titles == ["Karaoke Night"]
+
+    def test_runs_reach_the_database_on_disk(self, paths):
+        deps = _build(paths)
+
+        run_id = deps.run_repository.start(
+            datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        )
+
+        conn = sqlite3.connect(paths["db_path"])
+        try:
+            rows = [r[0] for r in conn.execute("SELECT id FROM run_history")]
+        finally:
+            conn.close()
+        assert rows == [run_id]
+
+    def test_candidates_reach_the_database_on_disk(self, paths):
+        deps = _build(paths)
+
+        deps.candidate_repository.save(
+            [
+                EventCandidate(
+                    id="cand-1",
+                    source="@venue",
+                    source_type="apify",
+                    discovered_at=datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc),
+                    title="Quiz Night",
+                )
+            ]
+        )
+
+        conn = sqlite3.connect(paths["db_path"])
+        try:
+            rows = [r[0] for r in conn.execute("SELECT id FROM event_candidates")]
+        finally:
+            conn.close()
+        assert rows == ["cand-1"]

@@ -54,6 +54,15 @@ _STAGES = (
 )
 
 
+_REPOSITORIES = (
+    "candidate_repository",
+    "event_repository",
+    "run_repository",
+    "score_repository",
+    "ranking_repository",
+)
+
+
 class _FakeDeps:
     """Stands in for the composition root, so no real provider is constructed."""
 
@@ -62,6 +71,10 @@ class _FakeDeps:
         self.skipped_sources = ["apify"]
         for stage in _STAGES:
             setattr(self, stage, object())
+        # Persistence now comes from the composition root too, so the
+        # stand-in has to supply it like everything else.
+        for repo in _REPOSITORIES:
+            setattr(self, repo, object())
 
 
 def _fake_build(**kwargs):
