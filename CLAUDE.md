@@ -114,6 +114,26 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
 2. **No network calls in tests.** All external services injected as dependencies so tests
    substitute fakes. Violation = bug. The `model` and `external` tiers are the only
    exception, they are excluded from every default run, and neither may gate a commit.
+
+   **Fake only at an external boundary — never for code we own.** Dependency injection is
+   throughout this codebase so that the *edges* can be substituted: a network call, a model,
+   a third-party API, the clock. A pipeline stage, a service, a normalizer is **ours**, and
+   a double that restates our logic diverges from it by construction, because nothing checks
+   it. The rule that follows:
+
+   > **A double may record, but it may not reimplement.**
+
+   A spy returns its input unchanged and records that it was called — it makes no behavioural
+   claim, so it cannot be wrong. A *mirror* restates real behaviour and is always one commit
+   from lying. When a test needs a stage's behaviour, **build the real stage and fake the seam
+   it already exposes** — `ExtractionStage(provider, …)` and `EmbeddingStage(provider, logger)`
+   both take the model boundary as an injected dependency, so the stage fake ceases to exist
+   rather than needing to be kept honest.
+
+   Where constructing the real collaborator is genuinely too expensive, it gets a **contract
+   suite** instead — one parametrised set of assertions run against every implementation, as
+   `InMemory*Repository` has. That is why the repositories have never drifted and the stage
+   fakes have.
 3. **Injectable time.** Never call `datetime.now()` directly. Pass a `get_now` callable as
    a parameter to anything time-sensitive. Critical for testing time filters and lookback windows.
 4. **Phase gates.** No phase begins until all previous phase tests are green AND the smoke
@@ -266,6 +286,7 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | A round-trip test that leaves a field at its default | It passes against a column that does not exist. Assert every field at a **non-default** value — see `tests/unit/storage/test_candidate_repository.py` |
 | A cache whose caller must remember to check freshness | Pass the freshness bound *in* (`WeatherCache.get(..., fresh_since=…)`) so a stale read has no API. A rule remembered at every call site is a rule that will be forgotten |
 | Asserting a substring that spans a wrapped line | `assert "more (--all)" not in out` was **vacuously true** — the real line is `+ 4 more events ranked lower (--all)`. Collapse whitespace, or assert on text that is actually contiguous |
+| A fake that reimplements a stage we own | It drifts the moment the real one changes, silently, because nothing checks it against the original. `_FakeExtraction` says *"Mirrors ExtractionStage"* and was wrong within one commit. Build the **real** stage with a faked provider — the model boundary is already injected — or give it a contract suite. Fakes belong at network, model and third-party edges only |
 | Testing a marker with `item.keywords` | `keywords` holds the name of every parent node, so `"integration" in item.keywords` matches the `tests/integration/` **directory** and skips the whole file. Use `item.get_closest_marker(...)` |
 
 ---
