@@ -13,7 +13,6 @@ and no retry loop.
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 

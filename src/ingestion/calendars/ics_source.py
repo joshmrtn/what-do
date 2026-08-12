@@ -15,7 +15,6 @@ from __future__ import annotations
 import re
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from pathlib import Path
 from typing import Any, Callable
 
 import requests

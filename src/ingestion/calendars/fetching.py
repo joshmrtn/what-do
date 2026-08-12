@@ -11,13 +11,11 @@ requests that let the server answer 304, and no retry loop on failure.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 import requests
 
 from src.storage.protocols import HttpCache
-from src.storage.sqlite.http_cache import SqliteHttpCache
 
 #: Identifies the project rather than impersonating a browser.
 USER_AGENT = "what-do/1.0 (local event aggregator; nightly batch)"

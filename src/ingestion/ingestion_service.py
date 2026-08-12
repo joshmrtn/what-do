@@ -7,7 +7,6 @@ import sqlite3
 
 from src.storage.protocols import EntityRepository
 from src.storage.sqlite.candidates import write_candidates
-from src.storage.sqlite.entities import SqliteEntityRepository
 from src.storage.db import connect
 import uuid
 from dataclasses import dataclass, field as dataclass_field

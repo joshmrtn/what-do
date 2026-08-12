@@ -44,11 +44,6 @@ from src.storage.protocols import (
     RunRepository,
     ScoreRepository,
 )
-from src.storage.sqlite.candidates import SqliteCandidateRepository
-from src.storage.sqlite.events import SqliteEventRepository
-from src.storage.sqlite.rankings import SqliteRankingRepository
-from src.storage.sqlite.runs import SqliteRunRepository
-from src.storage.sqlite.scores import SqliteScoreRepository
 from src.utils.llm_transcript import LLMTranscript
 from src.utils.logging import StructuredLogger, get_logger
 

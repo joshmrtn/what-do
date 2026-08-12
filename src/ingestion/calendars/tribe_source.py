@@ -15,7 +15,6 @@ up the calendar.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from pathlib import Path
 from typing import Any, Callable
 
 import requests

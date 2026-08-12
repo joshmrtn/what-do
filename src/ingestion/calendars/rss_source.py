@@ -16,7 +16,6 @@ import re
 from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 

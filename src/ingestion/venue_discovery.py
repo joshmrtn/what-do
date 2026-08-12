@@ -8,7 +8,6 @@ import sqlite3
 
 from src.storage.db import connect
 from src.storage.protocols import EntityRepository
-from src.storage.sqlite.entities import SqliteEntityRepository
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path

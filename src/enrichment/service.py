@@ -12,7 +12,6 @@ from src.enrichment.synthetic import SyntheticActivityGenerator
 from src.enrichment.weather import WeatherProvider, sample_hour
 from src.models.event import Event
 from src.storage.protocols import WeatherCache
-from src.storage.sqlite.weather_cache import SqliteWeatherCache
 from src.utils.logging import StructuredLogger, get_logger
 
 

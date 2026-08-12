@@ -15,7 +15,6 @@ Politeness matches the calendar adapters: one conditional request per
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 

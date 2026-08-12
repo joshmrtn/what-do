@@ -17,7 +17,6 @@ offset, so a candidate's start is exactly what the source stated.
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
