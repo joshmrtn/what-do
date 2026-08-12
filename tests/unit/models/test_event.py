@@ -8,6 +8,7 @@ from src.models.event import Event
 from src.models.timing import ALL_DAY, EXACT, TIMINGS, UNKNOWN
 from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
+from src.storage.events import validate_tag_vectors
 
 
 def _now() -> datetime:
@@ -190,6 +191,94 @@ def test_a_scraped_event_is_not_synthetic():
     )
 
     assert event.is_synthetic is False
+
+
+class TestTagsAndTheirVectors:
+    """A vector describes the tag it was built from, so the two move together.
+
+    The pairing is positional, which makes a length mismatch silently drop the
+    tail. Enforcing it only where events are written left the one place that can
+    break it — the mutation site — unguarded, and a re-extraction returning a
+    different number of tags took down a whole night's batch.
+    """
+
+    def _embedded(self) -> Event:
+        """An event as it arrives from storage: tags with a vector each."""
+        event = Event(
+            event_id="e1",
+            source_event_candidates=[],
+            source_type="northshorenightout",
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        event.replace_tags([Tag(text="karaoke"), Tag(text="bar")])
+        event.attach_tag_embeddings([b"v-karaoke", b"v-bar"])
+        return event
+
+    def test_replacing_the_tags_drops_the_old_vectors(self):
+        """The crash of 2026-08-12, in miniature.
+
+        Re-extraction returns fewer tags than the stored vectors describe. The
+        vectors are worthless — they describe tags the event no longer has —
+        and keeping them is what made the event unwritable.
+        """
+        event = self._embedded()
+
+        event.replace_tags([Tag(text="trivia")])
+
+        assert event.tags == [Tag(text="trivia")]
+        assert event.tag_embeddings == []
+
+    def test_replacing_the_tags_leaves_a_writable_event(self):
+        """Tags with no vectors is the ordinary state between the two stages.
+
+        Which is the whole point: the expensive extraction survives, and only
+        the cheap embedding is re-paid.
+        """
+        event = self._embedded()
+
+        event.replace_tags([Tag(text="trivia")])
+
+        validate_tag_vectors(event)  # must not raise
+
+    def test_vectors_that_cannot_pair_are_refused(self):
+        event = self._embedded()
+
+        with pytest.raises(ValueError, match=r"2 tag\(s\) but 1 vector\(s\)"):
+            event.attach_tag_embeddings([b"only-one"])
+
+    def test_a_refused_attach_leaves_the_previous_vectors_alone(self):
+        """Rejecting a bad list must not also destroy a good one."""
+        event = self._embedded()
+
+        with pytest.raises(ValueError):
+            event.attach_tag_embeddings([b"only-one"])
+
+        assert event.tag_embeddings == [b"v-karaoke", b"v-bar"]
+
+    def test_re_embedding_after_a_replacement_pairs_with_the_new_tags(self):
+        event = self._embedded()
+
+        event.replace_tags([Tag(text="trivia")])
+        event.attach_tag_embeddings([b"v-trivia"])
+
+        assert event.tag_embeddings == [b"v-trivia"]
+        validate_tag_vectors(event)
+
+    def test_replacing_the_summary_drops_its_vector(self):
+        """The same mistake one field over.
+
+        Nothing validates a summary vector — a single blob has nothing to pair
+        against — so a stale one is invisible rather than fatal.
+        """
+        event = self._embedded()
+        event.replace_summary("An evening of karaoke.")
+        event.summary_embedding = b"v-summary"
+
+        event.replace_summary("A trivia night.")
+
+        assert event.summary == "A trivia night."
+        assert event.summary_embedding is None
 
 
 def _timed(**overrides) -> Event:

@@ -74,6 +74,50 @@ class Event:
         return self.timing == EXACT
     similarity: "SimilarityResult | None" = None
 
+    def replace_tags(self, tags: list[Tag]) -> None:
+        """Adopt a new set of tags, discarding the vectors of the old ones.
+
+        A vector describes the tag it was built from, so tags cannot be replaced
+        without invalidating them. Assigning `tags` directly leaves vectors that
+        describe tags this event no longer has, and because the pairing is
+        positional a shorter list silently drops the tail — which is why writing
+        such an event is refused outright.
+
+        Dropping them costs about a second a tag to rebuild, against the minutes
+        an extraction costs. Keeping them cost a whole night's batch.
+        """
+        self.tags = list(tags)
+        self.tag_embeddings = []
+
+    def attach_tag_embeddings(self, vectors: list[bytes]) -> None:
+        """Attach vectors for the current tags.
+
+        Args:
+            vectors: One vector per tag, in tag order.
+
+        Raises:
+            ValueError: If the vectors cannot be paired one-to-one with the
+                tags. The event keeps whatever it already had — refusing a bad
+                list must not also destroy a good one.
+        """
+        if len(vectors) != len(self.tags):
+            raise ValueError(
+                f"event {self.event_id} has {len(self.tags)} tag(s) but "
+                f"{len(vectors)} vector(s) were offered"
+            )
+        self.tag_embeddings = list(vectors)
+
+    def replace_summary(self, summary: str | None) -> None:
+        """Adopt a new summary, discarding the vector of the old one.
+
+        The same rule as `replace_tags`, and the same reason. Nothing can catch
+        a stale summary vector after the fact — one blob has nothing to pair
+        against — so it is invisible rather than fatal, which makes owning the
+        replacement the only place it can be got right.
+        """
+        self.summary = summary
+        self.summary_embedding = None
+
     @property
     def is_synthetic(self) -> bool:
         """Whether this event was authored from config rather than extracted.

@@ -18,6 +18,7 @@ from src.processing.extraction_stage import (
     extraction_input_hash,
 )
 from src.processing.image_fetcher import ImageFetchError
+from src.storage.events import validate_tag_vectors
 from src.utils.logging import get_logger
 
 
@@ -656,3 +657,116 @@ class TestListingCategoryReachesTheModel:
         )
 
         assert extraction_input_hash(without) != extraction_input_hash(with_music)
+
+
+class TestReExtractionOfAStoredEvent:
+    """An event arriving from storage carries the vectors of its stored tags.
+
+    This is the normal production path — almost every event a batch extracts has
+    been extracted on a previous night — and no test exercised it. The 2026-08-12
+    batch died on it: `min_tags` 5→1 made re-extraction return a different number
+    of tags for the first time, and the stale vectors made the event unwritable.
+    """
+
+    def _stored(self) -> Event:
+        """Five tags and five vectors, as a previous night left them."""
+        event = _make_event(extraction_input_hash="stale-hash")
+        event.replace_tags([Tag(text=t) for t in ["karaoke", "trivia", "bar", "pub", "evening"]])
+        event.attach_tag_embeddings([b"v1", b"v2", b"v3", b"v4", b"v5"])
+        return event
+
+    def test_re_extraction_drops_vectors_describing_the_old_tags(self):
+        event = self._stored()
+        stage = ExtractionStage(
+            _make_provider(tags=[Tag(text="trivia")]),
+            None,
+            _make_logger(),
+            get_now=_now,
+        )
+
+        stage.process([event])
+
+        assert event.tags == [Tag(text="trivia")]
+        assert event.tag_embeddings == []
+
+    def test_the_re_extracted_event_can_be_persisted(self):
+        """The checkpoint that refused 64 events must now succeed.
+
+        Extraction costs minutes an event; embedding costs about a second a tag.
+        Refusing the write threw away the expensive half to protect the cheap
+        one, so this asserts the expensive half survives.
+        """
+        event = self._stored()
+        saved: list[Event] = []
+        stage = ExtractionStage(
+            _make_provider(tags=[Tag(text="trivia")]),
+            None,
+            _make_logger(),
+            get_now=_now,
+            save_fn=saved.append,
+        )
+
+        stage.process([event])
+
+        assert len(saved) == 1
+        validate_tag_vectors(saved[0])  # must not raise
+
+    def test_a_skipped_event_keeps_the_vectors_it_arrived_with(self):
+        """Nothing is dropped when extraction does not run.
+
+        The skip rule is what keeps a nightly batch under an hour; re-embedding
+        every stored event because it was *considered* would undo that.
+        """
+        event = self._stored()
+        event.extraction_input_hash = extraction_input_hash(event)
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+
+        stage.process([event])
+
+        assert event.tag_embeddings == [b"v1", b"v2", b"v3", b"v4", b"v5"]
+        assert len(event.tags) == 5
+
+    def test_a_failed_extraction_keeps_the_vectors_it_arrived_with(self):
+        """A model that errored has replaced nothing, so nothing is stale."""
+        event = self._stored()
+        provider = MagicMock()
+        provider.extract.side_effect = ExtractionError("model unavailable")
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+
+        stage.process([event])
+
+        assert event.tag_embeddings == [b"v1", b"v2", b"v3", b"v4", b"v5"]
+
+    def test_re_extraction_drops_the_stale_summary_vector(self):
+        event = self._stored()
+        event.summary = "An evening of karaoke and trivia."
+        event.summary_embedding = b"v-summary"
+        stage = ExtractionStage(
+            _make_provider(tags=[Tag(text="trivia")], summary="A trivia night."),
+            None,
+            _make_logger(),
+            get_now=_now,
+        )
+
+        stage.process([event])
+
+        assert event.summary == "A trivia night."
+        assert event.summary_embedding is None
+
+    def test_an_authored_summary_keeps_its_vector(self):
+        """The model never replaced it, so there is nothing stale to drop."""
+        event = self._stored()
+        event.summary = "Trivia at The Paddle Inn."
+        event.summary_embedding = b"v-authored"
+        event.metadata["authored_summary"] = True
+        stage = ExtractionStage(
+            _make_provider(tags=[Tag(text="trivia")], summary="Invented prose."),
+            None,
+            _make_logger(),
+            get_now=_now,
+        )
+
+        stage.process([event])
+
+        assert event.summary == "Trivia at The Paddle Inn."
+        assert event.summary_embedding == b"v-authored"

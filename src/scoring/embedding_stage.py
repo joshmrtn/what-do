@@ -106,7 +106,7 @@ class EmbeddingStage:
             self._fail(event, f"tags: {exc}")
             return
 
-        event.tag_embeddings = vectors
+        event.attach_tag_embeddings(vectors)
 
         if not event.summary or not event.summary.strip():
             event.embedding_input_hash = digest

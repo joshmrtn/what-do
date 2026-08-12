@@ -163,14 +163,17 @@ class ExtractionStage:
         # distinguishable from a finished one and is retried.
         event.extraction_input_hash = _input_hash(text)
 
-        event.tags = result.tags
+        # Through `replace_tags` rather than by assignment: almost every event a
+        # batch extracts arrives from storage carrying vectors for its stored
+        # tags, and those describe tags it is about to stop having.
+        event.replace_tags(result.tags)
         # A source that states everything it knows authors its own summary, and
         # the model can only invent past it. NSNO publishes one line per event;
         # asked to summarise `Trivia` under a `Karaoke & trivia` heading it
         # produced "an evening of karaoke and trivia" for events that were only
         # ever trivia — and that text is embedded and drives dedup pass 2.
         if not event.metadata.get("authored_summary"):
-            event.summary = result.summary
+            event.replace_summary(result.summary)
         event.setting = result.setting
 
         if event.title is None:
