@@ -23,6 +23,8 @@ rules, which is why there are two lists below:
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[2] / "src"
@@ -31,13 +33,10 @@ _CONNECTION = "src.storage.sqlite.connection"
 
 #: Modules permitted to name a concrete *implementation*, and why.
 _ROOTS = {
-    # The batch composition root.
-    "composition.py",
-    # The view composition root: it reads `--db`, defaults it and checks
-    # `has_schema` before reading, so naming the database is its job. Folding it
-    # into the batch root would make the query path import the LLM client it is
-    # forbidden to use — measured at 56 extra modules. See F5 in the roadmap.
-    "presentation/cli.py",
+    # The one storage factory. Both roots build through it, which is what stops
+    # them drifting: the batch used to pass `config.models.embeddings` to the
+    # event repository while the CLI took the default.
+    "composition/storage.py",
     # A deliberate escape hatch, documented where it lives: candidate writes are
     # interleaved with the ingestion accept loop and batched into one
     # transaction, so they take the caller's connection rather than opening a
@@ -126,3 +125,36 @@ def test_no_new_module_takes_a_raw_connection():
     assert connections <= _RAW_CONNECTION, (
         f"new module(s) taking a raw connection: {sorted(connections - _RAW_CONNECTION)}"
     )
+
+
+def test_the_view_root_does_not_import_the_batch_root():
+    """The query path must not meet the LLM client it is forbidden to use.
+
+    `CLAUDE.md`: "The CLI reads only precomputed data from SQLite. No LLM or
+    network calls during interactive use." Importing is not calling, but it is
+    the wrong direction, and it is measurable: a convenience re-export in
+    `composition/__init__.py` briefly made importing `composition.storage`
+    execute `batch`, taking the CLI from 41 loaded modules to 105 — every
+    adapter and the Ollama client — while every test stayed green.
+
+    Asserted on the loaded module graph rather than on imports, because the
+    regression came in through a package `__init__`, which no import statement
+    in `cli.py` would have shown.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, src.presentation.cli;"
+            "print(any('ollama' in m for m in sys.modules));"
+            "print('requests' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=SRC.parent,
+    )
+
+    assert result.returncode == 0, result.stderr
+    loads_ollama, loads_requests = result.stdout.split()
+    assert loads_ollama == "False", "the CLI imports the Ollama client"
+    assert loads_requests == "False", "the CLI imports the HTTP layer"

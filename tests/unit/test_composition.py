@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from src.composition import build_dependencies
+from src.composition.batch import build_dependencies
 from src.config import (
     AppConfig,
     DeduplicationConfig,

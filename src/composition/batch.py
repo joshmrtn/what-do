@@ -56,21 +56,15 @@ from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
+from src.composition.storage import build_batch_storage
 from src.storage.protocols import (
     CandidateRepository,
+    EntityRepository,
     EventRepository,
     RankingRepository,
     RunRepository,
     ScoreRepository,
 )
-from src.storage.sqlite.candidates import SqliteCandidateRepository
-from src.storage.sqlite.entities import SqliteEntityRepository
-from src.storage.sqlite.events import SqliteEventRepository
-from src.storage.sqlite.rankings import SqliteRankingRepository
-from src.storage.sqlite.runs import SqliteRunRepository
-from src.storage.sqlite.scores import SqliteScoreRepository
-from src.storage.sqlite.weather_cache import SqliteWeatherCache
-from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
 from src.utils.llm_transcript import TranscriptSink
@@ -152,7 +146,8 @@ def build_dependencies(
         skipped.append(source)
         return None
 
-    handles = _handles(db_path, seeds_path)
+    storage = build_batch_storage(db_path, config.models.embeddings)
+    handles = _handles(storage.entities, seeds_path)
     blocklist = _blocklist(blocklist_path)
 
     # Alternative routes to the same Instagram data, tried in order. Apify is
@@ -168,7 +163,7 @@ def build_dependencies(
     # One cache, shared by every adapter. They each make conditional requests
     # and none of them touches the database for anything else, which is why
     # they no longer take a `db_path` at all.
-    http_cache = SqliteHttpCache(db_path)
+    http_cache = storage.http_cache
 
     independent_sources: list[Any] = []
     amc_key = _credential("AMC_API_KEY", "amc")
@@ -325,7 +320,7 @@ def build_dependencies(
             failover_sources=failover_sources,
             independent_sources=independent_sources,
             logger=logger,
-            entities=SqliteEntityRepository(db_path),
+            entities=storage.entities,
             blocklist=blocklist,
         ),
         normalization_service=NormalizationService(config, logger),
@@ -336,7 +331,7 @@ def build_dependencies(
             synthetic_rules=config.synthetic_activities,
             config=config,
             db_path=db_path,
-            weather_cache=SqliteWeatherCache(db_path),
+            weather_cache=storage.weather_cache,
             air_quality_provider=OpenMeteoAirQualityProvider(),
             get_now=get_now,
             logger=logger,
@@ -360,15 +355,15 @@ def build_dependencies(
         similarity_stage=SimilarityStage(preferences, config.scoring),
         ranking_engine=RankingEngine(config, blocklist, logger),
         skipped_sources=skipped,
-        candidate_repository=SqliteCandidateRepository(db_path),
-        event_repository=SqliteEventRepository(db_path, config.models.embeddings),
-        run_repository=SqliteRunRepository(db_path),
-        score_repository=SqliteScoreRepository(db_path),
-        ranking_repository=SqliteRankingRepository(db_path),
+        candidate_repository=storage.candidates,
+        event_repository=storage.events,
+        run_repository=storage.runs,
+        score_repository=storage.scores,
+        ranking_repository=storage.rankings,
     )
 
 
-def _handles(db_path: Path, seeds_path: Path) -> list[str]:
+def _handles(entities: EntityRepository, seeds_path: Path) -> list[str]:
     """Union the seed handles with every handle discovery has promoted.
 
     Seeds alone would make venue discovery inert — nothing would ever fetch
@@ -382,7 +377,7 @@ def _handles(db_path: Path, seeds_path: Path) -> list[str]:
     seeds = load_seeds(seeds_path) if seeds_path.exists() else None
     seed_handles = list(seeds.handles) if seeds is not None else []
     return sorted(
-        set(seed_handles) | set(SqliteEntityRepository(db_path).active_handles())
+        set(seed_handles) | set(entities.active_handles())
     )
 
 

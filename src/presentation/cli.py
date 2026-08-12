@@ -19,7 +19,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 
-from src.config import DEFAULT_DAY_STARTS_AT, ConfigError, load_config
+from src.config import (
+    DEFAULT_DAY_STARTS_AT,
+    DEFAULT_EMBEDDING_MODEL,
+    ConfigError,
+    load_config,
+)
 from src.models.event import Event
 from src.presentation.filters import (
     RankedEvent,
@@ -37,10 +42,8 @@ from src.presentation.render import (
 )
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, has_schema
 from src.storage.events import load_events
+from src.composition.storage import build_view_storage
 from src.storage.queries import load_ranked_events
-from src.storage.sqlite.events import SqliteEventRepository
-from src.storage.sqlite.rankings import SqliteRankingRepository
-from src.storage.sqlite.scores import SqliteScoreRepository
 
 _DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
 
@@ -50,17 +53,21 @@ _NO_RECOMMENDATIONS_MESSAGE = "No recommendations yet — run the overnight batc
 PairLoader = Callable[..., list[RankedEvent]]
 
 
-def _default_pairs(db_path: Path, run_date: date | None = None) -> list[RankedEvent]:
-    """Build the three stores over one database and join them.
+def _default_pairs(
+    db_path: Path,
+    run_date: date | None = None,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+) -> list[RankedEvent]:
+    """Join the three stores this view reads into one listing.
 
-    The CLI names concrete repositories only here; everything below takes the
-    loader as a parameter, which is what lets the view be tested without SQLite.
+    Storage comes from the shared factory rather than being wired here: this
+    used to construct its own repositories and took the default embedding
+    model while the batch passed the configured one, so the two agreed only
+    while `config.yaml` happened to name the default.
     """
+    storage = build_view_storage(db_path, embedding_model)
     return load_ranked_events(
-        SqliteEventRepository(db_path),
-        SqliteScoreRepository(db_path),
-        SqliteRankingRepository(db_path),
-        run_date=run_date,
+        storage.events, storage.scores, storage.rankings, run_date=run_date
     )
 EventLoader = Callable[..., list[Event]]
 ReadinessCheck = Callable[[Path], bool]
@@ -77,6 +84,10 @@ class ViewSettings:
         source_urls: Human-facing page per `source_type`, for events that carry
             no URL of their own. Empty when config is unreadable — attribution is
             a convenience, and losing it must never cost the listing.
+        embedding_model: Which model's vectors the batch wrote, so the view
+            reads under the same name. Falls back to the default when config is
+            unreadable — the same degraded path as the zone, and announced by
+            the same warning.
         warning: Emitted to stderr when the settings had to be guessed. Carried
             on the value rather than printed by the loader, so the loader stays
             substitutable in tests without capturing a stream.
@@ -85,6 +96,7 @@ class ViewSettings:
     zone: tzinfo
     day_starts_at: time
     source_urls: Mapping[str, str] = field(default_factory=dict)
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
     warning: str | None = None
 
 
@@ -105,6 +117,7 @@ def default_view_settings() -> ViewSettings:
             zone=ZoneInfo(config.location.timezone),
             day_starts_at=config.day_starts_at,
             source_urls=config.sources.site_url_by_source_type(),
+            embedding_model=config.models.embeddings,
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
         system_zone = datetime.now().astimezone().tzinfo
@@ -198,7 +211,9 @@ def _cmd_recommend(
         print(f"Error: {exc}", file=stderr)
         return 1
 
-    pairs = load_pairs(db_path, run_date=run_date)
+    pairs = load_pairs(
+        db_path, run_date=run_date, embedding_model=view.embedding_model
+    )
     if not pairs:
         print(_NO_RECOMMENDATIONS_MESSAGE, file=stdout)
         return 0

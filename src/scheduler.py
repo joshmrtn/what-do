@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from src.composition import BatchDependencies, build_dependencies
+from src.composition.batch import BatchDependencies, build_dependencies
 from src.config import AppConfig, load_config
 from src.enrichment.service import EnrichmentService
 from src.ingestion.ingestion_service import IngestionService, SourceTally

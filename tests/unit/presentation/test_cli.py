@@ -13,6 +13,7 @@ from src.models.event_score import EventScore
 from src.models.ranked_event import RankedEvent
 from src.models.ranking import Ranking
 from src.config import (
+    DEFAULT_EMBEDDING_MODEL,
     AppConfig,
     ConfigError,
     FeedConfig,
@@ -135,12 +136,14 @@ class _Harness:
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
         self.requested_run_date: date | None = None
+        self.requested_embedding_model: str | None = None
         self.load_ranked_calls = 0
         self.load_events_calls = 0
 
-    def _load_ranked(self, db_path, run_date=None):
+    def _load_ranked(self, db_path, run_date=None, embedding_model=None):
         self.load_ranked_calls += 1
         self.requested_run_date = run_date
+        self.requested_embedding_model = embedding_model
         return self.pairs
 
     def _load_events(self, db_path):
@@ -618,3 +621,32 @@ class TestAStaleRankingIsAnnounced:
 
         assert "3 days old" in harness.err
         assert "days old" not in harness.out
+
+
+class TestTheViewReadsUnderTheConfiguredModel:
+    """The two composition roots must agree on which vectors exist.
+
+    The batch passed `config.models.embeddings` to the event repository; the CLI
+    built its own and took the default. Identical only while `config.yaml` names
+    the model that happens to be `DEFAULT_EMBEDDING_MODEL` — change that line and
+    the batch writes vectors under the new name while the view reads under the
+    old one, finding none, with nothing to say so.
+    """
+
+    def test_the_configured_model_reaches_the_loader(self):
+        view = ViewSettings(
+            zone=ZONE, day_starts_at=time(4, 0), embedding_model="some-other-model"
+        )
+        harness = _Harness(view=view)
+
+        harness.invoke()
+
+        assert harness.requested_embedding_model == "some-other-model"
+
+    def test_an_unreadable_config_falls_back_to_the_default(self):
+        """A fresh clone has no config and must still render, as the zone does."""
+        harness = _Harness()
+
+        harness.invoke()
+
+        assert harness.requested_embedding_model == DEFAULT_EMBEDDING_MODEL
