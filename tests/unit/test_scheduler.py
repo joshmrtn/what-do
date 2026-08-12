@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import sqlite3
@@ -10,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from unittest.mock import MagicMock
 
 from src.config import (
     AppConfig,
@@ -23,10 +25,18 @@ from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
 from src.normalization.service import NormalizationResult
+from src.enrichment.service import EnrichmentService
+from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.processing.extraction import ExtractionResult
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.scheduler import run_batch
 from src.scoring.embedding_stage import EmbeddingStage
+from src.scoring.preferences import PreferenceSet
+from src.scoring.ranking import RankingEngine
+from src.scoring.similarity_stage import SimilarityStage
+from src.enrichment.astronomical import AstronomicalCalculator
+from src.enrichment.weather import WeatherProvider
+from src.storage.memory.weather_cache import InMemoryWeatherCache
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
@@ -89,8 +99,11 @@ class _FakeNormalization:
         return NormalizationResult(normalized=len(events), discarded=0, events=events)
 
 
-class _FakeEnrichment:
-    def __init__(self, error: Exception | None = None) -> None:
+class _EnrichmentSpy:
+    """Records what enrichment saw, and delegates to the real service."""
+
+    def __init__(self, inner, error: Exception | None = None) -> None:
+        self._inner = inner
         self.error = error
         self.seen: list[list[str]] = []
 
@@ -98,9 +111,7 @@ class _FakeEnrichment:
         if self.error:
             raise self.error
         self.seen.append([e.event_id for e in events])
-        for event in events:
-            event.astronomical_data = {"sunset": "20:15"}
-        return events
+        return self._inner.enrich(events, run_date)
 
 
 class _ExtractionModel:
@@ -124,7 +135,10 @@ class _ExtractionModel:
             start_time=None,
             end_time=None,
             tags=[Tag(text="karaoke", weight=1.0)],
-            summary="Karaoke night",
+            # Derived from the input, because a real model's is. A constant
+            # summary gives every event an identical one, and dedup pass 2 —
+            # now real — merges them as duplicates of each other.
+            summary=f"Karaoke night: {text}",
             setting="indoor",
         )
 
@@ -136,8 +150,14 @@ class _EmbeddingModel:
         self.calls: list[str] = []
 
     def embed(self, text: str) -> list[float]:
+        """Deterministic, and different for different text.
+
+        A constant vector makes every event a perfect semantic duplicate of
+        every other, which the real dedup engine then acts on.
+        """
         self.calls.append(text)
-        return [0.1, 0.2, 0.3]
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        return [byte / 255.0 for byte in digest[:8]]
 
 
 class _StageSpy:
@@ -180,48 +200,86 @@ def _embedding_stage(error: Exception | None = None) -> _StageSpy:
     return _StageSpy(EmbeddingStage(_EmbeddingModel(), _stage_log()), error=error)
 
 
-class _FakeSemanticDedup:
-    def __init__(self) -> None:
+def _enrichment_service(db, error: Exception | None = None) -> _EnrichmentSpy:
+    """The real service, with only its external providers substituted.
+
+    Nine constructor dependencies is the point of injecting them, not an
+    argument against building the real thing: five are external providers that
+    already have doubles elsewhere, and the rest are config and storage that a
+    test has anyway.
+    """
+    # Open-Meteo is the only genuine boundary here. `fetch` returns a day as
+    # `{"date", "hours"}` — the shape a flat daily dict was silently swapped for
+    # on 2026-08-04 while 650 tests stayed green, so it is written out rather
+    # than left to a bare MagicMock that would accept anything.
+    weather = MagicMock(spec=WeatherProvider)
+    weather.fetch.return_value = {
+        "date": RUN_DATE.isoformat(),
+        "hours": [
+            {"hour": h, "temperature_f": 68.0, "precipitation_probability": 0,
+             "wind_speed_mph": 4.0, "condition": "clear"}
+            for h in range(24)
+        ],
+    }
+    return _EnrichmentSpy(
+        EnrichmentService(
+            weather_provider=weather,
+            movie_provider=None,
+            # Pure — astral, no I/O — so there is nothing here to substitute.
+            astronomical_calculator=AstronomicalCalculator(),
+            synthetic_rules=[],
+            config=_config(),
+            db_path=db,
+            weather_cache=InMemoryWeatherCache(),
+            get_now=lambda: NOW,
+            logger=_stage_log(),
+        ),
+        error=error,
+    )
+
+
+def _similarity_stage() -> SimilarityStage:
+    """Real, over an empty preference set — the scheduler tests are about
+    sequencing, and an empty set is a legitimate configuration, not a stand-in."""
+    return SimilarityStage(PreferenceSet(), _config().scoring)
+
+
+def _ranking_engine() -> _RankingSpy:
+    return _RankingSpy(RankingEngine(_config(), logger=_stage_log()))
+
+
+class _DedupSpy:
+    """Records that dedup pass 2 ran, and delegates to the real engine.
+
+    The engine is pure and takes no constructor arguments at all, so there was
+    never a cost that justified restating it.
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
         self.calls = 0
 
     def deduplicate(self, events, config):
         self.calls += 1
-        return events
+        return self._inner.deduplicate(events, config)
 
 
-class _FakeSimilarity:
-    def process(self, events):
-        return events
+class _RankingSpy:
+    """Records what was ranked, and delegates to the real engine.
 
+    The old fake invented scores — a `base_score` of 1.0 and a `match` of "yes"
+    for every event, in rank order of arrival. Nothing asserted on those
+    numbers, but the run persisted them, so every downstream assertion about
+    scores and rankings was reading fiction.
+    """
 
-class _FakeRanking:
-    def __init__(self) -> None:
+    def __init__(self, inner) -> None:
+        self._inner = inner
         self.ranked: list[list[str]] = []
 
     def rank(self, events, run_date):
         self.ranked.append([e.event_id for e in events])
-        scores = [
-            EventScore(
-                event_id=e.event_id,
-                run_date=run_date,
-                base_score=1.0,
-                tag_confidence=1.0,
-                match="yes",
-                reasons=[],
-            )
-            for e in events
-        ]
-        rankings = [
-            Ranking(
-                event_id=e.event_id,
-                run_date=run_date,
-                weather_adjustment=0.0,
-                final_score=1.0,
-                rank=i + 1,
-            )
-            for i, e in enumerate(events)
-        ]
-        return scores, rankings
+        return self._inner.rank(events, run_date)
 
 
 class _Spy:
@@ -383,7 +441,7 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
         "normalization_service": _FakeNormalization(
             fresh if fresh is not None else [_event("fresh-1", ["c1"])]
         ),
-        "enrichment_service": _FakeEnrichment(),
+        "enrichment_service": _enrichment_service(db),
         # Real stages, faked models. The seam is the model call, which is the
         # only external thing here; everything above it is our code and runs
         # for real, so these tests constrain what production actually does.
@@ -391,9 +449,9 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
             ExtractionStage(extraction_model, None, log, get_now=lambda: NOW)
         ),
         "embedding_stage": _StageSpy(EmbeddingStage(embedding_model, log)),
-        "semantic_deduplicator": _FakeSemanticDedup(),
-        "similarity_stage": _FakeSimilarity(),
-        "ranking_engine": _FakeRanking(),
+        "semantic_deduplicator": _DedupSpy(SemanticDeduplicationEngine()),
+        "similarity_stage": _similarity_stage(),
+        "ranking_engine": _ranking_engine(),
     }
     fakes.update(deps or {})
     # Kept out of the kwargs run_batch receives — it takes stages, not models.
@@ -535,8 +593,14 @@ def test_a_superseded_event_is_deleted(db):
 
 
 def test_a_stored_event_with_no_fresh_counterpart_is_still_ranked(db):
-    """Its candidates aged out of the window; the event itself has not."""
-    save_events([_event("stored-old", ["c99"])], db)
+    """Its candidates aged out of the window; the event itself has not.
+
+    The title has to differ from the fresh event's. Both fixtures used the
+    default, which made them word-for-word identical, and dedup pass 2 — real
+    here now — correctly merged them. The old fake merged nothing, so the
+    fixture could get away with describing two copies of one event.
+    """
+    save_events([_event("stored-old", ["c99"], title="Quiz Night")], db)
 
     _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
 
@@ -565,7 +629,7 @@ def test_ingestion_failure_does_not_abort_the_run(db):
 
 def test_a_stage_failure_is_recorded_in_the_result(db):
     result, _, _, _ = _run(
-        db, deps={"enrichment_service": _FakeEnrichment(error=RuntimeError("weather down"))}
+        db, deps={"enrichment_service": _enrichment_service(db, error=RuntimeError("weather down"))}
     )
 
     assert result.outcome == "partial"
@@ -574,7 +638,7 @@ def test_a_stage_failure_is_recorded_in_the_result(db):
 
 def test_enrichment_failure_still_reaches_ranking(db):
     _, fakes, _, _ = _run(
-        db, deps={"enrichment_service": _FakeEnrichment(error=RuntimeError("weather down"))}
+        db, deps={"enrichment_service": _enrichment_service(db, error=RuntimeError("weather down"))}
     )
 
     assert fakes["ranking_engine"].ranked == [["fresh-1"]]
@@ -887,13 +951,13 @@ def test_a_run_is_recorded_in_history(db):
 
 
 def test_the_recorded_outcome_matches_the_result(db):
-    _run(db, deps={"enrichment_service": _FakeEnrichment(error=RuntimeError("boom"))})
+    _run(db, deps={"enrichment_service": _enrichment_service(db, error=RuntimeError("boom"))})
 
     assert _runs(db)[0]["outcome"] == "partial"
 
 
 def test_stage_counts_and_errors_reach_the_history(db):
-    _run(db, deps={"enrichment_service": _FakeEnrichment(error=RuntimeError("boom"))})
+    _run(db, deps={"enrichment_service": _enrichment_service(db, error=RuntimeError("boom"))})
 
     row = _runs(db)[0]
     assert "enrichment failed: boom" in json.loads(row["errors"])
@@ -955,12 +1019,12 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             run_date=RUN_DATE,
             ingestion_service=_FakeIngestion(),
             normalization_service=_FakeNormalization([]),
-            enrichment_service=_FakeEnrichment(),
+            enrichment_service=_enrichment_service(db),
             extraction_stage=_extraction_stage(),
             embedding_stage=_embedding_stage(),
-            semantic_deduplicator=_FakeSemanticDedup(),
-            similarity_stage=_FakeSimilarity(),
-            ranking_engine=_FakeRanking(),
+            semantic_deduplicator=_DedupSpy(SemanticDeduplicationEngine()),
+            similarity_stage=_similarity_stage(),
+            ranking_engine=_ranking_engine(),
             event_repository=_UnreadableRepository(),
         )
 
