@@ -366,5 +366,6 @@ kept. `0 kept of 0 fetched` means broken or empty; `0 kept of 213 fetched` means
 and its dates are landing outside the window. Add `--raw [PATH]` to dump every candidate **as
 fetched, before filtering**, as JSON Lines with the discard reason.
 
-Baseline as of 2026-08-08: **991 candidates from 18 sources.** Expected zeroes are `do617_koto`,
-`do617_bit_bar` and `moon`; anything else at zero is a regression.
+Baseline as of 2026-08-12: **1106 candidates from 18 sources** (was 991 on 2026-08-08 — the
+horizon advances, so this grows). Expected zeroes are `do617_koto`, `do617_bit_bar` and `moon`;
+anything else at zero is a regression.
