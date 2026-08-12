@@ -23,7 +23,10 @@ from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
 from src.normalization.service import NormalizationResult
+from src.processing.extraction import ExtractionResult
+from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.scheduler import run_batch
+from src.scoring.embedding_stage import EmbeddingStage
 from src.storage.db import init_db
 from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
@@ -100,51 +103,81 @@ class _FakeEnrichment:
         return events
 
 
-class _FakeExtraction:
-    """Mirrors ExtractionStage: skips any event that already carries tags."""
+class _ExtractionModel:
+    """The model boundary — the only seam an extraction test may substitute.
 
-    def __init__(self, error: Exception | None = None) -> None:
+    Records every call, which is how a test observes what the *real*
+    `ExtractionStage` decided to extract. A fake stage cannot serve that
+    purpose: it would restate the skip rule rather than exercise it, and the one
+    it restated ("skip any event that already has tags") was never the rule
+    production runs, which is on `extraction_input_hash`.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def extract(self, text, image_bytes=None, reference_date=None):
+        self.calls.append(text)
+        return ExtractionResult(
+            title=None,
+            venue=None,
+            start_time=None,
+            end_time=None,
+            tags=[Tag(text="karaoke", weight=1.0)],
+            summary="Karaoke night",
+            setting="indoor",
+        )
+
+
+class _EmbeddingModel:
+    """The model boundary for embeddings. Same rule, same reason."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def embed(self, text: str) -> list[float]:
+        self.calls.append(text)
+        return [0.1, 0.2, 0.3]
+
+
+class _StageSpy:
+    """Records that a stage ran, and delegates the work to the real one.
+
+    The sanctioned kind of double: it records, it does not reimplement, so it
+    cannot drift from the thing it wraps.
+    """
+
+    def __init__(self, inner, error: Exception | None = None) -> None:
+        self._inner = inner
         self.error = error
-        self.extracted: list[list[str]] = []
+        self.runs = 0
         self.save_fn = None
 
     def set_save_fn(self, save_fn):
         self.save_fn = save_fn
+        self._inner.set_save_fn(save_fn)
 
     def process(self, events):
+        self.runs += 1
         if self.error:
             raise self.error
-        did = []
-        for event in events:
-            if event.tags:
-                continue
-            event.replace_tags([Tag(text="karaoke", weight=1.0)])
-            event.replace_summary("Karaoke night")
-            event.setting = "indoor"
-            did.append(event.event_id)
-        self.extracted.append(did)
-        return events
+        return self._inner.process(events)
 
 
-class _FakeEmbedding:
-    """Mirrors EmbeddingStage: skips any event that already carries vectors."""
+def _stage_log():
+    return get_logger("batch_test_stages", stream=io.StringIO())
 
-    def __init__(self, error: Exception | None = None) -> None:
-        self.error = error
-        self.embedded: list[list[str]] = []
 
-    def process(self, events):
-        if self.error:
-            raise self.error
-        did = []
-        for event in events:
-            if event.tag_embeddings or not event.tags:
-                continue
-            event.attach_tag_embeddings([b"\x00\x01"] * len(event.tags))
-            event.summary_embedding = b"\x02\x03"
-            did.append(event.event_id)
-        self.embedded.append(did)
-        return events
+def _extraction_stage(error: Exception | None = None) -> _StageSpy:
+    """The real stage behind a recording spy, with only the model substituted."""
+    return _StageSpy(
+        ExtractionStage(_ExtractionModel(), None, _stage_log(), get_now=lambda: NOW),
+        error=error,
+    )
+
+
+def _embedding_stage(error: Exception | None = None) -> _StageSpy:
+    return _StageSpy(EmbeddingStage(_EmbeddingModel(), _stage_log()), error=error)
 
 
 class _FakeSemanticDedup:
@@ -342,19 +375,31 @@ def _seeded_candidates() -> InMemoryCandidateRepository:
 
 def _run(db, *, fresh=None, deps=None, **kwargs):
     """Drive run_batch with fakes, returning (result, the fakes it used)."""
+    log = get_logger("batch_test_stages", stream=io.StringIO())
+    extraction_model = _ExtractionModel()
+    embedding_model = _EmbeddingModel()
     fakes = {
         "ingestion_service": _FakeIngestion(),
         "normalization_service": _FakeNormalization(
             fresh if fresh is not None else [_event("fresh-1", ["c1"])]
         ),
         "enrichment_service": _FakeEnrichment(),
-        "extraction_stage": _FakeExtraction(),
-        "embedding_stage": _FakeEmbedding(),
+        # Real stages, faked models. The seam is the model call, which is the
+        # only external thing here; everything above it is our code and runs
+        # for real, so these tests constrain what production actually does.
+        "extraction_stage": _StageSpy(
+            ExtractionStage(extraction_model, None, log, get_now=lambda: NOW)
+        ),
+        "embedding_stage": _StageSpy(EmbeddingStage(embedding_model, log)),
         "semantic_deduplicator": _FakeSemanticDedup(),
         "similarity_stage": _FakeSimilarity(),
         "ranking_engine": _FakeRanking(),
     }
     fakes.update(deps or {})
+    # Kept out of the kwargs run_batch receives — it takes stages, not models.
+    fakes["extraction_model"] = extraction_model
+    fakes["embedding_model"] = embedding_model
+    stages = {k: v for k, v in fakes.items() if not k.endswith("_model")}
 
     save_spy = _SpyRepository(
         SqliteEventRepository(db),
@@ -373,7 +418,7 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
         event_repository=save_spy,
         score_repository=InMemoryScoreRepository(),
         ranking_repository=recs_spy,
-        **fakes,
+        **stages,
         **kwargs,
     )
     return result, fakes, save_spy, recs_spy
@@ -423,12 +468,16 @@ def test_events_are_saved_after_extraction(db):
 def test_events_are_saved_after_embedding(db):
     _, _, save_spy, _ = _run(db)
 
-    assert ("fresh-1", True, True) in save_spy.snapshots[1]
+    # The last write, not the second: the real stage checkpoints after every
+    # event, so the run makes more saves than the old stage fake did — it held
+    # the save function and never called it, leaving the checkpoint path
+    # unexercised by every test in this module.
+    assert ("fresh-1", True, True) in save_spy.snapshots[-1]
 
 
 def test_a_crash_after_extraction_leaves_tags_persisted(db):
     """Everything already saved stays saved, which is what makes a re-run cheap."""
-    _run(db, deps={"embedding_stage": _FakeEmbedding(error=RuntimeError("ollama down"))})
+    _run(db, deps={"embedding_stage": _embedding_stage(error=RuntimeError("ollama down"))})
 
     stored = load_events(db)
     assert [t.text for t in stored[0].tags] == ["karaoke"]
@@ -439,7 +488,7 @@ def test_a_second_run_re_extracts_nothing(db):
     _run(db)
     _, fakes, _, _ = _run(db)
 
-    assert fakes["extraction_stage"].extracted == [[]]
+    assert fakes["extraction_model"].calls == []
 
 
 def test_a_second_run_reuses_the_stored_event_id(db):
@@ -456,23 +505,24 @@ def test_a_second_run_reuses_the_stored_event_id(db):
 
 
 def test_stored_enrichment_is_adopted_by_the_matching_fresh_event(db):
-    save_events(
-        [
-            _event(
-                "stored-1",
-                ["c1"],
-                tags=[Tag(text="trivia", weight=1.0)],
-                summary="Trivia night",
-                setting="indoor",
-            )
-        ],
-        db,
+    stored = _event(
+        "stored-1",
+        ["c1"],
+        tags=[Tag(text="trivia", weight=1.0)],
+        summary="Trivia night",
+        setting="indoor",
     )
+    # A stored event that has been through extraction carries the hash of what
+    # was extracted; that hash, not the presence of tags, is what makes the next
+    # run skip it. The fixture used to omit it and the stage fake did not care,
+    # so this asserted a skip that production would never have made.
+    stored.extraction_input_hash = extraction_input_hash(stored)
+    save_events([stored], db)
 
     _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
 
     assert fakes["ranking_engine"].ranked == [["stored-1"]]
-    assert fakes["extraction_stage"].extracted == [[]]
+    assert fakes["extraction_model"].calls == []
 
 
 def test_a_superseded_event_is_deleted(db):
@@ -533,7 +583,7 @@ def test_enrichment_failure_still_reaches_ranking(db):
 def test_wholesale_embedding_failure_stops_before_ranking(db):
     """Ranking without vectors produces garbage, and it would be persisted."""
     result, fakes, _, recs_spy = _run(
-        db, deps={"embedding_stage": _FakeEmbedding(error=RuntimeError("ollama down"))}
+        db, deps={"embedding_stage": _embedding_stage(error=RuntimeError("ollama down"))}
     )
 
     assert fakes["ranking_engine"].ranked == []
@@ -600,7 +650,7 @@ def test_ingest_only_stops_before_the_pipeline(db):
 
     assert fakes["ingestion_service"].calls == 1
     assert fakes["normalization_service"].calls == []
-    assert fakes["extraction_stage"].extracted == []
+    assert fakes["extraction_stage"].runs == 0
     assert fakes["ranking_engine"].ranked == []
 
 
@@ -699,7 +749,7 @@ def test_dry_run_still_runs_every_stage(db):
     """It exists to surface provider problems, so the work must actually happen."""
     result, fakes, _, _ = _run(db, dry_run=True)
 
-    assert fakes["extraction_stage"].extracted == [["fresh-1"]]
+    assert len(fakes["extraction_model"].calls) == 1
     assert fakes["ranking_engine"].ranked == [["fresh-1"]]
     assert result.outcome == "success"
 
@@ -858,7 +908,7 @@ def test_skipped_sources_reach_the_history(db):
 
 def test_a_run_that_stops_before_ranking_is_still_recorded(db):
     """The early return is exactly the run whose record matters most."""
-    _run(db, deps={"embedding_stage": _FakeEmbedding(error=RuntimeError("ollama down"))})
+    _run(db, deps={"embedding_stage": _embedding_stage(error=RuntimeError("ollama down"))})
 
     row = _runs(db)[0]
     assert row["outcome"] == "failed"
@@ -906,8 +956,8 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             ingestion_service=_FakeIngestion(),
             normalization_service=_FakeNormalization([]),
             enrichment_service=_FakeEnrichment(),
-            extraction_stage=_FakeExtraction(),
-            embedding_stage=_FakeEmbedding(),
+            extraction_stage=_extraction_stage(),
+            embedding_stage=_embedding_stage(),
             semantic_deduplicator=_FakeSemanticDedup(),
             similarity_stage=_FakeSimilarity(),
             ranking_engine=_FakeRanking(),
@@ -927,7 +977,7 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
 
 def test_extraction_is_given_a_way_to_save_as_it_goes(db):
     """Extraction runs for hours; a run that dies must not lose all of it."""
-    extraction = _FakeExtraction()
+    extraction = _extraction_stage()
 
     _run(db, deps={"extraction_stage": extraction})
 
@@ -936,7 +986,7 @@ def test_extraction_is_given_a_way_to_save_as_it_goes(db):
 
 def test_a_dry_run_gives_extraction_no_saver(db):
     """A dry run promises to persist nothing, checkpoints included."""
-    extraction = _FakeExtraction()
+    extraction = _extraction_stage()
 
     _run(db, dry_run=True, deps={"extraction_stage": extraction})
 
@@ -951,7 +1001,7 @@ def test_an_extraction_checkpoint_persists_the_single_event_it_is_given(db):
     and every test still passed while a real batch would have failed on its
     first checkpoint.
     """
-    extraction = _FakeExtraction()
+    extraction = _extraction_stage()
 
     _, _, save_spy, _ = _run(db, deps={"extraction_stage": extraction})
     before = save_spy.calls
@@ -1027,3 +1077,39 @@ class TestAFailedReplaceDoesNotCostTheNight:
         _, _, save_spy, _ = _run(db, on_replace=self._explode)
 
         assert SqliteEventRepository(db).load_all() != []
+
+
+def test_a_stored_event_re_extracts_without_stranding_its_vectors(db):
+    """The 2026-08-12 crash, at the level that should have caught it.
+
+    A stored event arrives carrying tags, a vector for each, and the hash of the
+    text they came from. The text has since changed, so extraction runs again and
+    returns a different number of tags — which is exactly what `min_tags` 5→1
+    made routine, and what left five vectors describing one tag.
+
+    This scenario was unwritable while the stage was faked: the fake skipped any
+    event that had tags, so a stored event never reached extraction at all, and
+    nothing in this module ever exercised the path a nightly batch spends all its
+    time on.
+    """
+    stored = _event(
+        "stored-1",
+        ["c1"],
+        tags=[Tag(text=t, weight=1.0) for t in ("karaoke", "trivia", "bar", "pub", "quiz")],
+        summary="An evening of karaoke and trivia",
+        setting="indoor",
+    )
+    stored.attach_tag_embeddings([b"\x00\x01"] * 5)
+    stored.extraction_input_hash = "the text has changed since this was extracted"
+    save_events([stored], db)
+
+    result, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+
+    assert len(fakes["extraction_model"].calls) == 1
+    # Not "partial": a re-extraction is the ordinary case, not a degraded one.
+    assert result.outcome == "success"
+    assert result.errors == []
+
+    reloaded = load_events(db)[0]
+    assert [t.text for t in reloaded.tags] == ["karaoke"]
+    assert len(reloaded.tag_embeddings) == len(reloaded.tags)
