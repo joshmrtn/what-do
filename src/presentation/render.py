@@ -15,7 +15,7 @@ a hidden event is invisible, a counted one is a flag away.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 
 from src.models.event import Event
 from src.models.event_score import EventScore
@@ -54,6 +54,36 @@ _UNTITLED = "(untitled)"
 #: the width of `HH:MM` so the titles beside them stay in one column.
 _ALL_DAY_LABEL = "all day"
 _UNKNOWN_TIME_LABEL = "time TBC"
+
+
+def staleness_notice(run_date: date, tonight: date) -> str | None:
+    """Warn that the ranking on screen predates the night it is shown for.
+
+    The order is the product, so a stale one passing as current is the worst
+    thing this view can do — and it is invisible, because a batch that dies
+    before ranking leaves the previous night's order in place under today's
+    heading.
+
+    Deliberately not a refusal. A failed batch must not also cost the listing:
+    a day-old ranking is mostly still accurate, and being told its age is what
+    makes it safe to read.
+
+    Args:
+        run_date: The batch whose ranking is being shown.
+        tonight: The night being shown, in the view's own zone.
+
+    Returns:
+        The warning, or None when the ranking is current. A run *ahead* of
+        tonight is not stale — that is `--run-date` being used deliberately.
+    """
+    days = (tonight - run_date).days
+    if days <= 0:
+        return None
+    plural = "day" if days == 1 else "days"
+    return (
+        f"⚠  Showing the ranking from {run_date.isoformat()} — {days} {plural} old.\n"
+        f"   No ranking has been produced for tonight; see logs/batch-latest.log"
+    )
 
 
 def render_recommendations(

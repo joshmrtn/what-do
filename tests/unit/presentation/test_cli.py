@@ -59,12 +59,14 @@ def _pair(
     sunset: datetime | None = None,
     source_type: str = "instagram",
     url: str | None = None,
+    run_date: date | None = None,
 ) -> RankedEvent:
+    run_date = TODAY if run_date is None else run_date
     return RankedEvent(
         event=_event(event_id, title, start, sunset, source_type, url),
         score=EventScore(
             event_id=event_id,
-            run_date=TODAY,
+            run_date=run_date,
             base_score=0.42,
             tag_confidence=1.0,
             match="yes",
@@ -81,7 +83,7 @@ def _pair(
         ),
         ranking=Ranking(
             event_id=event_id,
-            run_date=TODAY,
+            run_date=run_date,
             weather_adjustment=0.05,
             final_score=0.68,
             rank=rank,
@@ -569,3 +571,50 @@ class TestSourceAttributionWiring:
 
         assert settings.source_urls == {}
         assert settings.warning is not None
+
+
+class TestAStaleRankingIsAnnounced:
+    """The 2026-08-12 failure mode: today's heading over yesterday's order.
+
+    The batch died before ranking, `latest_run_date()` returned the previous
+    night, and the CLI presented it as current. Nothing in the output gave the
+    listing's age away.
+    """
+
+    def _stale(self, days: int) -> list[RankedEvent]:
+        when = TODAY - timedelta(days=days)
+        return [
+            _pair("a", "Tonight Early", datetime(2025, 6, 21, 18, 0, tzinfo=TZ),
+                  rank=1, sunset=SUNSET, run_date=when),
+        ]
+
+    def test_a_current_ranking_says_nothing(self):
+        harness = _Harness()
+
+        harness.invoke()
+
+        assert "old" not in harness.err
+
+    def test_a_day_old_ranking_is_announced(self):
+        harness = _Harness(pairs=self._stale(1))
+
+        harness.invoke()
+
+        assert "1 day old" in harness.err
+        assert "2025-06-20" in harness.err
+
+    def test_the_listing_is_still_shown(self):
+        """A failed batch must not also cost the listing."""
+        harness = _Harness(pairs=self._stale(1))
+
+        assert harness.invoke() == 0
+        assert "Tonight Early" in harness.out
+
+    def test_the_notice_stays_off_stdout(self):
+        """So a piped or paged listing is unchanged, as every other warning is."""
+        harness = _Harness(pairs=self._stale(3))
+
+        harness.invoke()
+
+        assert "3 days old" in harness.err
+        assert "days old" not in harness.out

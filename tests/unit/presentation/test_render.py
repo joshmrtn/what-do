@@ -6,7 +6,7 @@ from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranked_event import RankedEvent
 from src.models.ranking import Ranking
-from src.presentation.render import render_raw, render_recommendations
+from src.presentation.render import render_raw, render_recommendations, staleness_notice
 from src.scoring.similarity import Reason
 
 TZ = timezone(timedelta(hours=-4))
@@ -550,3 +550,34 @@ class TestSourceAttribution:
         pairs = [_pair(source_type="northshorenightout", url=None)]
 
         assert "source:" not in render_recommendations(pairs)
+
+
+class TestStalenessNotice:
+    """A ranking older than tonight must never pass as tonight's.
+
+    On 2026-08-12 the batch died before ranking, and the CLI printed today's
+    date above the previous night's order — including a scoring bug we believed
+    fixed. Nothing said the listing was a day old. The order is the product, so
+    serving a stale one silently is the worst failure the view has.
+    """
+
+    def test_a_run_from_tonight_says_nothing(self):
+        assert staleness_notice(date(2025, 6, 21), TODAY) is None
+
+    def test_a_run_from_the_future_says_nothing(self):
+        """A --run-date ahead of tonight is not staleness."""
+        assert staleness_notice(date(2025, 6, 22), TODAY) is None
+
+    def test_a_day_old_run_is_announced_with_its_date(self):
+        notice = staleness_notice(date(2025, 6, 20), TODAY)
+
+        assert notice is not None
+        assert "2025-06-20" in notice
+
+    def test_the_age_is_stated_in_days(self):
+        assert "1 day old" in staleness_notice(date(2025, 6, 20), TODAY)
+        assert "5 days old" in staleness_notice(date(2025, 6, 16), TODAY)
+
+    def test_it_points_at_the_batch_log(self):
+        """The next question is always "why", and the answer is in one place."""
+        assert "batch-latest.log" in staleness_notice(date(2025, 6, 20), TODAY)

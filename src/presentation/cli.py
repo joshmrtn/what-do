@@ -29,7 +29,12 @@ from src.presentation.filters import (
     overlapping,
     parse_time_window,
 )
-from src.presentation.render import DEFAULT_LIMIT, render_raw, render_recommendations
+from src.presentation.render import (
+    DEFAULT_LIMIT,
+    render_raw,
+    render_recommendations,
+    staleness_notice,
+)
 from src.storage.db import DEFAULT_DB_PATH, has_schema
 from src.storage.events import load_events
 from src.storage.queries import load_ranked_events
@@ -209,6 +214,12 @@ def _cmd_recommend(
     # times are aware in it, and taking the date from wherever the VM thinks it
     # is would compare them against a different day.
     tonight = night_of(get_now().astimezone(view.zone), view.day_starts_at)
+    # Before anything is rendered, and to stderr like every other warning, so a
+    # piped listing is unchanged and a terminal one cannot miss it. The batch
+    # that fails is exactly the batch that leaves an older ranking in place.
+    notice = staleness_notice(pairs[0].ranking.run_date, tonight)
+    if notice is not None:
+        print(notice, file=stderr)
     # `during_night` drops undated events, so they are re-added rather than
     # filtered: a missing start time is a gap in what we know, not evidence
     # about when.
