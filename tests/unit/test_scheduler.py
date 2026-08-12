@@ -20,11 +20,12 @@ from src.config import (
     ScrapingConfig,
     VenueDiscoveryConfig,
 )
-from src.ingestion.ingestion_service import IngestionResult
+from src.ingestion.ingestion_service import IngestionService, SourceTally
+from src.ingestion.source import IngestionSource
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
-from src.normalization.service import NormalizationResult
+from src.normalization.service import NormalizationService
 from src.enrichment.service import EnrichmentService
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.processing.extraction import ExtractionResult
@@ -42,6 +43,7 @@ from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.storage.memory.candidates import InMemoryCandidateRepository
+from src.storage.memory.entities import InMemoryEntityRepository
 from src.storage.memory.rankings import InMemoryRankingRepository
 from src.storage.memory.scores import InMemoryScoreRepository
 from src.storage.sqlite.events import SqliteEventRepository
@@ -56,18 +58,17 @@ RUN_DATE = date(2026, 6, 15)
 # ----------------------------------------------------------------------
 
 
-class _FakeIngestion:
-    def __init__(
-        self,
-        error: Exception | None = None,
-        candidates: list[EventCandidate] | None = None,
-        per_source: dict[str, int] | None = None,
-        failed_sources: list[str] | None = None,
-    ) -> None:
+class _IngestionSpy:
+    """Records how ingestion was called, and delegates to the real service.
+
+    `persist` and `collect_raw` used to be recorded by a fake that then ignored
+    them, so a dry run was tested by asserting a flag had been *passed* rather
+    than *honoured*.
+    """
+
+    def __init__(self, inner, error: Exception | None = None) -> None:
+        self._inner = inner
         self.error = error
-        self.candidates = candidates or []
-        self.per_source = per_source or {}
-        self.failed_sources = failed_sources or []
         self.calls = 0
         self.persist_flags: list[bool] = []
         self.raw_flags: list[bool] = []
@@ -78,25 +79,21 @@ class _FakeIngestion:
         self.raw_flags.append(collect_raw)
         if self.error:
             raise self.error
-        return IngestionResult(
-            accepted=len(self.candidates),
-            discarded=0,
-            handles_discovered=0,
-            candidates=list(self.candidates),
-            per_source=dict(self.per_source),
-            failed_sources=list(self.failed_sources),
+        return self._inner.run(
+            get_now=get_now, persist=persist, collect_raw=collect_raw
         )
 
 
-class _FakeNormalization:
-    def __init__(self, events: list[Event]) -> None:
-        self._events = events
+class _NormalizationSpy:
+    """Records the candidates normalization saw, and delegates to the real one."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
         self.calls: list[list[EventCandidate]] = []
 
     def run(self, candidates, get_now=None):
         self.calls.append(list(candidates))
-        events = copy.deepcopy(self._events)
-        return NormalizationResult(normalized=len(events), discarded=0, events=events)
+        return self._inner.run(candidates, get_now=get_now)
 
 
 class _EnrichmentSpy:
@@ -106,11 +103,13 @@ class _EnrichmentSpy:
         self._inner = inner
         self.error = error
         self.seen: list[list[str]] = []
+        self.titles: list[list[str]] = []
 
     def enrich(self, events, run_date):
         if self.error:
             raise self.error
         self.seen.append([e.event_id for e in events])
+        self.titles.append([e.title for e in events])
         return self._inner.enrich(events, run_date)
 
 
@@ -238,6 +237,54 @@ def _enrichment_service(db, error: Exception | None = None) -> _EnrichmentSpy:
     )
 
 
+def _sourced(name: str, candidates):
+    """A source standing in for the network, named as config would name it.
+
+    `candidates` may be an exception, for a source that fails while its
+    siblings succeed — which the real service reports rather than raising.
+    """
+    source = MagicMock(spec=IngestionSource)
+    source.source_name = name
+    if isinstance(candidates, Exception):
+        source.fetch.side_effect = candidates
+    else:
+        source.fetch.return_value = list(candidates)
+    return source
+
+
+def _ingestion_service(db, candidates=None, sources=None, error: Exception | None = None):
+    """The real service, fed by a source that stands in for the network.
+
+    A seeds file and an entity store are all the setup this needs — the file is
+    two lines and the store is the in-memory repository that already exists —
+    which is a smaller price than a fake we have to remember to update every
+    time ingestion grows.
+    """
+    seeds = Path(db).parent / "seeds.yaml"
+    seeds.write_text("handles: []\nvenues: []\n")
+    independent = (
+        [_sourced(name, cands) for name, cands in sources.items()]
+        if sources is not None
+        else [_sourced("test_source", candidates or [])]
+    )
+    return _IngestionSpy(
+        IngestionService(
+            config=_config(),
+            db_path=db,
+            seeds_path=seeds,
+            failover_sources=[],
+            independent_sources=independent,
+            logger=_stage_log(),
+            entities=InMemoryEntityRepository(),
+        ),
+        error=error,
+    )
+
+
+def _normalization_service() -> _NormalizationSpy:
+    return _NormalizationSpy(NormalizationService(_config(), _stage_log()))
+
+
 def _similarity_stage() -> SimilarityStage:
     """Real, over an empty preference set — the scheduler tests are about
     sequencing, and an empty set is a legitimate configuration, not a stand-in."""
@@ -276,9 +323,14 @@ class _RankingSpy:
     def __init__(self, inner) -> None:
         self._inner = inner
         self.ranked: list[list[str]] = []
+        self.titles: list[list[str]] = []
 
     def rank(self, events, run_date):
+        # Ids are uuids minted per run, so a test that cares *which* event was
+        # ranked reads titles; one that cares about identity surviving a run
+        # compares ids across two runs, which is the thing reconcile exists for.
         self.ranked.append([e.event_id for e in events])
+        self.titles.append([e.title for e in events])
         return self._inner.rank(events, run_date)
 
 
@@ -345,7 +397,7 @@ class _SpyRepository:
 
     def _record(self, events) -> None:
         self.snapshots.append(
-            [(e.event_id, bool(e.tags), bool(e.tag_embeddings)) for e in events]
+            [(e.title, bool(e.tags), bool(e.tag_embeddings)) for e in events]
         )
 
     def save(self, events) -> None:
@@ -415,6 +467,20 @@ def _event(event_id: str, candidates: list[str], **overrides) -> Event:
     return Event(**fields)
 
 
+def _candidate(cid: str, title: str = "Karaoke Night", **overrides) -> EventCandidate:
+    """A candidate as a source would hand it over, before normalization."""
+    fields = {
+        "id": cid,
+        "source": "@venue",
+        "source_type": "apify",
+        "discovered_at": NOW,
+        "title": title,
+        "start_time": NOW + timedelta(days=1),
+    }
+    fields.update(overrides)
+    return EventCandidate(**fields)
+
+
 @pytest.fixture
 def db(tmp_path) -> Path:
     path = tmp_path / "batch.db"
@@ -422,25 +488,42 @@ def db(tmp_path) -> Path:
     return path
 
 
-def _seeded_candidates() -> InMemoryCandidateRepository:
-    """One stored candidate, as a previous fetch would have left behind."""
+def _seeded_candidates(candidates) -> InMemoryCandidateRepository:
+    """The candidates a previous fetch left behind.
+
+    Mirrors what the sources return, because in production ingestion
+    persists what it fetched and the next stage reads it back. Seeding a
+    candidate no source returns makes every run process a ghost.
+    """
     repo = InMemoryCandidateRepository()
-    repo.save(
-        [EventCandidate(id="c1", source="@v", source_type="apify", discovered_at=NOW)]
-    )
+    # A complete candidate, as a real fetch would have left it. A bare one
+    # (no title, no start_time) is discarded by real normalization, and
+    # `_merge_candidates` prefers the *stored* copy over the fetched one.
+    repo.save(list(candidates))
     return repo
 
 
-def _run(db, *, fresh=None, deps=None, **kwargs):
-    """Drive run_batch with fakes, returning (result, the fakes it used)."""
+def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
+    """Drive run_batch, returning (result, the collaborators it used).
+
+    Everything here is the real thing except the network and the model: one
+    `IngestionSource` supplying candidates, one extraction model and one
+    embedding model. Events therefore carry the uuids normalization mints,
+    exactly as they do in production, which is why assertions below identify
+    them by title rather than by a name a fixture chose.
+    """
+    candidates = [_candidate("c1")] if candidates is None else candidates
+    # What a previous run left in the repository. Defaults to what the
+    # sources return, because ingestion persists what it accepted — so a
+    # candidate ingestion *rejects* must be passed as [] here, or the
+    # loader hands the pipeline something production never stored.
+    stored = candidates if stored_candidates is None else stored_candidates
     log = get_logger("batch_test_stages", stream=io.StringIO())
     extraction_model = _ExtractionModel()
     embedding_model = _EmbeddingModel()
     fakes = {
-        "ingestion_service": _FakeIngestion(),
-        "normalization_service": _FakeNormalization(
-            fresh if fresh is not None else [_event("fresh-1", ["c1"])]
-        ),
+        "ingestion_service": _ingestion_service(db, candidates),
+        "normalization_service": _normalization_service(),
         "enrichment_service": _enrichment_service(db),
         # Real stages, faked models. The seam is the model call, which is the
         # only external thing here; everything above it is our code and runs
@@ -472,7 +555,7 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
         logger=get_logger("batch_test", stream=io.StringIO()),
         get_now=lambda: NOW,
         run_date=RUN_DATE,
-        candidate_repository=_seeded_candidates(),
+        candidate_repository=_seeded_candidates(stored),
         event_repository=save_spy,
         score_repository=InMemoryScoreRepository(),
         ranking_repository=recs_spy,
@@ -507,7 +590,7 @@ def test_skip_ingest_leaves_the_network_alone(db):
 def test_recommendations_are_saved(db):
     _, _, _, recs_spy = _run(db)
     assert recs_spy.calls == 1
-    assert [r.event_id for r in recs_spy.snapshots[0]] == ["fresh-1"]
+    assert len(recs_spy.snapshots[0]) == 1
 
 
 # ----------------------------------------------------------------------
@@ -520,7 +603,7 @@ def test_events_are_saved_after_extraction(db):
     _, _, save_spy, _ = _run(db)
 
     first = save_spy.snapshots[0]
-    assert first == [("fresh-1", True, False)]
+    assert first == [("Karaoke Night", True, False)]
 
 
 def test_events_are_saved_after_embedding(db):
@@ -530,7 +613,7 @@ def test_events_are_saved_after_embedding(db):
     # event, so the run makes more saves than the old stage fake did — it held
     # the save function and never called it, leaving the checkpoint path
     # unexercised by every test in this module.
-    assert ("fresh-1", True, True) in save_spy.snapshots[-1]
+    assert ("Karaoke Night", True, True) in save_spy.snapshots[-1]
 
 
 def test_a_crash_after_extraction_leaves_tags_persisted(db):
@@ -550,10 +633,24 @@ def test_a_second_run_re_extracts_nothing(db):
 
 
 def test_a_second_run_reuses_the_stored_event_id(db):
-    _run(db)
-    _, fakes, _, _ = _run(db)
+    """Normalization mints a new uuid every run; reconcile matches it back.
 
-    assert fakes["ranking_engine"].ranked == [["fresh-1"]]
+    This test could not fail while normalization was faked. The fake deep-copied
+    a fixture, so the second run handed back the very id the first one stored —
+    the assertion was satisfied by the double, not by the code. Neutering
+    reconcile left it green.
+
+    Now the two ids are genuinely different objects until reconcile matches them
+    on their shared candidate, which is the mechanism that stops the events
+    table doubling every night.
+    """
+    _, first, _, _ = _run(db)
+    _, second, _, _ = _run(db)
+
+    minted_first = first["ranking_engine"].ranked[0]
+    minted_second = second["ranking_engine"].ranked[0]
+
+    assert minted_first == minted_second
     assert len(load_events(db)) == 1
 
 
@@ -577,9 +674,9 @@ def test_stored_enrichment_is_adopted_by_the_matching_fresh_event(db):
     stored.extraction_input_hash = extraction_input_hash(stored)
     save_events([stored], db)
 
-    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _, fakes, _, _ = _run(db)
 
-    assert fakes["ranking_engine"].ranked == [["stored-1"]]
+    assert fakes["ranking_engine"].titles == [["Karaoke Night"]]
     assert fakes["extraction_model"].calls == []
 
 
@@ -587,7 +684,7 @@ def test_a_superseded_event_is_deleted(db):
     """Without the delete the loser lingers forever as a duplicate in the output."""
     save_events([_event("stored-a", ["c1"]), _event("stored-b", ["c2"])], db)
 
-    _run(db, fresh=[_event("fresh-1", ["c1", "c2"])])
+    _run(db, candidates=[_candidate("c1"), _candidate("c2")])
 
     assert sorted(e.event_id for e in load_events(db)) == ["stored-a"]
 
@@ -602,9 +699,9 @@ def test_a_stored_event_with_no_fresh_counterpart_is_still_ranked(db):
     """
     save_events([_event("stored-old", ["c99"], title="Quiz Night")], db)
 
-    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _, fakes, _, _ = _run(db)
 
-    assert sorted(fakes["ranking_engine"].ranked[0]) == ["fresh-1", "stored-old"]
+    assert sorted(fakes["ranking_engine"].titles[0]) == ["Karaoke Night", "Quiz Night"]
 
 
 # ----------------------------------------------------------------------
@@ -618,12 +715,12 @@ def test_ingestion_failure_does_not_abort_the_run(db):
 
     result, fakes, _, recs_spy = _run(
         db,
-        fresh=[],
-        deps={"ingestion_service": _FakeIngestion(error=RuntimeError("all sources down"))},
+        candidates=[],
+        deps={"ingestion_service": _ingestion_service(db, error=RuntimeError("all sources down"))},
     )
 
     assert result.outcome == "partial"
-    assert fakes["ranking_engine"].ranked == [["stored-1"]]
+    assert fakes["ranking_engine"].titles == [["Karaoke Night"]]
     assert recs_spy.calls == 1
 
 
@@ -641,7 +738,7 @@ def test_enrichment_failure_still_reaches_ranking(db):
         db, deps={"enrichment_service": _enrichment_service(db, error=RuntimeError("weather down"))}
     )
 
-    assert fakes["ranking_engine"].ranked == [["fresh-1"]]
+    assert fakes["ranking_engine"].titles == [["Karaoke Night"]]
 
 
 def test_wholesale_embedding_failure_stops_before_ranking(db):
@@ -660,47 +757,51 @@ def test_wholesale_embedding_failure_stops_before_ranking(db):
 # ----------------------------------------------------------------------
 
 
+def _scope_run(db, event):
+    """Store one event and run with no fresh candidates.
+
+    `_scope_filter` is the scheduler's own predicate and it runs over carried
+    forward *stored* events. Feeding these in as fresh candidates would have
+    them dropped by ingestion's window check first — the same verdict for a
+    different reason, one layer too early, leaving this filter untested.
+    """
+    save_events([event], db)
+    _, fakes, _, _ = _run(db, candidates=[])
+    return fakes["ranking_engine"].titles[0]
+
+
 def test_events_beyond_the_horizon_are_not_ranked(db):
-    far = _event("far", ["c1"], start_time=NOW + timedelta(days=90))
+    far = _event("far", ["c1"], title="Far", start_time=NOW + timedelta(days=90))
 
-    _, fakes, _, _ = _run(db, fresh=[far])
-
-    assert fakes["ranking_engine"].ranked == [[]]
+    assert _scope_run(db, far) == []
 
 
 def test_events_already_past_are_not_ranked(db):
-    gone = _event("gone", ["c1"], start_time=NOW - timedelta(days=2))
+    gone = _event("gone", ["c1"], title="Gone", start_time=NOW - timedelta(days=2))
 
-    _, fakes, _, _ = _run(db, fresh=[gone])
-
-    assert fakes["ranking_engine"].ranked == [[]]
+    assert _scope_run(db, gone) == []
 
 
 def test_undated_events_inside_the_lookback_are_ranked(db):
-    """The CLI has a labelled UNDATED section and must not lose them."""
-    undated = _event("undated", ["c1"], start_time=None)
+    """The CLI ranks them inline and must not lose them."""
+    undated = _event("undated", ["c1"], title="Undated", start_time=None)
 
-    _, fakes, _, _ = _run(db, fresh=[undated])
-
-    assert fakes["ranking_engine"].ranked == [["undated"]]
+    assert _scope_run(db, undated) == ["Undated"]
 
 
 def test_undated_events_older_than_the_lookback_are_not_ranked(db):
     stale = _event(
-        "stale", ["c1"], start_time=None, created_at=NOW - timedelta(days=200)
+        "stale", ["c1"], title="Stale", start_time=None,
+        created_at=NOW - timedelta(days=200),
     )
 
-    _, fakes, _, _ = _run(db, fresh=[stale])
-
-    assert fakes["ranking_engine"].ranked == [[]]
+    assert _scope_run(db, stale) == []
 
 
 def test_an_event_tonight_is_ranked(db):
-    tonight = _event("tonight", ["c1"], start_time=NOW + timedelta(hours=8))
+    tonight = _event("tonight", ["c1"], title="Tonight", start_time=NOW + timedelta(hours=8))
 
-    _, fakes, _, _ = _run(db, fresh=[tonight])
-
-    assert fakes["ranking_engine"].ranked == [["tonight"]]
+    assert _scope_run(db, tonight) == ["Tonight"]
 
 
 # ----------------------------------------------------------------------
@@ -738,12 +839,7 @@ def test_ingest_only_writes_no_events_or_recommendations(db):
 
 
 def test_ingest_only_reports_the_count_it_accepted(db):
-    ingestion = _FakeIngestion(
-        candidates=[
-            EventCandidate(id="a", source="s", source_type="apify", discovered_at=NOW),
-            EventCandidate(id="b", source="s", source_type="apify", discovered_at=NOW),
-        ]
-    )
+    ingestion = _ingestion_service(db, [_candidate("a"), _candidate("b", title="Quiz")])
 
     result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
 
@@ -752,15 +848,29 @@ def test_ingest_only_reports_the_count_it_accepted(db):
 
 def test_ingest_only_reports_what_each_source_returned(db):
     """A total says nothing about which of seventeen sources went quiet."""
-    ingestion = _FakeIngestion(per_source={"do617_gulu_gulu": 25, "do617_koto": 0})
+    ingestion = _ingestion_service(
+        db,
+        sources={
+            "do617_gulu_gulu": [_candidate(f"g{i}", title=f"Gig {i}") for i in range(25)],
+            "do617_koto": [],
+        },
+    )
 
     result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
 
-    assert result.per_source == {"do617_gulu_gulu": 25, "do617_koto": 0}
+    # `SourceTally`, not an int: both numbers are needed to tell "returned
+    # nothing" from "returned plenty and kept none". The old fake handed back
+    # bare ints, so this asserted a shape the service never produced.
+    assert result.per_source == {
+        "do617_gulu_gulu": SourceTally(fetched=25, accepted=25),
+        "do617_koto": SourceTally(fetched=0, accepted=0),
+    }
 
 
 def test_ingest_only_reports_a_source_that_failed(db):
-    ingestion = _FakeIngestion(failed_sources=["nshoremag"])
+    ingestion = _ingestion_service(
+        db, sources={"nshoremag": RuntimeError("site down")}
+    )
 
     result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
 
@@ -775,7 +885,7 @@ def test_ingest_only_records_no_run_history(db):
 
 
 def test_ingest_only_survives_an_ingestion_failure(db):
-    ingestion = _FakeIngestion(error=RuntimeError("network down"))
+    ingestion = _ingestion_service(db, error=RuntimeError("network down"))
 
     result, _, _, _ = _run(db, ingest_only=True, deps={"ingestion_service": ingestion})
 
@@ -785,11 +895,13 @@ def test_ingest_only_survives_an_ingestion_failure(db):
 
 def test_a_normal_run_reports_per_source_counts_too(db):
     """The same diagnostic is worth having on a real run."""
-    ingestion = _FakeIngestion(per_source={"cabot": 88})
+    ingestion = _ingestion_service(
+        db, sources={"cabot": [_candidate(f"k{i}", title=f"Show {i}") for i in range(88)]}
+    )
 
     result, _, _, _ = _run(db, deps={"ingestion_service": ingestion})
 
-    assert result.per_source == {"cabot": 88}
+    assert result.per_source == {"cabot": SourceTally(fetched=88, accepted=88)}
 
 
 # ----------------------------------------------------------------------
@@ -814,7 +926,7 @@ def test_dry_run_still_runs_every_stage(db):
     result, fakes, _, _ = _run(db, dry_run=True)
 
     assert len(fakes["extraction_model"].calls) == 1
-    assert fakes["ranking_engine"].ranked == [["fresh-1"]]
+    assert fakes["ranking_engine"].titles == [["Karaoke Night"]]
     assert result.outcome == "success"
 
 
@@ -832,12 +944,12 @@ def test_a_normal_run_lets_ingestion_persist(db):
 
 def test_dry_run_pipelines_the_candidates_it_just_fetched(db):
     """Nothing was written, so the loader cannot see them — pass them through."""
-    fetched = EventCandidate(
-        id="c2", source="@v", source_type="apify", discovered_at=NOW
-    )
+    fetched = _candidate("c2", title="Quiz")
 
     _, fakes, _, _ = _run(
-        db, dry_run=True, deps={"ingestion_service": _FakeIngestion(candidates=[fetched])}
+        db,
+        dry_run=True,
+        deps={"ingestion_service": _ingestion_service(db, [fetched])},
     )
 
     seen = [c.id for c in fakes["normalization_service"].calls[0]]
@@ -846,13 +958,9 @@ def test_dry_run_pipelines_the_candidates_it_just_fetched(db):
 
 def test_a_normal_run_does_not_double_count_fetched_candidates(db):
     """Ingestion persisted them, so the loader already returns them."""
-    fetched = EventCandidate(
-        id="c1", source="@v", source_type="apify", discovered_at=NOW
-    )
+    fetched = _candidate("c1")
 
-    _, fakes, _, _ = _run(
-        db, deps={"ingestion_service": _FakeIngestion(candidates=[fetched])}
-    )
+    _, fakes, _, _ = _run(db, deps={"ingestion_service": _ingestion_service(db, [fetched])})
 
     seen = [c.id for c in fakes["normalization_service"].calls[0]]
     assert seen == ["c1"]
@@ -861,7 +969,7 @@ def test_a_normal_run_does_not_double_count_fetched_candidates(db):
 def test_dry_run_deletes_no_superseded_events(db):
     save_events([_event("stored-a", ["c1"]), _event("stored-b", ["c2"])], db)
 
-    _run(db, dry_run=True, fresh=[_event("fresh-1", ["c1", "c2"])])
+    _run(db, dry_run=True, candidates=[_candidate("c1"), _candidate("c2")])
 
     assert sorted(e.event_id for e in load_events(db)) == ["stored-a", "stored-b"]
 
@@ -875,59 +983,60 @@ def test_a_stored_event_that_has_already_happened_never_enters_the_pipeline(db):
     """It would ride enrichment, dedup and similarity only to be dropped before ranking."""
     save_events([_event("past", ["c99"], start_time=NOW - timedelta(days=2))], db)
 
-    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _, fakes, _, _ = _run(db)
 
-    assert fakes["enrichment_service"].seen[0] == ["fresh-1"]
-    assert fakes["ranking_engine"].ranked == [["fresh-1"]]
+    assert fakes["enrichment_service"].titles[0] == ["Karaoke Night"]
+    assert fakes["ranking_engine"].titles == [["Karaoke Night"]]
 
 
 def test_a_stored_event_that_has_already_happened_is_not_deleted(db):
     """Scoping the carry-forward is not a purge; #17 owns retention."""
     save_events([_event("past", ["c99"], start_time=NOW - timedelta(days=2))], db)
 
-    _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _run(db)
 
     assert "past" in {e.event_id for e in load_events(db)}
 
 
 def test_a_stored_event_beyond_the_horizon_is_not_carried(db):
     """The carry-forward scope matches the ranking scope, so nothing is enriched in vain."""
-    save_events([_event("far", ["c99"], start_time=NOW + timedelta(days=400))], db)
+    save_events([_event("far", ["c99"], title="Far", start_time=NOW + timedelta(days=400))], db)
 
-    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _, fakes, _, _ = _run(db)
 
-    assert fakes["enrichment_service"].seen[0] == ["fresh-1"]
+    assert fakes["enrichment_service"].titles[0] == ["Karaoke Night"]
 
 
 def test_a_stored_undated_event_older_than_the_lookback_is_not_carried(db):
     """Undated events are held on discovery age, the same rule ranking applies."""
     stale = _event(
-        "stale-undated", ["c99"], start_time=None, created_at=NOW - timedelta(days=400)
+        "stale-undated", ["c99"], title="Stale Undated", start_time=None,
+        created_at=NOW - timedelta(days=400),
     )
     save_events([stale], db)
 
-    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _, fakes, _, _ = _run(db)
 
-    assert fakes["enrichment_service"].seen[0] == ["fresh-1"]
+    assert fakes["enrichment_service"].titles[0] == ["Karaoke Night"]
 
 
 def test_a_stored_undated_event_inside_the_lookback_is_still_carried(db):
     """The CLI has a labelled UNDATED section; a recent one must not be dropped."""
-    save_events([_event("undated", ["c99"], start_time=None)], db)
+    save_events([_event("undated", ["c99"], title="Undated", start_time=None)], db)
 
-    _, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    _, fakes, _, _ = _run(db)
 
-    assert sorted(fakes["enrichment_service"].seen[0]) == ["fresh-1", "undated"]
+    assert sorted(fakes["enrichment_service"].titles[0]) == ["Karaoke Night", "Undated"]
 
 
 def test_a_fresh_event_with_no_start_time_is_never_scoped_out_early(db):
     """Extraction has not run yet, so a fresh event's start_time is not knowable here."""
     _, fakes, _, _ = _run(
         db,
-        fresh=[_event("fresh-undated", ["c1"], start_time=None, created_at=NOW - timedelta(days=400))],
+        candidates=[_candidate("c1", title="Fresh Undated", start_time=None)],
     )
 
-    assert fakes["enrichment_service"].seen[0] == ["fresh-undated"]
+    assert fakes["enrichment_service"].titles[0] == ["Fresh Undated"]
 
 
 # ----------------------------------------------------------------------
@@ -1017,8 +1126,8 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             logger=get_logger("batch_test", stream=io.StringIO()),
             get_now=lambda: NOW,
             run_date=RUN_DATE,
-            ingestion_service=_FakeIngestion(),
-            normalization_service=_FakeNormalization([]),
+            ingestion_service=_ingestion_service(db, [_candidate('c1')]),
+            normalization_service=_normalization_service(),
             enrichment_service=_enrichment_service(db),
             extraction_stage=_extraction_stage(),
             embedding_stage=_embedding_stage(),
@@ -1098,7 +1207,7 @@ def test_superseded_events_survive_a_batch_that_dies_before_persisting(db):
         raise RuntimeError("disk full")
 
     with pytest.raises(RuntimeError, match="disk full"):
-        _run(db, fresh=[_event("fresh-1", ["c1"])], on_save=explode)
+        _run(db, on_save=explode)
 
     assert {e.event_id for e in load_events(db)} == {"winner", "loser"}
 
@@ -1167,7 +1276,7 @@ def test_a_stored_event_re_extracts_without_stranding_its_vectors(db):
     stored.extraction_input_hash = "the text has changed since this was extracted"
     save_events([stored], db)
 
-    result, fakes, _, _ = _run(db, fresh=[_event("fresh-1", ["c1"])])
+    result, fakes, _, _ = _run(db)
 
     assert len(fakes["extraction_model"].calls) == 1
     # Not "partial": a re-extraction is the ordinary case, not a degraded one.
@@ -1177,3 +1286,85 @@ def test_a_stored_event_re_extracts_without_stranding_its_vectors(db):
     reloaded = load_events(db)[0]
     assert [t.text for t in reloaded.tags] == ["karaoke"]
     assert len(reloaded.tag_embeddings) == len(reloaded.tags)
+
+
+# ----------------------------------------------------------------------
+# Behaviour that only became testable once the stages were real
+# ----------------------------------------------------------------------
+
+
+def test_a_dry_run_leaves_no_candidates_behind(db):
+    """`persist=False` honoured, not merely passed.
+
+    The old fake recorded the flag and ignored it, so the promise a dry run
+    makes — that it writes nothing — was asserted at the call site rather than
+    at the database.
+    """
+    _run(db, dry_run=True, candidates=[_candidate("c9", title="Ghost")])
+
+    conn = sqlite3.connect(db)
+    try:
+        stored = conn.execute("SELECT count(*) FROM event_candidates").fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == 0
+
+
+def test_two_candidates_for_one_event_become_one_event(db):
+    """Dedup pass 1, over real normalization.
+
+    Two sources listing the same night is the ordinary case, and it is what
+    stops the events table growing by a duplicate every run.
+    """
+    same = dict(title="Karaoke Night", start_time=NOW + timedelta(days=1), venue="The Bar")
+    _, fakes, _, _ = _run(
+        db, candidates=[_candidate("c1", **same), _candidate("c2", **same)]
+    )
+
+    assert fakes["ranking_engine"].titles == [["Karaoke Night"]]
+    assert len(load_events(db)) == 1
+
+
+def test_a_second_run_embeds_nothing(db):
+    """Vectors are paid for once, on the hash of the tags and summary.
+
+    The extraction skip has always been asserted; its embedding counterpart
+    never was, because the stage that owned the rule was a fake.
+    """
+    _run(db)
+    _, fakes, _, _ = _run(db)
+
+    assert fakes["embedding_model"].calls == []
+
+
+def test_a_candidate_outside_the_window_never_becomes_an_event(db):
+    """Ingestion's window check, which is a different filter from the
+    scheduler's ranking scope even though they agree on the horizon."""
+    far = _candidate("c1", title="Far", start_time=NOW + timedelta(days=400))
+
+    result, fakes, _, _ = _run(db, candidates=[far], stored_candidates=[])
+
+    assert fakes["normalization_service"].calls[0] == []
+    assert fakes["ranking_engine"].titles == [[]]
+    assert result.stage_counts["ingested"] == 0
+
+
+def test_one_failing_source_does_not_lose_the_others(db):
+    """A dead site must cost its own listings and nobody else's."""
+    result, fakes, _, _ = _run(
+        db,
+        candidates=[_candidate("c1", title="Quiz Night")],
+        deps={
+            "ingestion_service": _ingestion_service(
+                db,
+                sources={
+                    "broken": RuntimeError("site down"),
+                    "working": [_candidate("c1", title="Quiz Night")],
+                },
+            )
+        },
+    )
+
+    assert result.failed_sources == ["broken"]
+    assert result.outcome == "success"
+    assert fakes["ranking_engine"].titles == [["Quiz Night"]]
