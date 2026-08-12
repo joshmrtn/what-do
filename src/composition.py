@@ -57,6 +57,7 @@ from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.sqlite.entities import SqliteEntityRepository
+from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
 from src.utils.llm_transcript import TranscriptSink
@@ -142,6 +143,11 @@ def build_dependencies(
     failover_sources.append(PicukiAdapter(handles, get_now=get_now))
     failover_sources.append(DumporAdapter(handles, get_now=get_now))
 
+    # One cache, shared by every adapter. They each make conditional requests
+    # and none of them touches the database for anything else, which is why
+    # they no longer take a `db_path` at all.
+    http_cache = SqliteHttpCache(db_path)
+
     independent_sources: list[Any] = []
     amc_key = _credential("AMC_API_KEY", "amc")
     if amc_key:
@@ -152,7 +158,7 @@ def build_dependencies(
         independent_sources.append(
             IcsCalendarSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -164,7 +170,7 @@ def build_dependencies(
         independent_sources.append(
             VeeziSessionsSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -174,7 +180,7 @@ def build_dependencies(
         independent_sources.append(
             TribeCalendarSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -186,7 +192,7 @@ def build_dependencies(
         independent_sources.append(
             CabotListingSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -198,7 +204,7 @@ def build_dependencies(
         independent_sources.append(
             Do617VenueSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -210,7 +216,7 @@ def build_dependencies(
         independent_sources.append(
             JsonLdEventSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -222,7 +228,7 @@ def build_dependencies(
         independent_sources.append(
             AssabetRssSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -234,7 +240,7 @@ def build_dependencies(
         independent_sources.append(
             MoonRssSource(
                 feed,
-                db_path,
+                http_cache,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -246,7 +252,7 @@ def build_dependencies(
         independent_sources.append(
             HtmlListingSource(
                 feed,
-                db_path,
+                http_cache,
                 config.location.timezone,
                 get_now=get_now,
                 logger=logger,

@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.ingestion.calendars.fetching import fetch_document
 from src.storage.db import init_db
-from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.utils.logging import get_logger
 
 NOW = datetime(2026, 8, 8, 4, 0, tzinfo=timezone.utc)
@@ -18,10 +18,9 @@ URL = "https://example.org/feed.ics"
 
 
 @pytest.fixture
-def db(tmp_path):
-    path = tmp_path / "test.db"
-    init_db(path)
-    return path
+def cache():
+    """No database: these tests are about conditional requests."""
+    return InMemoryHttpCache()
 
 
 class _Session:
@@ -39,11 +38,11 @@ class _Session:
         return response
 
 
-def _fetch(db, session, now=NOW, hours=6.0):
+def _fetch(cache, session, now=NOW, hours=6.0):
     return fetch_document(
         URL,
         session=session,
-        db_path=db,
+        http_cache=cache,
         get_now=lambda: now,
         min_fetch_interval_hours=hours,
         label="example",
@@ -51,33 +50,33 @@ def _fetch(db, session, now=NOW, hours=6.0):
     )
 
 
-def test_a_recent_cache_entry_is_reused(db):
+def test_a_recent_cache_entry_is_reused(cache):
     session = _Session()
-    _fetch(db, session)
+    _fetch(cache, session)
 
-    body = _fetch(db, session, now=NOW + timedelta(hours=1))
+    body = _fetch(cache, session, now=NOW + timedelta(hours=1))
 
     assert session.requested == [URL]
     assert body == "FRESH"
 
 
-def test_an_expired_cache_entry_is_refetched(db):
+def test_an_expired_cache_entry_is_refetched(cache):
     session = _Session()
-    _fetch(db, session)
+    _fetch(cache, session)
 
-    _fetch(db, session, now=NOW + timedelta(hours=7))
+    _fetch(cache, session, now=NOW + timedelta(hours=7))
 
     assert len(session.requested) == 2
 
 
-def test_a_naive_cached_timestamp_does_not_break_the_fetch(db):
+def test_a_naive_cached_timestamp_does_not_break_the_fetch(cache):
     """A cache row written by an older, naive clock must not kill every source.
 
     The batch clock is timezone-aware, so subtracting a stored naive timestamp
     raised `can't subtract offset-naive and offset-aware datetimes` — and since
     every configured source fetches through here, all seventeen failed at once.
     """
-    SqliteHttpCache(db).put(
+    cache.put(
         URL,
         body="STALE",
         etag=None,
@@ -86,7 +85,7 @@ def test_a_naive_cached_timestamp_does_not_break_the_fetch(db):
     )
     session = _Session()
 
-    body = _fetch(db, session, now=NOW + timedelta(hours=1))
+    body = _fetch(cache, session, now=NOW + timedelta(hours=1))
 
     assert body == "STALE"
     assert session.requested == []

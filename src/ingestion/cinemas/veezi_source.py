@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
+from src.storage.protocols import HttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.cinemas.veezi_listing import VeeziSession, parse_sessions
@@ -34,14 +35,14 @@ class VeeziSessionsSource(IngestionSource):
     def __init__(
         self,
         config: FeedConfig,
-        db_path: Path | str,
+        http_cache: HttpCache,
         session: requests.Session | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
         timezone_name: str = "UTC",
     ) -> None:
         self._config = config
-        self._db_path = db_path
+        self._http_cache = http_cache
         self._session = session or requests.Session()
         self._get_now = get_now
         self._logger = logger
@@ -62,7 +63,7 @@ class VeeziSessionsSource(IngestionSource):
         body = fetch_document(
             self._config.url,
             session=self._session,
-            db_path=self._db_path,
+            http_cache=self._http_cache,
             get_now=self._get_now,
             min_fetch_interval_hours=self._config.min_fetch_interval_hours,
             label=self._config.name,

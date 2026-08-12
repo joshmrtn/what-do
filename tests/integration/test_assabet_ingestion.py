@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.models.timing import EXACT
@@ -55,7 +56,7 @@ def _source(db, horizon_days=45):
     http = _FakeSession(FIXTURE.read_text())
     source = AssabetRssSource(
         config=FeedConfig(name="salempl", url=URL, source_type="salempl", city="Salem"),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

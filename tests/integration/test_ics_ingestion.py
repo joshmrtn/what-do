@@ -14,6 +14,7 @@ import sqlite3
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import (
     AppConfig,
     FeedConfig,
@@ -62,14 +63,14 @@ class _FakeSession:
 
 
 @pytest.fixture
-def candidates(db):
+def candidates():
     source = IcsCalendarSource(
         config=FeedConfig(
             name="northshorenightout",
             url=URL,
             source_type="northshorenightout",
         ),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=_FakeSession(FIXTURE.read_text(encoding="utf-8")),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
@@ -135,10 +136,14 @@ def test_a_second_fetch_reuses_the_cache_without_touching_the_network(db):
         name="northshorenightout", url=URL, source_type="northshorenightout"
     )
 
+    # One cache across both fetches — the politeness floor is about state
+    # surviving between them, which a per-call cache would erase.
+    cache = InMemoryHttpCache()
+
     def _source():
         return IcsCalendarSource(
             config=config,
-            db_path=db,
+            http_cache=cache,
             session=session,
             get_now=lambda: FIXED_NOW,
             logger=get_logger("test", stream=io.StringIO()),

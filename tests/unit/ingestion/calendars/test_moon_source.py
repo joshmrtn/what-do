@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.ingestion.rss import RssItem
@@ -25,7 +26,7 @@ def source(tmp_path):
     init_db(path)
     return MoonRssSource(
         config=FeedConfig(name="moon", url="https://www.moon-ns.org/shows?format=rss", source_type="moon"),
-        db_path=path,
+        http_cache=InMemoryHttpCache(),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

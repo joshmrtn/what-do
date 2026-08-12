@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.models.timing import EXACT, UNKNOWN
@@ -60,7 +61,7 @@ def _source(db, now):
     http = _FakeSession(FIXTURE.read_text())
     source = MoonRssSource(
         config=FeedConfig(name="moon", url=URL, source_type="moon"),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: now,
         logger=get_logger("test", stream=io.StringIO()),

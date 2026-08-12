@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.do617_listing import parse_do617
 from src.ingestion.aggregators.do617_source import Do617VenueSource
@@ -137,7 +138,7 @@ def _source(db, bodies, horizon_days=45, url=VENUE_URL, name="do617_gulu_gulu"):
     http = _Pages(bodies)
     source = Do617VenueSource(
         config=FeedConfig(name=name, url=url, source_type="do617"),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

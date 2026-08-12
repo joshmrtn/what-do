@@ -59,6 +59,7 @@ from src.scheduler import run_batch
 from src.scoring.similarity import Reason, SimilarityResult
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.db import init_db
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.storage.events import load_events, save_events
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
@@ -1069,14 +1070,14 @@ def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger
 
     ics = IcsCalendarSource(
         config=FeedConfig("nsno_cal", "https://cal.example.com/basic.ics", "nsno_cal"),
-        db_path=db_path,
+        http_cache=InMemoryHttpCache(),
         session=_FixtureSession(ICS_FIXTURE.read_text(encoding="utf-8")),
         get_now=lambda: BATCH_NOW,
         logger=logger,
     )
     html = HtmlListingSource(
         config=FeedConfig("nsno_list", "https://listings.example.com/", "nsno_list"),
-        db_path=db_path,
+        http_cache=InMemoryHttpCache(),
         tzname="America/New_York",
         session=_FixtureSession(HTML_FIXTURE.read_text(encoding="utf-8")),
         get_now=lambda: BATCH_NOW,

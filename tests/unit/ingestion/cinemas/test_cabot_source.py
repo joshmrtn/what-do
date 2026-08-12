@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.cinemas.cabot_source import CabotListingSource
 from src.models.event_candidate import EventCandidate
@@ -77,7 +78,7 @@ def _make_source(db, bodies, horizon_days=45, max_pages=12, **overrides):
     http = _Pages(bodies)
     source = CabotListingSource(
         config=FeedConfig(**settings),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

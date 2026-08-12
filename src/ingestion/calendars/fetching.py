@@ -30,9 +30,8 @@ def fetch_document(
     url: str,
     *,
     session: requests.Session,
-    db_path: Path | str,
     get_now: Callable[[], datetime],
-    http_cache: HttpCache | None = None,
+    http_cache: HttpCache,
     min_fetch_interval_hours: float,
     label: str,
     logger: Any = None,
@@ -42,11 +41,11 @@ def fetch_document(
     Args:
         url: Document to fetch.
         session: Injected HTTP session, so tests never reach the network.
-        db_path: Database holding the response cache, used when no cache is
-            injected.
-        http_cache: Where conditional-request validators are stored. Defaults to
-            the SQLite cache over `db_path`.
         get_now: Injected clock.
+        http_cache: Where conditional-request validators are stored. Required:
+            a default that built its own SQLite cache meant a caller who forgot
+            to inject silently got a database anyway, which is the failure the
+            repository split exists to remove.
         min_fetch_interval_hours: Floor between real requests. Zero disables it.
         label: Source name, used in log messages.
         logger: Structured logger. Optional.
@@ -54,7 +53,7 @@ def fetch_document(
     Returns:
         The document body, from cache when refetching would be impolite.
     """
-    cache: HttpCache = http_cache if http_cache is not None else SqliteHttpCache(db_path)
+    cache = http_cache
 
     now = get_now()
     cached = cache.get(url)

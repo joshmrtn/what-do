@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.jsonld_listing import parse_jsonld_events
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
@@ -56,7 +57,7 @@ def _source(db, horizon_days=45):
     http = _FakeSession(FIXTURE.read_text())
     source = JsonLdEventSource(
         config=FeedConfig(name="pem", url=URL, source_type="pem"),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

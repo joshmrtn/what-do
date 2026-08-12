@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.models.event_candidate import EventCandidate
@@ -93,7 +94,7 @@ def _make_source(db, bodies, horizon_days=45, max_pages=6, **overrides):
     http = _Pages(bodies)
     source = Do617VenueSource(
         config=FeedConfig(**settings),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

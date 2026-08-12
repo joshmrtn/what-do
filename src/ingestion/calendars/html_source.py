@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 import requests
 
+from src.storage.protocols import HttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.calendars.listing import ListingEntry, parse_listing
@@ -47,7 +48,7 @@ class HtmlListingSource(IngestionSource):
     def __init__(
         self,
         config: FeedConfig,
-        db_path: Path | str,
+        http_cache: HttpCache,
         tzname: str,
         session: requests.Session | None = None,
         get_now: Callable[[], datetime] = datetime.now,
@@ -56,14 +57,14 @@ class HtmlListingSource(IngestionSource):
         """
         Args:
             config: The feed's name, URL, and politeness settings.
-            db_path: Database holding the response cache.
+            http_cache: Where conditional-request validators are stored.
             tzname: Zone the listing's wall-clock times are written in.
             session: Injected HTTP session.
             get_now: Injected clock.
             logger: Structured logger. Optional.
         """
         self._config = config
-        self._db_path = db_path
+        self._http_cache = http_cache
         self._tz = zoneinfo.ZoneInfo(tzname)
         self._session = session or requests.Session()
         self._get_now = get_now
@@ -83,7 +84,7 @@ class HtmlListingSource(IngestionSource):
         body = fetch_document(
             self._config.url,
             session=self._session,
-            db_path=self._db_path,
+            http_cache=self._http_cache,
             get_now=self._get_now,
             min_fetch_interval_hours=self._config.min_fetch_interval_hours,
             label=self._config.name,

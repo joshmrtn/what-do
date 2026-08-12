@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.models.event_candidate import EventCandidate
@@ -74,7 +75,7 @@ def _make_source(db, body, horizon_days=45, **overrides):
     http = _FakeSession(body)
     source = JsonLdEventSource(
         config=FeedConfig(**settings),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

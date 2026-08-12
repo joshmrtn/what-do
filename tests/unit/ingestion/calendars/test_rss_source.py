@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.rss_source import RssEvent, RssFeedSource
 from src.ingestion.rss import RssItem
@@ -23,10 +24,9 @@ EASTERN = timezone(timedelta(hours=-4))
 
 
 @pytest.fixture
-def db(tmp_path):
-    path = tmp_path / "test.db"
-    init_db(path)
-    return path
+def cache():
+    """No database: these tests are about conditional requests."""
+    return InMemoryHttpCache()
 
 
 def _feed(*items: str) -> str:
@@ -85,11 +85,11 @@ class _Stub(RssFeedSource):
         )
 
 
-def _make_source(db, body, horizon_days=45, **stub_kwargs):
+def _make_source(cache, body, horizon_days=45, **stub_kwargs):
     http = _FakeSession(body)
     source = _Stub(
         config=FeedConfig(name="moon", url=URL, source_type="moon"),
-        db_path=db,
+        http_cache=cache,
         session=http,
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
@@ -102,90 +102,90 @@ def _make_source(db, body, horizon_days=45, **stub_kwargs):
 
 
 class TestMapping:
-    def test_returns_event_candidates(self, db):
-        source, _ = _make_source(db, _feed(_item()))
+    def test_returns_event_candidates(self, cache):
+        source, _ = _make_source(cache, _feed(_item()))
 
         results = source.fetch()
 
         assert len(results) == 1
         assert isinstance(results[0], EventCandidate)
 
-    def test_the_id_comes_from_the_items_guid(self, db):
-        source, _ = _make_source(db, _feed(_item(guid="5f2a1b")))
+    def test_the_id_comes_from_the_items_guid(self, cache):
+        source, _ = _make_source(cache, _feed(_item(guid="5f2a1b")))
 
         assert source.fetch()[0].id == "moon:5f2a1b"
 
-    def test_the_url_comes_from_the_items_link(self, db):
-        source, _ = _make_source(db, _feed(_item(link="https://example.org/shows/x")))
+    def test_the_url_comes_from_the_items_link(self, cache):
+        source, _ = _make_source(cache, _feed(_item(link="https://example.org/shows/x")))
 
         assert source.fetch()[0].url == "https://example.org/shows/x"
 
-    def test_the_publication_date_is_the_announcement_not_the_start(self, db):
+    def test_the_publication_date_is_the_announcement_not_the_start(self, cache):
         """pubDate is when the show was posted, often weeks before it runs."""
-        source, _ = _make_source(db, _feed(_item()))
+        source, _ = _make_source(cache, _feed(_item()))
 
         candidate = source.fetch()[0]
         assert candidate.raw_published_at == datetime(2026, 5, 20, 19, 12, 56, tzinfo=timezone.utc)
         assert candidate.start_time == datetime(2026, 8, 7, 20, 0, tzinfo=EASTERN)
 
-    def test_the_interpreted_fields_are_carried(self, db):
-        source, _ = _make_source(db, _feed(_item(title="Fat Randy")))
+    def test_the_interpreted_fields_are_carried(self, cache):
+        source, _ = _make_source(cache, _feed(_item(title="Fat Randy")))
 
         candidate = source.fetch()[0]
         assert candidate.title == "Fat Randy"
         assert candidate.venue == "Felt Fanatic"
         assert candidate.description == "a description"
 
-    def test_the_interpreted_timing_is_carried(self, db):
-        source, _ = _make_source(db, _feed(_item()), timing=UNKNOWN)
+    def test_the_interpreted_timing_is_carried(self, cache):
+        source, _ = _make_source(cache, _feed(_item()), timing=UNKNOWN)
 
         assert source.fetch()[0].timing == UNKNOWN
 
-    def test_reads_every_item(self, db):
-        source, _ = _make_source(db, _feed(_item(guid="a"), _item(guid="b")))
+    def test_reads_every_item(self, cache):
+        source, _ = _make_source(cache, _feed(_item(guid="a"), _item(guid="b")))
 
         assert [c.id for c in source.fetch()] == ["moon:a", "moon:b"]
 
 
 class TestInterpretation:
-    def test_an_item_the_subclass_refuses_is_dropped(self, db):
+    def test_an_item_the_subclass_refuses_is_dropped(self, cache):
         body = _feed(_item(title="datable", guid="a"), _item(title="undatable", guid="b"))
-        source, _ = _make_source(db, body, refuse=("undatable",))
+        source, _ = _make_source(cache, body, refuse=("undatable",))
 
         assert [c.id for c in source.fetch()] == ["moon:a"]
 
-    def test_a_feed_of_nothing_but_refusals_yields_nothing(self, db):
-        source, _ = _make_source(db, _feed(_item(title="undatable")), refuse=("undatable",))
+    def test_a_feed_of_nothing_but_refusals_yields_nothing(self, cache):
+        source, _ = _make_source(cache, _feed(_item(title="undatable")), refuse=("undatable",))
 
         assert source.fetch() == []
 
 
 class TestWindow:
-    def test_an_event_past_the_horizon_is_dropped(self, db):
+    def test_an_event_past_the_horizon_is_dropped(self, cache):
         source, _ = _make_source(
-            db, _feed(_item()), start=datetime(2026, 12, 1, 20, 0, tzinfo=EASTERN)
+            cache, _feed(_item()), start=datetime(2026, 12, 1, 20, 0, tzinfo=EASTERN)
         )
 
         assert source.fetch() == []
 
-    def test_an_event_before_the_night_floor_is_dropped(self, db):
+    def test_an_event_before_the_night_floor_is_dropped(self, cache):
         source, _ = _make_source(
-            db, _feed(_item()), start=datetime(2026, 6, 27, 18, 0, tzinfo=EASTERN)
+            cache, _feed(_item()), start=datetime(2026, 6, 27, 18, 0, tzinfo=EASTERN)
         )
 
         assert source.fetch() == []
 
-    def test_an_event_earlier_tonight_is_kept(self, db):
+    def test_an_event_earlier_tonight_is_kept(self, cache):
         source, _ = _make_source(
-            db, _feed(_item()), start=datetime(2026, 8, 6, 20, 0, tzinfo=EASTERN)
+            cache, _feed(_item()), start=datetime(2026, 8, 6, 20, 0, tzinfo=EASTERN)
         )
 
         assert len(source.fetch()) == 1
 
 
 class TestFailure:
-    def test_a_body_that_is_not_a_feed_raises(self, db):
-        source, _ = _make_source(db, "<html><body>Sorry</body></html>")
+    def test_a_body_that_is_not_a_feed_raises(self, cache):
+        source, _ = _make_source(cache, "<html><body>Sorry</body></html>")
 
         with pytest.raises(ValueError):
             source.fetch()

@@ -15,6 +15,7 @@ import zoneinfo
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import (
     AppConfig,
     FeedConfig,
@@ -63,14 +64,14 @@ class _FakeSession:
 
 
 @pytest.fixture
-def candidates(db):
+def candidates():
     source = HtmlListingSource(
         config=FeedConfig(
             name="northshorenightout",
             url=URL,
             source_type="northshorenightout",
         ),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         tzname="America/New_York",
         session=_FakeSession(FIXTURE.read_text(encoding="utf-8")),
         get_now=lambda: FIXED_NOW,
@@ -178,10 +179,14 @@ def test_a_second_fetch_reuses_the_cache(db):
         name="northshorenightout", url=URL, source_type="northshorenightout"
     )
 
+    # One cache across both fetches — the politeness floor is about state
+    # surviving between them, which a per-call cache would erase.
+    cache = InMemoryHttpCache()
+
     def _source():
         return HtmlListingSource(
             config=config,
-            db_path=db,
+            http_cache=cache,
             tzname="America/New_York",
             session=session,
             get_now=lambda: FIXED_NOW,

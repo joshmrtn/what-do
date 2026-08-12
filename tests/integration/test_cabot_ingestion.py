@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.cinemas.cabot_listing import parse_cabot
 from src.ingestion.cinemas.cabot_source import CabotListingSource
@@ -105,7 +106,7 @@ def test_the_adapter_maps_the_page_to_candidates(db, page):
             venue="The Cabot",
             city="Beverly",
         ),
-        db_path=db,
+        http_cache=InMemoryHttpCache(),
         session=_FakeSession(page),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),

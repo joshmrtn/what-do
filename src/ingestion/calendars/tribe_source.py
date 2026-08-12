@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import requests
 
+from src.storage.protocols import HttpCache
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.ingestion.ics import parse_ics
@@ -42,7 +43,7 @@ class TribeCalendarSource(IcsCalendarSource):
     def __init__(
         self,
         config: FeedConfig,
-        db_path: Path | str,
+        http_cache: HttpCache,
         session: requests.Session | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
@@ -54,7 +55,7 @@ class TribeCalendarSource(IcsCalendarSource):
     ) -> None:
         super().__init__(
             config,
-            db_path,
+            http_cache,
             session=session,
             get_now=get_now,
             logger=logger,

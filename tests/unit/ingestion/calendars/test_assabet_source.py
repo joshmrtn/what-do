@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta, timezone
 
 import pytest
 
+from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.rss import RssItem
@@ -47,7 +48,7 @@ def source(tmp_path):
             source_type="salempl",
             city="Salem",
         ),
-        db_path=path,
+        http_cache=InMemoryHttpCache(),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

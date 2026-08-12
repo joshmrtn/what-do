@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
+from src.storage.protocols import HttpCache
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.ingestion.aggregators.do617_listing import Do617Event, parse_do617
 from src.ingestion.calendars.fetching import fetch_document
@@ -46,7 +47,7 @@ class Do617VenueSource(IngestionSource):
     def __init__(
         self,
         config: FeedConfig,
-        db_path: Path | str,
+        http_cache: HttpCache,
         session: requests.Session | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
@@ -58,7 +59,7 @@ class Do617VenueSource(IngestionSource):
         """
         Args:
             config: The venue page's name, URL, and politeness settings.
-            db_path: Database holding the response cache.
+            http_cache: Where conditional-request validators are stored.
             session: Injected HTTP session.
             get_now: Injected clock.
             logger: Structured logger. Optional.
@@ -69,7 +70,7 @@ class Do617VenueSource(IngestionSource):
             max_pages: Hard cap on the pagination walk.
         """
         self._config = config
-        self._db_path = db_path
+        self._http_cache = http_cache
         self._session = session or requests.Session()
         self._get_now = get_now
         self._logger = logger
@@ -134,7 +135,7 @@ class Do617VenueSource(IngestionSource):
         return fetch_document(
             url,
             session=self._session,
-            db_path=self._db_path,
+            http_cache=self._http_cache,
             get_now=self._get_now,
             min_fetch_interval_hours=self._config.min_fetch_interval_hours,
             label=f"{self._config.name} page {page_number}",
