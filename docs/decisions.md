@@ -1753,3 +1753,102 @@ The candidates, for the record:
 (3) looks right and is the most work. **Do not tune this before observing a run
 with the floor at 1** — the whole point is that the signal has never once been
 live, so there is no data yet about what it does.
+
+---
+
+## Scores and rankings are stored apart, and `tag_confidence` moves with the score
+
+**Decision:** `Recommendation` splits into `EventScore` (tag/summary/base score,
+`tag_confidence`, `match`, reasons) and `Ranking` (weather adjustment, final
+score, rank). `recommendations` becomes `rankings`, and `tag_confidence` moves to
+`event_scores`.
+
+**Rationale:** they answer different questions. A score is the verdict on an
+event under the current preferences; a ranking is its place in *one night's*
+order. Storing them together is why ~258 scored events a run were computed and
+thrown away — the API had no way to say "keep the verdict, skip the placement".
+
+**`tag_confidence` was misfiled, and that is what made the split look muddy.**
+`min(1, len(tags)/min_tags)` is a pure function of the event's own tags and says
+nothing about tonight, yet it lived on the ranking. Once it moves, the line is
+clean: everything about the event with the score, everything about the night with
+the ranking.
+
+**Consequence:** the read spans three aggregates — event, score, ranking — so it
+cannot belong to any one repository. `load_ranked_events` lives in
+`storage/queries.py` and composes them, which also means it tests against
+in-memory repositories with no SQLite at all.
+
+**Found while doing it:** `SimilarityResult` has always carried `tag_score` and
+`summary_score`, the table has always had columns for them, and the model in
+between had nowhere to put them — so the writer passed hardcoded `None` and all
+861 rows had both NULL, while this document claimed every component was stored.
+Now true.
+
+---
+
+## A repository owns its connection, unless writes are batched into one transaction
+
+**Decision:** repositories open and commit their own connections.
+`write_candidates(conn, …)` is the single deliberate exception.
+
+**Rationale:** `IngestionService` holds one connection across a whole fetch
+because its candidate writes hold a RESERVED lock, and `HandleExtractor` — which
+opens its own connection — would wait on that lock until SQLite's five-second
+timeout. The commit before discovery exists precisely to release it. Candidate
+writes are interleaved with the accept loop, so they genuinely need the statement
+apart from the transaction around it.
+
+**Entities needed no such hatch**, which was worth checking rather than assuming:
+every entity operation already happens after a commit, so `EntityRepository` owns
+its connection like the others. The test is not "is this module inside a
+transaction" but "are these writes interleaved with something else that must be
+atomic with them".
+
+**Consequence:** a future change to commit placement in `IngestionService.run`
+invalidates this reasoning and must re-derive it.
+
+---
+
+## A cache that can serve stale data takes the freshness bound as an argument
+
+**Decision:** `WeatherCache.get` takes `fresh_since` — the oldest stamp still
+worth serving — rather than returning whatever is stored for the caller to check.
+
+**Rationale:** the footgun table already carried *"serving a cached forecast
+without checking its age"*: an event found a week out would score on the forecast
+issued that day, forever. A rule that must be remembered at every call site is a
+rule that will eventually be forgotten. Passing the bound in makes the mistake
+unwriteable — there is no API by which a stale entry can be returned.
+
+The TTL stays policy and stays with the caller; only the *guarantee* moves.
+
+**Consequence:** row-level concerns move with it. An unparseable stamp is treated
+as expired, because refetching costs one request while trusting it could serve a
+forecast of any age. That rule was inherited untested and now has a
+SQLite-specific test — the in-memory implementation holds a real `datetime` and
+cannot have a corrupt one.
+
+---
+
+## The database is no longer disposable
+
+**Decision:** schema changes are **backed up and migrated in place, by hand**.
+Migration code still never enters the repository.
+
+**Rationale:** the standing rule was "change the DDL and delete the database",
+justified by the database never having held anything worth keeping. That stopped
+being true. It now holds ~1,180 events with their LLM extractions, and rebuilding
+from empty is a cold start the user estimates at **~40 hours of compute** —
+measured cold starts were 14.9h and 19.7h against a 45-day horizon.
+
+**Consequence, and it is the useful half:** the *derived* tables are still cheap
+to drop and rebuild — `event_scores`, `score_reasons`, `rankings`,
+`tag_embeddings`, `weather_cache` all regenerate in a scoring pass with no LLM
+calls. Only `events`, `event_tags` and `event_candidates` carry the expensive
+work. A schema change touching only derived tables costs minutes; one touching
+`events` wants an additive nullable column, which SQLite applies in place with no
+table rewrite.
+
+Because migrating now costs something, **schema changes want batching**: survey
+the roadmap for everything that will touch the DDL before opening the patient.
