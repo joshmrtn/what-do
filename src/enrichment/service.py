@@ -1,11 +1,6 @@
 """EnrichmentService — orchestrates weather, astronomical, movie, and synthetic enrichment."""
 
-import json
-import sqlite3
-
-from src.storage.db import connect
-import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +11,8 @@ from src.enrichment.movies import MovieMetadataProvider, enrich_movie_event
 from src.enrichment.synthetic import SyntheticActivityGenerator
 from src.enrichment.weather import WeatherProvider, sample_hour
 from src.models.event import Event
+from src.storage.protocols import WeatherCache
+from src.storage.sqlite.weather_cache import SqliteWeatherCache
 from src.utils.logging import StructuredLogger, get_logger
 
 
@@ -30,11 +27,15 @@ class EnrichmentService:
         synthetic_rules: list[SyntheticActivityRule],
         config: AppConfig,
         db_path: Path,
+        weather_cache: WeatherCache | None = None,
         air_quality_provider: AirQualityProvider | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._weather_provider = weather_provider
+        self._weather_cache: WeatherCache = (
+            weather_cache if weather_cache is not None else SqliteWeatherCache(db_path)
+        )
         self._air_quality_provider = air_quality_provider
         self._movie_provider = movie_provider
         self._calculator = astronomical_calculator
@@ -219,50 +220,29 @@ class EnrichmentService:
     def _db_weather_get(
         self, event_date: date, lat: float, lng: float
     ) -> dict[str, Any] | None:
-        """Return the cached day, or None if absent or past its TTL."""
-        with connect(self._db_path) as conn:
-            row = conn.execute(
-                """SELECT data, fetched_at FROM weather_cache
-                   WHERE date=? AND latitude=? AND longitude=?""",
-                (event_date.isoformat(), lat, lng),
-            ).fetchone()
-        if row is None or not self._is_fresh(row[1]):
-            return None
-        cached: dict[str, Any] = json.loads(row[0])
-        return cached
+        """Return the cached day, or None if absent or past its TTL.
 
-    def _is_fresh(self, fetched_at: str) -> bool:
-        """Whether a cache entry stamped `fetched_at` may still be served."""
-        try:
-            stamped = datetime.fromisoformat(fetched_at)
-        except ValueError:
-            # An unparseable stamp is treated as expired: refetching costs one
-            # request, while trusting it could serve a forecast of any age.
-            return False
-
-        now = self._get_now()
-        # The stamp is written by this same clock, so a mismatch means the clock
-        # itself changed shape. Compare on common ground rather than raising.
-        if (stamped.tzinfo is None) != (now.tzinfo is None):
-            stamped = stamped.replace(tzinfo=now.tzinfo)
-
-        age_hours = (now - stamped).total_seconds() / 3600
-        return age_hours <= self._config.weather.cache_ttl_hours
+        The TTL is expressed as the oldest stamp still worth serving and handed
+        to the cache, rather than checked here afterwards. A forecast going
+        stale because someone forgot to look is the failure that shape removes:
+        an event found a week out would otherwise score on the forecast issued
+        the day it was discovered, forever.
+        """
+        ttl = timedelta(hours=self._config.weather.cache_ttl_hours)
+        return self._weather_cache.get(
+            day=event_date,
+            latitude=lat,
+            longitude=lng,
+            fresh_since=self._get_now() - ttl,
+        )
 
     def _db_weather_put(
         self, event_date: date, lat: float, lng: float, weather: dict[str, Any]
     ) -> None:
-        with connect(self._db_path) as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO weather_cache
-                   (id, date, latitude, longitude, data, fetched_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    str(uuid.uuid4()),
-                    event_date.isoformat(),
-                    lat,
-                    lng,
-                    json.dumps(weather),
-                    self._get_now().isoformat(),
-                ),
-            )
+        self._weather_cache.put(
+            day=event_date,
+            latitude=lat,
+            longitude=lng,
+            data=weather,
+            now=self._get_now(),
+        )

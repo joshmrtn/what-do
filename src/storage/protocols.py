@@ -9,7 +9,7 @@ spread across the modules that happen to need data.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from src.models.candidate_entity import CandidateEntity
 from src.models.event import Event
@@ -298,4 +298,37 @@ class EntityRepository(Protocol):
 
     def activate(self, entity_id: str, *, now: datetime) -> None:
         """Promote a handle to `active`, making it a source for the next run."""
+        ...
+
+
+class WeatherCache(Protocol):
+    """Cached forecasts, keyed by day and place.
+
+    `get` takes the oldest stamp still worth serving rather than handing back
+    whatever is stored, so a caller cannot serve a stale forecast by forgetting
+    to check its age — see `weather.cache_ttl_hours`, which must stay under 24
+    hours so a nightly batch refetches.
+    """
+
+    def get(
+        self,
+        *,
+        day: date,
+        latitude: float,
+        longitude: float,
+        fresh_since: datetime,
+    ) -> dict[str, Any] | None:
+        """The forecast for a day and place, or None if absent or too old."""
+        ...
+
+    def put(
+        self,
+        *,
+        day: date,
+        latitude: float,
+        longitude: float,
+        data: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """Store a forecast, replacing any entry for the same day and place."""
         ...
