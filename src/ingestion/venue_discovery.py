@@ -7,10 +7,12 @@ import math
 import sqlite3
 
 from src.storage.db import connect
+from src.storage.protocols import EntityRepository
+from src.storage.sqlite.entities import SqliteEntityRepository
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Callable, Any
 
 from src.config import AppConfig
 from src.ingestion.geocoder import GeocoderProvider
@@ -34,6 +36,10 @@ def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
     return r * 2 * math.asin(math.sqrt(a))
 
 
+def _default_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class VenueDiscoveryService:
     """Discovers, deduplicates, and persists venues from providers and seeds."""
 
@@ -46,9 +52,15 @@ class VenueDiscoveryService:
         sources: list[VenueSource],
         geocoder: GeocoderProvider,
         logger: Any,
+        entities: EntityRepository | None = None,
+        get_now: Callable[[], datetime] = _default_now,
     ) -> None:
         self._config = config
         self._db_path = db_path
+        self._entities: EntityRepository = (
+            entities if entities is not None else SqliteEntityRepository(db_path)
+        )
+        self._get_now = get_now
         self._seeds_path = seeds_path
         self._blocklist_path = blocklist_path
         self._sources = sources
@@ -62,7 +74,7 @@ class VenueDiscoveryService:
 
         conn = connect(self._db_path)
         try:
-            self._persist_seed_handles(conn, seeds)
+            self._entities.mark_seeds_active(list(seeds.handles), now=self._get_now())
             seed_venues = self._resolve_seed_venues(seeds)
             for venue in seed_venues:
                 if self._is_blocked(venue, blocklist):
@@ -174,25 +186,6 @@ class VenueDiscoveryService:
                 )
             )
         return resolved
-
-    def _persist_seed_handles(self, conn: sqlite3.Connection, seeds: Seeds) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        for handle in seeds.handles:
-            existing = conn.execute(
-                "SELECT id FROM candidate_entities WHERE handle = ?", (handle,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE candidate_entities SET state = 'active', depth = 0, updated_at = ? WHERE handle = ?",
-                    (now, handle),
-                )
-                continue
-            conn.execute(
-                """INSERT INTO candidate_entities
-                   (id, handle, state, depth, mention_count, mention_sources, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (str(uuid.uuid4()), handle, "active", 0, 0, "[]", now, now),
-            )
 
     # ------------------------------------------------------------------
     # Persistence / dedup

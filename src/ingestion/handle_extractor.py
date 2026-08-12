@@ -1,16 +1,21 @@
-"""HandleExtractor — extracts @handles from post text and updates candidate_entities."""
+"""HandleExtractor — extracts @handles from post text and records mentions.
+
+The accumulation rules (a source counts once, the first context wins) live with
+the repository, so this module is only about finding handles in text.
+"""
 
 from __future__ import annotations
 
-import json
 import re
-import sqlite3
-
-from src.storage.db import connect
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from src.storage.protocols import EntityRepository
+
+
+def _default_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 _HANDLE_RE = re.compile(r"@[\w.]+")
 
@@ -20,12 +25,14 @@ class HandleExtractor:
 
     def __init__(
         self,
-        db_path: Path,
+        entities: EntityRepository,
         max_depth: int,
         blocklist: list[str],
         logger: Any,
+        get_now: Callable[[], datetime] = _default_now,
     ) -> None:
-        self._db_path = db_path
+        self._entities = entities
+        self._get_now = get_now
         self._max_depth = max_depth
         self._blocklist = {h.lower() for h in blocklist if h.startswith("@")}
         self._logger = logger
@@ -47,64 +54,19 @@ class HandleExtractor:
             return
 
         context = text[:300]
-        conn = connect(self._db_path)
-        try:
-            now = datetime.now(timezone.utc).isoformat()
-            for handle in handles:
-                handle_lower = handle.lower()
-                if handle_lower in self._blocklist:
-                    self._logger.info(
-                        f"Skipping blocklisted handle: {handle}",
-                        component="handle_extractor",
-                        duration_ms=0,
-                    )
-                    continue
-                self._upsert(conn, handle, source_handle, candidate_depth, now, context)
-            conn.commit()
-        finally:
-            conn.close()
-
-    def _upsert(
-        self,
-        conn: sqlite3.Connection,
-        handle: str,
-        source_handle: str,
-        depth: int,
-        now: str,
-        context: str,
-    ) -> None:
-        row = conn.execute(
-            "SELECT id, mention_count, mention_sources, discovery_context FROM candidate_entities WHERE handle = ?",
-            (handle,),
-        ).fetchone()
-
-        if row is None:
-            conn.execute(
-                """INSERT INTO candidate_entities
-                   (id, handle, state, depth, mention_count, mention_sources, discovery_context, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    str(uuid.uuid4()),
-                    handle,
-                    "probationary",
-                    depth,
-                    1,
-                    json.dumps([source_handle]),
-                    context,
-                    now,
-                    now,
-                ),
-            )
-        else:
-            entity_id, count, sources_json, existing_context = row
-            sources: list[str] = json.loads(sources_json) if sources_json else []
-            if source_handle in sources:
-                return  # already counted this source
-            sources.append(source_handle)
-            conn.execute(
-                """UPDATE candidate_entities
-                   SET mention_count = ?, mention_sources = ?,
-                       discovery_context = COALESCE(discovery_context, ?), updated_at = ?
-                   WHERE id = ?""",
-                (count + 1, json.dumps(sources), context, now, entity_id),
+        now = self._get_now()
+        for handle in handles:
+            if handle.lower() in self._blocklist:
+                self._logger.info(
+                    f"Skipping blocklisted handle: {handle}",
+                    component="handle_extractor",
+                    duration_ms=0,
+                )
+                continue
+            self._entities.record_mention(
+                handle=handle,
+                source_handle=source_handle,
+                depth=candidate_depth,
+                context=context,
+                now=now,
             )

@@ -7,15 +7,13 @@ then evaluates handle promotion.
 from __future__ import annotations
 
 import json
-import sqlite3
-
-from src.storage.db import connect
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from src.config import DEFAULT_DISAMBIGUATION_MODEL
+from src.models.candidate_entity import DISCARDED, PROBATIONARY
+from src.storage.protocols import EntityRepository
 from src.utils.chat_client import ChatClient
 
 
@@ -125,52 +123,48 @@ class OllamaDisambiguationProvider(DisambiguationProvider):
             return None
 
 
+def _default_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class DisambiguationStep:
     """Batch step 3a: classify new probationary handles and update their state."""
 
     def __init__(
         self,
-        db_path: Path,
+        entities: EntityRepository,
         provider: DisambiguationProvider,
         logger: Any,
+        get_now: Callable[[], datetime] = _default_now,
     ) -> None:
-        self._db_path = db_path
+        self._entities = entities
         self._provider = provider
         self._logger = logger
+        self._get_now = get_now
 
     def run(self) -> None:
         """Classify all unclassified probationary handles."""
-        conn = connect(self._db_path)
-        try:
-            rows = conn.execute(
-                """SELECT id, handle, discovery_context
-                   FROM candidate_entities
-                   WHERE state = 'probationary' AND llm_classification IS NULL""",
-            ).fetchall()
-
-            now = datetime.now(timezone.utc).isoformat()
-            for entity_id, handle, context in rows:
-                try:
-                    classification = self._provider.classify(
-                        handle=handle,
-                        context=context or "",
-                    )
-                except Exception as exc:
-                    self._logger.error(
-                        f"Disambiguation failed for {handle}: {exc}",
-                        component="disambiguation",
-                        duration_ms=0,
-                    )
-                    continue
-
-                new_state = "discarded" if classification == "person" else "probationary"
-                conn.execute(
-                    """UPDATE candidate_entities
-                       SET llm_classification = ?, state = ?, updated_at = ?
-                       WHERE id = ?""",
-                    (classification, new_state, now, entity_id),
+        now = self._get_now()
+        for entity in self._entities.unclassified():
+            try:
+                classification = self._provider.classify(
+                    handle=entity.handle,
+                    context=entity.discovery_context or "",
                 )
+            except Exception as exc:
+                self._logger.error(
+                    f"Disambiguation failed for {entity.handle}: {exc}",
+                    component="disambiguation",
+                    duration_ms=0,
+                )
+                continue
 
-            conn.commit()
-        finally:
-            conn.close()
+            # A person is left alone; a venue stays probationary until it has
+            # earned enough mentions to be promoted.
+            state = DISCARDED if classification == "person" else PROBATIONARY
+            self._entities.classify(
+                entity.entity_id,
+                classification=classification,
+                state=state,
+                now=now,
+            )

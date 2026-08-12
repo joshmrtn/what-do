@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.ingestion.disambiguation import DisambiguationProvider, DisambiguationStep
 from src.storage.db import init_db
 from src.utils.logging import get_logger
@@ -95,7 +96,7 @@ def test_person_handle_gets_discarded(db):
     _insert_candidate(conn, "@johndoe")
 
     step = DisambiguationStep(
-        db_path=db,
+        entities=SqliteEntityRepository(db),
         provider=_make_provider("person"),
         logger=_make_logger(),
     )
@@ -114,7 +115,7 @@ def test_venue_handle_stays_probationary(db):
     _insert_candidate(conn, "@jazzclub")
 
     step = DisambiguationStep(
-        db_path=db,
+        entities=SqliteEntityRepository(db),
         provider=_make_provider("venue"),
         logger=_make_logger(),
     )
@@ -133,7 +134,7 @@ def test_already_classified_handle_skipped(db):
     _insert_candidate(conn, "@alreadydone", state="active", llm_classification="venue")
 
     provider = _make_provider("person")
-    step = DisambiguationStep(db_path=db, provider=provider, logger=_make_logger())
+    step = DisambiguationStep(entities=SqliteEntityRepository(db), provider=provider, logger=_make_logger())
     step.run()
 
     # Provider should NOT have been called
@@ -149,7 +150,7 @@ def test_discarded_handle_not_reclassified(db):
     _insert_candidate(conn, "@oldspam", state="discarded", llm_classification="person")
 
     provider = _make_provider("venue")
-    step = DisambiguationStep(db_path=db, provider=provider, logger=_make_logger())
+    step = DisambiguationStep(entities=SqliteEntityRepository(db), provider=provider, logger=_make_logger())
     step.run()
 
     provider.classify.assert_not_called()
@@ -166,7 +167,7 @@ def test_provider_failure_leaves_handle_probationary(db):
     provider = MagicMock(spec=DisambiguationProvider)
     provider.classify.side_effect = RuntimeError("LLM unavailable")
 
-    step = DisambiguationStep(db_path=db, provider=provider, logger=_make_logger())
+    step = DisambiguationStep(entities=SqliteEntityRepository(db), provider=provider, logger=_make_logger())
     step.run()  # must not raise
 
     entity = _get_state(conn, "@flaky")
@@ -185,7 +186,7 @@ def test_multiple_handles_processed(db):
         "venue" if handle == "@venue1" else "person"
     )
 
-    step = DisambiguationStep(db_path=db, provider=provider, logger=_make_logger())
+    step = DisambiguationStep(entities=SqliteEntityRepository(db), provider=provider, logger=_make_logger())
     step.run()
 
     assert _get_state(conn, "@venue1")["state"] == "probationary"

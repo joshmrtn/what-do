@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Protocol
 
+from src.models.candidate_entity import CandidateEntity
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
@@ -225,4 +226,76 @@ class CandidateRepository(Protocol):
             Matching candidates, ordered by discovery then id. The order is
             fixed because dedup picks a merge base partly on the order it sees.
         """
+        ...
+
+
+class EntityRepository(Protocol):
+    """Persistence for `candidate_entities` — handles discovered from post text.
+
+    Discovery works by mention: a handle named by enough sources we already
+    trust earns its way to `active` and becomes something we fetch from. The
+    counters are the evidence for that promotion, which is why the write below
+    accumulates rather than replaces.
+    """
+
+    def active_handles(self) -> list[str]:
+        """Every handle currently active for ingestion, alphabetically.
+
+        Empty when the database has no schema yet — a first run, before any
+        batch has initialised it.
+        """
+        ...
+
+    def mark_seeds_active(self, handles: list[str], *, now: datetime) -> None:
+        """Upsert seed handles as active at depth 0.
+
+        A handle already discovered by mention is promoted **in place**, keeping
+        its counters, so adding it to `seeds.yaml` activates the row rather than
+        colliding with it.
+        """
+        ...
+
+    def record_mention(
+        self,
+        *,
+        handle: str,
+        source_handle: str,
+        depth: int,
+        context: str | None,
+        now: datetime,
+    ) -> None:
+        """Record that `source_handle` mentioned `handle`.
+
+        Accumulates: a handle seen before gains a mention rather than being
+        replaced. A source that has already mentioned this handle counts once
+        and no more — otherwise one chatty account promotes its own friends.
+        The first non-empty `context` is kept, because the earliest sighting is
+        the one nearest the discovery that justified keeping the handle.
+        """
+        ...
+
+    def by_handle(self, handle: str) -> CandidateEntity | None:
+        """One entity by its handle, or None if it has never been seen."""
+        ...
+
+    def unclassified(self) -> list[CandidateEntity]:
+        """Probationary handles disambiguation has not yet judged."""
+        ...
+
+    def classify(
+        self, entity_id: str, *, classification: str, state: str, now: datetime
+    ) -> None:
+        """Record what disambiguation decided, and the state that follows."""
+        ...
+
+    def awaiting_promotion(self) -> list[CandidateEntity]:
+        """Probationary handles classified as venues, with their evidence.
+
+        The caller decides whether the evidence clears the threshold; this only
+        says which handles are eligible to be judged.
+        """
+        ...
+
+    def activate(self, entity_id: str, *, now: datetime) -> None:
+        """Promote a handle to `active`, making it a source for the next run."""
         ...

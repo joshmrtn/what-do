@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from src.storage.protocols import EntityRepository
 from src.storage.sqlite.candidates import write_candidates
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.storage.db import connect
 import uuid
 from dataclasses import dataclass, field as dataclass_field
@@ -81,6 +83,7 @@ class IngestionService:
         independent_sources: list[IngestionSource],
         logger: Any,
         blocklist: list[str] | None = None,
+        entities: EntityRepository | None = None,
     ) -> None:
         """
         Args:
@@ -94,9 +97,15 @@ class IngestionService:
                 them fetched, one failing never stopping the others.
             logger: Structured logger.
             blocklist: Raw entries from data/blocklist.json.
+            entities: Where discovered handles are recorded. Defaults to the
+                SQLite repository over `db_path`, on the same terms as the
+                repositories the scheduler takes.
         """
         self._config = config
         self._db_path = db_path
+        self._entities: EntityRepository = (
+            entities if entities is not None else SqliteEntityRepository(db_path)
+        )
         self._seeds_path = seeds_path
         self._failover_sources = failover_sources
         self._independent_sources = independent_sources
@@ -127,8 +136,7 @@ class IngestionService:
         try:
             seeds = load_seeds(self._seeds_path)
             if conn is not None:
-                self._sync_seeds(conn, seeds, get_now)
-                conn.commit()
+                self._entities.mark_seeds_active(list(seeds.handles), now=get_now())
 
             seed_handles = {h for h in seeds.handles}
             pairs, failed_sources = self._collect_candidates()
@@ -160,10 +168,11 @@ class IngestionService:
                     )
 
             extractor = HandleExtractor(
-                db_path=self._db_path,
+                entities=self._entities,
                 max_depth=self._config.scraping.max_discovery_depth,
                 blocklist=self._blocklist,
                 logger=self._logger,
+                get_now=get_now,
             )
 
             now = get_now()
@@ -238,8 +247,7 @@ class IngestionService:
                     )
                     handles_discovered += 1
 
-                self._evaluate_promotion(conn, seed_handles, get_now)
-                conn.commit()
+                self._evaluate_promotion(seed_handles, get_now)
         finally:
             if conn is not None:
                 conn.close()
@@ -260,31 +268,6 @@ class IngestionService:
     # ------------------------------------------------------------------
     # Seed sync
     # ------------------------------------------------------------------
-
-    def _sync_seeds(
-        self,
-        conn: sqlite3.Connection,
-        seeds: Any,
-        get_now: Callable[[], datetime],
-    ) -> None:
-        """Upsert seed handles into candidate_entities as active, depth=0."""
-        now = get_now().isoformat()
-        for handle in seeds.handles:
-            existing = conn.execute(
-                "SELECT id FROM candidate_entities WHERE handle = ?", (handle,)
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE candidate_entities SET state = 'active', depth = 0, updated_at = ? WHERE handle = ?",
-                    (now, handle),
-                )
-            else:
-                conn.execute(
-                    """INSERT INTO candidate_entities
-                       (id, handle, state, depth, mention_count, mention_sources, created_at, updated_at)
-                       VALUES (?, ?, 'active', 0, 0, '[]', ?, ?)""",
-                    (str(uuid.uuid4()), handle, now, now),
-                )
 
     # ------------------------------------------------------------------
     # Candidate collection
@@ -406,35 +389,28 @@ class IngestionService:
 
     def _evaluate_promotion(
         self,
-        conn: sqlite3.Connection,
         seed_handles: set[str],
         get_now: Callable[[], datetime],
     ) -> None:
-        """Promote probationary handles that meet the threshold from seed sources."""
+        """Promote probationary handles that meet the threshold from seed sources.
+
+        The repository says which handles are eligible; the threshold and the
+        seed-source rule are policy and stay here.
+        """
         threshold = self._config.scraping.candidate_promotion_threshold
-        now = get_now().isoformat()
+        now = get_now()
 
-        rows = conn.execute(
-            """SELECT id, handle, mention_count, mention_sources
-               FROM candidate_entities
-               WHERE state = 'probationary' AND llm_classification = 'venue'""",
-        ).fetchall()
-
-        for entity_id, handle, mention_count, sources_json in rows:
-            if mention_count < threshold:
+        for entity in self._entities.awaiting_promotion():
+            if entity.mention_count < threshold:
                 continue
-            sources: list[str] = json.loads(sources_json) if sources_json else []
-            has_seed_source = any(s in seed_handles for s in sources)
-            if has_seed_source:
-                conn.execute(
-                    "UPDATE candidate_entities SET state = 'active', updated_at = ? WHERE id = ?",
-                    (now, entity_id),
-                )
-                self._logger.info(
-                    f"Promoted {handle} to active",
-                    component="ingestion",
-                    duration_ms=0,
-                )
+            if not any(s in seed_handles for s in entity.mention_sources):
+                continue
+            self._entities.activate(entity.entity_id, now=now)
+            self._logger.info(
+                f"Promoted {entity.handle} to active",
+                component="ingestion",
+                duration_ms=0,
+            )
 
 
 def _localise(value: datetime, zone: tzinfo) -> datetime:

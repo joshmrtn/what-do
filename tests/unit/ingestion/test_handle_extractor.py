@@ -12,6 +12,7 @@ import uuid
 import pytest
 
 from src.ingestion.handle_extractor import HandleExtractor
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.storage.db import init_db
 from src.utils.logging import get_logger
 
@@ -69,7 +70,7 @@ def _get_entity(conn, handle):
 
 def test_extracts_single_handle(db):
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     extractor.process("Check out @jazzclub tonight!", source_handle="@seedvenue", source_depth=0)
 
     conn = sqlite3.connect(db)
@@ -83,7 +84,7 @@ def test_extracts_single_handle(db):
 
 def test_extracts_multiple_handles(db):
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     extractor.process(
         "Come see @band1 and @band2 at the show!",
         source_handle="@seedvenue",
@@ -101,7 +102,7 @@ def test_mention_count_incremented_for_existing(db):
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@jazzclub", mention_count=1, mention_sources=["@other"])
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     extractor.process("Shoutout to @jazzclub!", source_handle="@seedvenue", source_depth=0)
 
     entity = _get_entity(conn, "@jazzclub")
@@ -116,7 +117,7 @@ def test_same_source_does_not_double_count(db):
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@jazzclub", mention_count=1, mention_sources=["@seedvenue"])
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     extractor.process("Again @jazzclub!", source_handle="@seedvenue", source_depth=0)
 
     entity = _get_entity(conn, "@jazzclub")
@@ -128,7 +129,7 @@ def test_same_source_does_not_double_count(db):
 
 def test_handle_at_max_depth_not_stored(db):
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     # source_depth=2 means discovered handle would be depth=3, which exceeds max_depth=2
     extractor.process("Visit @deepvenue!", source_handle="@somehandle", source_depth=2)
 
@@ -142,7 +143,7 @@ def test_handle_at_max_depth_not_stored(db):
 def test_blocklisted_handle_not_stored(db):
 
     extractor = HandleExtractor(
-        db_path=db,
+        entities=SqliteEntityRepository(db),
         max_depth=2,
         blocklist=["@badplace"],
         logger=_make_logger(),
@@ -158,7 +159,7 @@ def test_blocklisted_handle_not_stored(db):
 
 def test_no_handles_in_text(db):
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     extractor.process("No social handles here, just plain text.", source_handle="@seed", source_depth=0)
 
     conn = sqlite3.connect(db)
@@ -175,7 +176,7 @@ def test_no_handles_in_text(db):
 
 def test_discovery_context_populated_on_insert(db):
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     caption = "Come see @jazzclub play live tonight at the waterfront!"
     extractor.process(caption, source_handle="@seedvenue", source_depth=0)
 
@@ -189,7 +190,7 @@ def test_discovery_context_populated_on_insert(db):
 
 def test_discovery_context_truncated_to_300_chars(db):
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     long_caption = "x" * 50 + " @newvenue " + "y" * 400
     extractor.process(long_caption, source_handle="@seed", source_depth=0)
 
@@ -206,7 +207,7 @@ def test_discovery_context_updated_when_previously_null(db):
     conn = sqlite3.connect(db)
     _insert_candidate(conn, "@jazzclub", mention_count=1, mention_sources=["@other"])
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     caption = "Another mention of @jazzclub from a different source"
     extractor.process(caption, source_handle="@seedvenue", source_depth=0)
 
@@ -237,7 +238,7 @@ def test_discovery_context_not_overwritten_when_already_set(db):
     )
     conn.commit()
 
-    extractor = HandleExtractor(db_path=db, max_depth=2, blocklist=[], logger=_make_logger())
+    extractor = HandleExtractor(entities=SqliteEntityRepository(db), max_depth=2, blocklist=[], logger=_make_logger())
     extractor.process("A new mention of @jazzclub here", source_handle="@seedvenue", source_depth=0)
 
     entity = _get_entity(conn, "@jazzclub")

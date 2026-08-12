@@ -56,7 +56,7 @@ from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
-from src.storage.entities import load_active_handles
+from src.storage.sqlite.entities import SqliteEntityRepository
 from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
 from src.utils.llm_transcript import TranscriptSink
@@ -346,7 +346,9 @@ def _handles(db_path: Path, seeds_path: Path) -> list[str]:
     """
     seeds = load_seeds(seeds_path) if seeds_path.exists() else None
     seed_handles = list(seeds.handles) if seeds is not None else []
-    return sorted(set(seed_handles) | set(load_active_handles(db_path)))
+    return sorted(
+        set(seed_handles) | set(SqliteEntityRepository(db_path).active_handles())
+    )
 
 
 def _blocklist(path: Path) -> list[str]:
