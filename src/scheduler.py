@@ -36,14 +36,15 @@ from src.processing.extraction_stage import ExtractionStage
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
-from src.storage.candidates import load_candidates
 from src.storage.db import DEFAULT_DB_PATH, init_db
 from src.storage.protocols import (
+    CandidateRepository,
     EventRepository,
     RankingRepository,
     RunRepository,
     ScoreRepository,
 )
+from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.events import SqliteEventRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.runs import SqliteRunRepository
@@ -108,7 +109,7 @@ def run_batch(
     dry_run: bool = False,
     ingest_only: bool = False,
     raw_dump_fn: Callable[[list[Any]], None] | None = None,
-    load_candidates_fn: Callable[..., list[EventCandidate]] = load_candidates,
+    candidate_repository: CandidateRepository | None = None,
     event_repository: EventRepository | None = None,
     run_repository: RunRepository | None = None,
     score_repository: ScoreRepository | None = None,
@@ -142,7 +143,9 @@ def run_batch(
         raw_dump_fn: Given every candidate as fetched, with the reason any was
             discarded. Supplied only when a diagnostic run asks for the dump,
             since collecting it holds the whole fetch in memory.
-        load_candidates_fn: Injected for testing, as the CLI injects its loaders.
+        candidate_repository: Where fetched candidates are read back from.
+            Defaults to the SQLite repository over `db_path`, on the same terms
+            as `event_repository`.
         event_repository: Where events are read and written. Defaults to the
             SQLite repository over `db_path`; injected for testing, which is
             what lets the pipeline run without a database at all.
@@ -164,6 +167,11 @@ def run_batch(
     )
     scores_repo: ScoreRepository = (
         score_repository if score_repository is not None else SqliteScoreRepository(db_path)
+    )
+    candidates_repo: CandidateRepository = (
+        candidate_repository
+        if candidate_repository is not None
+        else SqliteCandidateRepository(db_path)
     )
     rankings_repo: RankingRepository = (
         ranking_repository
@@ -259,8 +267,7 @@ def run_batch(
 
     candidates = _stage(
         "load_candidates",
-        lambda: load_candidates_fn(
-            db_path,
+        lambda: candidates_repo.for_window(
             discovered_since=now - timedelta(days=config.scraping.lookback_days),
             starting_after=now,
         ),

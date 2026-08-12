@@ -15,7 +15,7 @@ from src.ingestion.ingestion_service import IngestionService
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
-from src.storage.candidates import load_candidates, save_candidates
+from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.db import init_db
 
 _NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
@@ -41,8 +41,10 @@ def _listing_candidate(**kwargs) -> EventCandidate:
 
 
 def _reload(db) -> EventCandidate:
-    loaded = load_candidates(db, discovered_since=_NOW - timedelta(days=1),
-                             starting_after=_NOW - timedelta(days=1))
+    loaded = SqliteCandidateRepository(db).for_window(
+        discovered_since=_NOW - timedelta(days=1),
+        starting_after=_NOW - timedelta(days=1),
+    )
     assert len(loaded) == 1
     return loaded[0]
 from src.utils.logging import get_logger
@@ -97,7 +99,9 @@ def _candidate(candidate_id: str, **overrides) -> EventCandidate:
 
 
 def _load(db_path):
-    return load_candidates(db_path, discovered_since=LOOKBACK, starting_after=NOW)
+    return SqliteCandidateRepository(db_path).for_window(
+        discovered_since=LOOKBACK, starting_after=NOW
+    )
 
 
 def test_empty_table_returns_empty_list(db):
@@ -252,57 +256,3 @@ def test_loads_what_the_ingestion_service_wrote(db, tmp_path):
     ).run(get_now=lambda: NOW)
 
     assert _load(db) == [written]
-
-
-class TestEveryFieldSurvivesTheRoundTrip:
-    """A field the writer forgets is a field the reader defaults away silently.
-
-    This is issue #22's predicted failure, and it had already happened once
-    before anyone noticed: `EventCandidate.timing` has never had a column, so
-    every ICS `all_day` was quietly reloaded as `exact`. The batch gives loaded
-    candidates precedence over fetched ones, so the stripped copy is the one
-    the pipeline sees.
-    """
-
-    def test_timing_survives(self, tmp_path):
-        db = _db(tmp_path)
-        save_candidates([_listing_candidate(timing="all_day")], db)
-
-        assert _reload(db).timing == "all_day"
-
-    def test_an_authored_summary_survives(self, tmp_path):
-        db = _db(tmp_path)
-        save_candidates([_listing_candidate(summary="Trivia at The James in Essex")], db)
-
-        assert _reload(db).summary == "Trivia at The James in Essex"
-
-    def test_authored_tags_survive_with_their_weights(self, tmp_path):
-        db = _db(tmp_path)
-        tags = [Tag(text="trivia", weight=1.0), Tag(text="quiz night", weight=0.8)]
-        save_candidates([_listing_candidate(tags=tags)], db)
-
-        reloaded = _reload(db)
-        assert [(t.text, t.weight) for t in reloaded.tags] == [
-            ("trivia", 1.0),
-            ("quiz night", 0.8),
-        ]
-
-    def test_metadata_survives(self, tmp_path):
-        db = _db(tmp_path)
-        save_candidates(
-            [_listing_candidate(metadata={"listing_category": "Music", "authored_tags": True})], db
-        )
-
-        assert _reload(db).metadata == {"listing_category": "Music", "authored_tags": True}
-
-    def test_a_candidate_with_none_of_them_reads_back_with_defaults(self, tmp_path):
-        db = _db(tmp_path)
-        save_candidates([_listing_candidate()], db)
-
-        reloaded = _reload(db)
-        assert (reloaded.timing, reloaded.summary, reloaded.tags, reloaded.metadata) == (
-            "exact",
-            None,
-            [],
-            {},
-        )

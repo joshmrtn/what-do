@@ -28,6 +28,7 @@ from src.storage.db import init_db
 from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
+from src.storage.memory.candidates import InMemoryCandidateRepository
 from src.storage.memory.rankings import InMemoryRankingRepository
 from src.storage.memory.scores import InMemoryScoreRepository
 from src.storage.sqlite.events import SqliteEventRepository
@@ -326,6 +327,15 @@ def db(tmp_path) -> Path:
     return path
 
 
+def _seeded_candidates() -> InMemoryCandidateRepository:
+    """One stored candidate, as a previous fetch would have left behind."""
+    repo = InMemoryCandidateRepository()
+    repo.save(
+        [EventCandidate(id="c1", source="@v", source_type="apify", discovered_at=NOW)]
+    )
+    return repo
+
+
 def _run(db, *, fresh=None, deps=None, **kwargs):
     """Drive run_batch with fakes, returning (result, the fakes it used)."""
     fakes = {
@@ -353,9 +363,7 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
         logger=get_logger("batch_test", stream=io.StringIO()),
         get_now=lambda: NOW,
         run_date=RUN_DATE,
-        load_candidates_fn=lambda *a, **k: [
-            EventCandidate(id="c1", source="@v", source_type="apify", discovered_at=NOW)
-        ],
+        candidate_repository=_seeded_candidates(),
         event_repository=save_spy,
         score_repository=InMemoryScoreRepository(),
         ranking_repository=recs_spy,

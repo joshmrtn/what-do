@@ -1,19 +1,18 @@
-"""Event candidate reload.
+"""Row mapping for event candidates.
 
-`IngestionService` persists candidates and returns only counts, so nothing could
-read them back. The batch reads from here rather than passing objects through in
-memory, which makes the ingest boundary crash-survivable: a re-run after a
-failure picks up candidates already fetched without touching the network again.
+One column list, one pair of mapping functions, used by both the reader and the
+writer. Issue #22: two hand-written column lists in two modules drift silently,
+and the reader defaults the difference away — which is exactly how
+`EventCandidate.timing` was dropped on every round trip for weeks.
+
+Reading and writing themselves live in `storage/sqlite/candidates.py`.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 
-from src.storage.db import connect
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from src.models.event_candidate import EventCandidate
@@ -73,80 +72,6 @@ def candidate_to_row(candidate: EventCandidate) -> tuple[Any, ...]:
         json.dumps([{"tag": t.text, "weight": t.weight} for t in candidate.tags]),
         json.dumps(candidate.metadata),
     )
-
-
-def save_candidates(
-    candidates: list[EventCandidate], db_path: Path | str
-) -> None:
-    """Persist candidates, replacing any stored under the same id.
-
-    Args:
-        candidates: Candidates to store. Empty is a no-op.
-        db_path: Path to the SQLite database.
-    """
-    if not candidates:
-        return
-
-    conn = connect(db_path)
-    try:
-        write_candidates(conn, candidates)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def write_candidates(
-    conn: sqlite3.Connection, candidates: list[EventCandidate]
-) -> None:
-    """Write candidates on a caller's connection, without committing.
-
-    Ingestion holds one connection across a whole fetch and commits once, so it
-    needs the statement without the transaction around it.
-    """
-    placeholders = ", ".join("?" * len(CANDIDATE_COLUMNS.split(", ")))
-    conn.executemany(
-        f"INSERT OR REPLACE INTO event_candidates ({CANDIDATE_COLUMNS}) "
-        f"VALUES ({placeholders})",
-        [candidate_to_row(c) for c in candidates],
-    )
-
-
-def load_candidates(
-    db_path: Path | str,
-    discovered_since: datetime,
-    starting_after: datetime,
-) -> list[EventCandidate]:
-    """Load candidates still in scope for a batch run.
-
-    The window is a union, because either filter alone starves a source type.
-    Social candidates carry no `start_time` at ingestion, so a forward-only
-    filter drops all of them; a `discovered_at`-only filter eventually drops
-    calendar events that are still upcoming.
-
-    Args:
-        db_path: Path to the SQLite database.
-        discovered_since: Earliest `discovered_at` to accept, normally the
-            lookback cutoff.
-        starting_after: Earliest `start_time` to accept regardless of age,
-            normally the run's now.
-
-    Returns:
-        Matching candidates, ordered by discovery then id. The order is fixed
-        because dedup picks a merge base partly on the order it sees.
-    """
-    conn = connect(db_path)
-    try:
-        rows = conn.execute(
-            f"""SELECT {CANDIDATE_COLUMNS} FROM event_candidates
-                WHERE discovered_at >= ?
-                   OR (start_time IS NOT NULL AND start_time >= ?)
-                ORDER BY discovered_at, id""",
-            (discovered_since.isoformat(), starting_after.isoformat()),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    return [row_to_candidate(row) for row in rows]
 
 
 def _parse(value: str | None) -> datetime | None:

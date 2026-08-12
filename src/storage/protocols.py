@@ -12,6 +12,7 @@ from datetime import date, datetime
 from typing import Protocol
 
 from src.models.event import Event
+from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.models.run import RunRecord
@@ -182,5 +183,46 @@ class RankingRepository(Protocol):
         Deliberately not "the most recent run": a run that died before ranking
         leaves a `run_history` row and nothing to show, and the CLI wants the
         last night it can actually display.
+        """
+        ...
+
+
+class CandidateRepository(Protocol):
+    """Persistence for raw ingested candidates, before normalization.
+
+    The batch reads candidates back from here rather than passing them through
+    in memory, which is what makes the ingest boundary crash-survivable: a
+    re-run after a failure picks up what was already fetched without touching
+    the network again.
+    """
+
+    def save(self, candidates: list[EventCandidate]) -> None:
+        """Insert candidates, replacing any stored under the same id.
+
+        Args:
+            candidates: Candidates to store. Empty is a no-op — "nothing to
+                save" is never "clear the store".
+        """
+        ...
+
+    def for_window(
+        self, *, discovered_since: datetime, starting_after: datetime
+    ) -> list[EventCandidate]:
+        """Candidates still in scope for a run.
+
+        The window is a **union**, because either filter alone starves a source
+        type: social candidates carry no `start_time` at ingestion, so a
+        forward-only filter drops all of them, while a `discovered_at`-only
+        filter eventually drops calendar events that are still upcoming.
+
+        Args:
+            discovered_since: Earliest `discovered_at` to accept, normally the
+                lookback cutoff.
+            starting_after: Earliest `start_time` to accept regardless of age,
+                normally the run's now.
+
+        Returns:
+            Matching candidates, ordered by discovery then id. The order is
+            fixed because dedup picks a merge base partly on the order it sees.
         """
         ...
