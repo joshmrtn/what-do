@@ -51,7 +51,6 @@ _RAW_CONNECTION = {
     # `DEFAULT_DB_PATH`, `init_db`, `has_schema`.
     "scheduler.py",
     "presentation/cli.py",
-    "storage/__init__.py",
     # The module-level storage functions the repositories wrap rather than
     # restate. Goes when nothing calls them directly.
     "storage/events.py",
