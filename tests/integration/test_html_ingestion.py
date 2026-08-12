@@ -121,12 +121,32 @@ def test_no_candidate_claims_a_published_date(candidates):
     assert all(c.raw_published_at is None for c in candidates)
 
 
-def test_categories_reach_the_description(candidates):
+def test_no_candidate_invents_a_description(candidates):
+    """The listing publishes one line per event and no prose about any of them."""
 
-    described = [c.description for c in candidates if c.description]
+    assert all(c.description is None for c in candidates)
 
-    assert len(described) >= 150
-    assert all(d.startswith("Category: ") for d in described)
+
+def test_useful_categories_reach_the_metadata(candidates):
+    carried = [c.metadata["listing_category"] for c in candidates
+               if "listing_category" in c.metadata]
+
+    assert len(carried) >= 100
+    assert set(carried) <= {"Music", "Sports"}
+
+
+def test_every_candidate_carries_an_authored_summary(candidates):
+    assert all(c.summary for c in candidates)
+    assert all(c.metadata["authored_summary"] is True for c in candidates)
+
+
+def test_karaoke_and_trivia_lines_are_authored_not_extracted(candidates):
+    authored = [c for c in candidates if c.metadata.get("authored_tags")]
+
+    assert authored, "the fixture page carries karaoke and trivia lines"
+    for candidate in authored:
+        tags = {t.text for t in candidate.tags}
+        assert ("karaoke" in tags) ^ ("trivia" in tags), candidate.title
 
 
 def test_start_times_stay_within_the_days_the_page_shows(candidates):
@@ -142,7 +162,7 @@ def test_evening_events_keep_their_evening_hour(candidates):
 
     evening = [
         c for c in candidates
-        if c.description and "Music" in c.description
+        if c.metadata.get("listing_category") == "Music"
     ]
     hours = {c.start_time.astimezone(EASTERN).hour for c in evening}
 

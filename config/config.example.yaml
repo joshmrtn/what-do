@@ -210,6 +210,18 @@ sources:
     #   min_fetch_interval_hours: 6
 
 models:
+  # How few tags a reply may carry before the extraction counts as failed.
+  # NOT scoring.min_tags_per_event, which asks a different question: how much
+  # evidence counts as *complete*. One number served both until 2026-08-11, so
+  # the only way to stop the model padding was to also declare thin events
+  # fully evidenced.
+  #
+  # Keep this at 1. A floor above the honest answer does not raise quality, it
+  # manufactures it: measured, every reply at five returned exactly five tags,
+  # never four, never six — and asked for five from a performer's name alone,
+  # gemma4:e4b emitted `null_data` and `missing_text` as tags. Those get
+  # embedded and scored against your preferences like any real tag.
+  min_tags: 1
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"
   embeddings: "nomic-embed-text"

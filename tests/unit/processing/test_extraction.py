@@ -37,6 +37,27 @@ def _valid_response(tags: list[str] | None = None, include_summary: bool = True)
     return json.dumps(payload)
 
 
+
+
+def _provider(min_tags: int = 1, tags=None) -> OllamaExtractionProvider:
+    """A provider whose model returns exactly the tags a test names."""
+    payload = {
+        "title": None,
+        "venue": None,
+        "start_time": None,
+        "end_time": None,
+        "tags": tags if tags is not None else [{"tag": "music", "weight": 1.0}],
+        "summary": "A live music performance.",
+        "setting": "unknown",
+    }
+    client = _make_client(json.dumps(payload))
+    return OllamaExtractionProvider(client=client, min_tags=min_tags)
+
+
+def _sent_prompt(provider: OllamaExtractionProvider) -> str:
+    return provider._client.chat.call_args.kwargs["messages"][0]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Reference date grounding
 # ---------------------------------------------------------------------------
@@ -469,3 +490,91 @@ def test_prompt_requests_the_setting_field():
     prompt = client.chat.call_args.kwargs["messages"][0]["content"]
     assert "setting" in prompt
     assert "outdoor" in prompt
+
+
+class TestTagsAreNotPadded:
+    """The floor was the primary defect, measured 2026-08-11.
+
+    `extraction.py` returned a sub-minimum result as a *failure*, so the system
+    retried until it got padding. At five, gemma answered `Ron & Sheila Schrank`
+    with `event 0.1 | scheduling 0.1 | information 0.1 | null_data 0.1 |
+    missing_text 0.5` — commentary on its own confusion, embedded and scored.
+    """
+
+    def test_a_single_honest_tag_is_accepted(self):
+        provider = _provider(min_tags=1, tags=[{"tag": "music", "weight": 1.0}])
+
+        result = provider.extract("Fred Ellsworth")
+
+        assert [t.text for t in result.tags] == ["music"]
+
+    def test_the_prompt_states_there_is_no_minimum(self):
+        provider = _provider(min_tags=1)
+        provider.extract("Fred Ellsworth")
+
+        prompt = _sent_prompt(provider)
+        assert "at least" not in prompt.lower()
+        assert "no minimum" in prompt.lower()
+
+    def test_the_prompt_forbids_inferring_style_from_a_name(self):
+        provider = _provider(min_tags=1)
+        provider.extract("Fred Ellsworth")
+
+        # The prompt is wrapped, so compare on collapsed whitespace.
+        prompt = " ".join(_sent_prompt(provider).lower().split())
+        assert "a performer's proper name does not name a genre" in prompt
+        assert "if the text does not name the style, emit no style tag" in prompt
+
+    def test_the_prompt_says_what_an_event_category_is(self):
+        """Without this the model reads a section heading as event copy."""
+        provider = _provider(min_tags=1)
+        provider.extract("Fred Ellsworth\nEvent category: Music")
+
+        prompt = " ".join(_sent_prompt(provider).split())
+        assert "section heading from a listing site" in prompt
+
+
+class TestPlaceholderTagsAreRejected:
+    """Tags that carry no meaning of their own still get embedded and scored."""
+
+    def test_a_placeholder_tag_is_dropped(self):
+        provider = _provider(
+            min_tags=1,
+            tags=[
+                {"tag": "live music", "weight": 1.0},
+                {"tag": "genre", "weight": 0.5},
+                {"tag": "music genre", "weight": 0.4},
+                {"tag": "artist", "weight": 0.3},
+            ],
+        )
+
+        result = provider.extract("Tyler Bard")
+
+        assert [t.text for t in result.tags] == ["live music"]
+
+    def test_a_tag_that_merely_echoes_the_title_is_dropped(self):
+        provider = _provider(
+            min_tags=1,
+            tags=[{"tag": "lee hawkins", "weight": 0.9}, {"tag": "music", "weight": 1.0}],
+        )
+
+        result = provider.extract("Lee Hawkins")
+
+        assert [t.text for t in result.tags] == ["music"]
+
+    def test_a_real_tag_that_appears_in_the_title_survives(self):
+        """`Jazz Night` -> `jazz` is the case that makes this rule non-trivial."""
+        provider = _provider(
+            min_tags=1,
+            tags=[{"tag": "jazz", "weight": 1.0}, {"tag": "music", "weight": 0.5}],
+        )
+
+        result = provider.extract("Jazz Night")
+
+        assert [t.text for t in result.tags] == ["jazz", "music"]
+
+    def test_dropping_every_tag_is_still_a_failure(self):
+        provider = _provider(min_tags=1, tags=[{"tag": "genre", "weight": 0.5}])
+
+        with pytest.raises(ExtractionError):
+            provider.extract("Tyler Bard")

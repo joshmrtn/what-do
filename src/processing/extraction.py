@@ -73,6 +73,35 @@ def _decode_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+#: Tags that name the *idea* of a tag rather than anything about an event.
+#: Measured coming out of both gemma and Gemini on name-only listings; they are
+#: embedded and scored against the user's preferences like any real tag.
+_PLACEHOLDER_TAGS = frozenset(
+    {"genre", "music genre", "musical genre", "artist", "event", "performance type"}
+)
+
+
+def _drop_meaningless(tags: list[Tag], source_text: str) -> list[Tag]:
+    """Remove tags that carry no information about the event.
+
+    Two kinds. A **placeholder** names the idea of a tag — `genre`, `artist` —
+    and says nothing. A **title echo** repeats the act's own name back:
+    `Lee Hawkins` produced the tag `lee hawkins`, which then gets embedded and
+    compared against preference lines as though it meant something.
+
+    The echo test is deliberately exact and anchored to the title line only, so
+    `Jazz Night` keeps its `jazz` tag. A looser substring rule would delete
+    exactly the genre tags that make a title worth reading.
+    """
+    title = source_text.split("\n", 1)[0].strip().casefold()
+    return [
+        tag
+        for tag in tags
+        if tag.text.casefold() not in _PLACEHOLDER_TAGS
+        and tag.text.casefold() != title
+    ]
+
+
 def _parse_setting(raw: Any) -> str:
     """Coerce the model's `setting` to the allowed enum.
 
@@ -129,7 +158,22 @@ Required JSON format:
 }}
 
 Rules:
-- tags must contain at least {min_tags} descriptive labels (genre, activity type, atmosphere, etc.)
+- List every tag the text supports — no more, no fewer. There is no minimum and
+  no target number. A terse listing yields few tags; a detailed one yields more.
+  Never pad the list to reach a count.
+- A genre or style tag is allowed ONLY when the text NAMES it. The title counts
+  as text: "Blues Brunch" names blues, "A Fleetwood Mac Tribute" names Fleetwood
+  Mac. A performer's proper name does NOT name a genre — a person's or band's
+  name tells you nothing about their style, and a word that merely appears
+  inside a name is not evidence of anything. If the text does not name the
+  style, emit no style tag.
+- Do not emit the performing act's own name as a tag — that describes who, not
+  what. An act the event is ABOUT rather than performed by, such as the subject
+  of a tribute, may be tagged.
+- Do not emit placeholder tags such as "genre", "music genre", "artist" or
+  "event" — a tag must carry meaning on its own.
+- "Event category" is a section heading from a listing site. It tells you the
+  broad kind of event and nothing more specific.
 - "weight" is how CENTRAL the tag is to what the event actually IS:
   1.0 = the main activity or defining feature; the reason someone attends
   0.5 = a real but secondary attribute
@@ -157,7 +201,7 @@ You must respond with ONLY valid JSON matching this exact format:
   "setting": "indoor" | "outdoor" | "unknown"
 }}
 
-Remember: at least {min_tags} tags required, each with a centrality weight where
+Remember: tag only what the text supports, each with a centrality weight where
 1.0 is the event's defining feature and 0.1 is incidental context.
 Output ONLY the JSON."""
 
@@ -168,14 +212,16 @@ class OllamaExtractionProvider(ExtractionProvider):
     Args:
         client: Any ChatClient (e.g. OllamaClient, GeminiClient).
         model: Model name (default gemma4:e4b).
-        min_tags: Minimum number of tags required in the output.
+        min_tags: How few tags a reply may carry before it counts as failed.
+            One by default: a terse listing honestly supports one tag, and a
+            higher floor is what made models pad rather than answer.
     """
 
     def __init__(
         self,
         client: ChatClient,
         model: str = DEFAULT_EXTRACTION_MODEL,
-        min_tags: int = 5,
+        min_tags: int = 1,
     ) -> None:
         self._client = client
         self._model = model
@@ -208,7 +254,7 @@ class OllamaExtractionProvider(ExtractionProvider):
                 "to absolute ISO 8601 dates against it.\n\n"
             )
         prompt = _EXTRACT_PROMPT.format(
-            text=text, min_tags=self._min_tags, date_context=date_context
+            text=text, date_context=date_context
         )
         messages = [{"role": "user", "content": prompt}]
         chat_kwargs: dict[str, Any] = {"model": self._model, "messages": messages}
@@ -216,10 +262,10 @@ class OllamaExtractionProvider(ExtractionProvider):
             chat_kwargs["images"] = [image_bytes]
 
         raw = self._client.chat(**chat_kwargs)
-        result, error = self._parse_and_validate(raw)
+        result, error = self._parse_and_validate(raw, text)
 
         if result is None:
-            retry_prompt = _RETRY_PROMPT.format(reason=error, min_tags=self._min_tags)
+            retry_prompt = _RETRY_PROMPT.format(reason=error)
             retry_messages = messages + [
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": retry_prompt},
@@ -229,16 +275,25 @@ class OllamaExtractionProvider(ExtractionProvider):
                 retry_kwargs["images"] = [image_bytes]
 
             raw = self._client.chat(**retry_kwargs)
-            result, error = self._parse_and_validate(raw)
+            result, error = self._parse_and_validate(raw, text)
 
         if result is None:
             raise ExtractionError(f"Extraction failed after 1 retry: {error}")
 
         return result
 
-    def _parse_and_validate(self, text: str) -> tuple[ExtractionResult | None, str]:
-        """Parse raw LLM output into ExtractionResult, returning (result, error_reason)."""
-        data = _decode_json_object(text)
+    def _parse_and_validate(
+        self, reply: str, source_text: str
+    ) -> tuple[ExtractionResult | None, str]:
+        """Parse raw LLM output into ExtractionResult, returning (result, error_reason).
+
+        Args:
+            reply: What the model sent back.
+            source_text: The event text the model was given, needed to tell a
+                tag that describes the event from one that merely echoes its
+                title back.
+        """
+        data = _decode_json_object(reply)
         if data is None:
             return None, "JSON parse error — response was not valid JSON"
 
@@ -246,7 +301,7 @@ class OllamaExtractionProvider(ExtractionProvider):
         if not isinstance(raw_tags, list):
             return None, f"tag count 0 is below minimum {self._min_tags}"
 
-        tags = self._parse_tags(raw_tags)
+        tags = _drop_meaningless(self._parse_tags(raw_tags), source_text)
         if len(tags) < self._min_tags:
             return None, f"tag count {len(tags)} is below minimum {self._min_tags}"
 

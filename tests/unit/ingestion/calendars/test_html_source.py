@@ -123,11 +123,64 @@ def test_unlinked_event_has_no_url(db):
     assert _make_source(db).fetch()[0].url is None
 
 
-def test_category_is_prepended_to_the_description(db):
+def test_a_useful_category_is_carried_as_data_not_as_a_description(db):
+    """A section heading is not something the source published about the event.
 
+    Storing it as a description made LLM Pass 1 read a taxonomy label as event
+    copy — `Trivia` under `Karaoke & trivia` came back tagged `karaoke 1.0`.
+    """
     first = _make_source(db).fetch()[0]
 
-    assert first.description == "Category: Music"
+    assert first.description is None
+    assert first.metadata["listing_category"] == "Music"
+
+
+def test_a_category_naming_two_activities_is_dropped(db):
+    """Every event under `Karaoke & trivia` already says which one it is.
+
+    The heading adds nothing the title does not, and costs a wrong tag on all
+    of them.
+    """
+    page = (
+        "<body><div>"
+        '<p class="sqsrte-large"><strong>Wednesday, August 5</strong></p>'
+        "<p><strong>Karaoke &amp; trivia</strong></p>"
+        '<p class="sqsrte-small">7:00 PM - Trivia - The James - Essex</p>'
+        "</div></body>"
+    )
+
+    candidate = _make_source(db, session=_session(_response(page))).fetch()[0]
+
+    assert candidate.description is None
+    assert "listing_category" not in candidate.metadata
+
+
+def test_the_other_category_is_dropped_as_noise(db):
+    page = (
+        "<body><div>"
+        '<p class="sqsrte-large"><strong>Wednesday, August 5</strong></p>'
+        "<p><strong>Other</strong></p>"
+        '<p class="sqsrte-small">7:00 PM - Dart Night - Notch - Salem</p>'
+        "</div></body>"
+    )
+
+    candidate = _make_source(db, session=_session(_response(page))).fetch()[0]
+
+    assert "listing_category" not in candidate.metadata
+
+
+def test_sports_is_carried_like_music(db):
+    page = (
+        "<body><div>"
+        '<p class="sqsrte-large"><strong>Wednesday, August 5</strong></p>'
+        "<p><strong>Sports</strong></p>"
+        '<p class="sqsrte-small">7:00 PM - Sox Game - The Babe - Salem</p>'
+        "</div></body>"
+    )
+
+    candidate = _make_source(db, session=_session(_response(page))).fetch()[0]
+
+    assert candidate.metadata["listing_category"] == "Sports"
 
 
 def test_no_category_leaves_the_description_empty(db):
@@ -141,6 +194,7 @@ def test_no_category_leaves_the_description_empty(db):
     candidate = _make_source(db, session=_session(_response(page))).fetch()[0]
 
     assert candidate.description is None
+    assert "listing_category" not in candidate.metadata
 
 
 def test_ids_are_stable_across_fetches(db):
@@ -255,3 +309,73 @@ def test_http_error_propagates_without_retrying(db):
         _make_source(db, session=session).fetch()
 
     session.get.assert_called_once()
+
+
+class TestAuthoredSummary:
+    """The listing states one line; a summary of it is composition, not inference."""
+
+    def test_the_summary_is_composed_from_the_parsed_fields(self, db):
+        first = _make_source(db).fetch()[0]
+
+        assert first.summary == "Jazz Night at Joy Nest in Newburyport"
+        assert first.metadata["authored_summary"] is True
+
+    def test_a_missing_city_drops_the_in_clause(self, db):
+        page = (
+            "<body><div>"
+            '<p class="sqsrte-large"><strong>Wednesday, August 5</strong></p>'
+            "<p><strong>Music</strong></p>"
+            '<p class="sqsrte-small">7:00 PM - Open Mic - The Pelican</p>'
+            "</div></body>"
+        )
+
+        candidate = _make_source(db, session=_session(_response(page))).fetch()[0]
+
+        assert candidate.summary == "Open Mic at The Pelican"
+
+
+class TestAuthoredKaraokeAndTrivia:
+    """`Karaoke` and `Trivia` need no model: the title is the whole activity."""
+
+    def _fetch(self, db, title):
+        page = (
+            "<body><div>"
+            '<p class="sqsrte-large"><strong>Wednesday, August 5</strong></p>'
+            "<p><strong>Karaoke &amp; trivia</strong></p>"
+            f'<p class="sqsrte-small">7:00 PM - {title} - The James - Essex</p>'
+            "</div></body>"
+        )
+        return _make_source(db, session=_session(_response(page))).fetch()[0]
+
+    def test_a_trivia_night_gets_authored_tags_and_no_karaoke(self, db):
+        candidate = self._fetch(db, "Trivia")
+
+        tags = {t.text for t in candidate.tags}
+        assert "trivia" in tags
+        assert not any("karaoke" in t for t in tags)
+        assert candidate.metadata["authored_tags"] is True
+
+    def test_a_karaoke_night_gets_authored_tags_and_no_trivia(self, db):
+        candidate = self._fetch(db, "Karaoke")
+
+        tags = {t.text for t in candidate.tags}
+        assert "karaoke" in tags
+        assert not any("trivia" in t for t in tags)
+
+    def test_a_titled_variant_is_still_recognised(self, db):
+        candidate = self._fetch(db, "Trivia w/ Lee Wolf")
+
+        assert "trivia" in {t.text for t in candidate.tags}
+
+    def test_an_unrecognised_line_under_the_heading_is_left_to_the_model(self, db):
+        """`DJ Bingo Night` appears under the same heading and is neither."""
+        candidate = self._fetch(db, "DJ Bingo Night")
+
+        assert candidate.tags == []
+        assert "authored_tags" not in candidate.metadata
+
+    def test_a_music_event_is_never_given_authored_tags(self, db):
+        first = _make_source(db).fetch()[0]
+
+        assert first.tags == []
+        assert "authored_tags" not in first.metadata

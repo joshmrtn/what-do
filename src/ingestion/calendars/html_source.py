@@ -24,6 +24,21 @@ from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.calendars.listing import ListingEntry, parse_listing
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
+from src.models.tag import Tag
+
+
+#: Section headings worth carrying. The site's vocabulary is stable — always
+#: Music, always Karaoke & trivia, sometimes Other, sometimes Sports — so an
+#: allowlist states the judgement instead of hiding it in a filter.
+_CARRIED_CATEGORIES = frozenset({"Music", "Sports"})
+
+#: Titles whose activity is fully stated by the title itself. The listing's
+#: `Karaoke & trivia` section also carries bingo nights and open mics, so the
+#: match is on the title, never on the heading.
+_AUTHORED_ACTIVITIES: dict[str, tuple[str, ...]] = {
+    "karaoke": ("karaoke", "singing", "live music", "social"),
+    "trivia": ("trivia", "quiz night", "game night", "social"),
+}
 
 
 class HtmlListingSource(IngestionSource):
@@ -103,7 +118,10 @@ class HtmlListingSource(IngestionSource):
             source=self._config.name,
             source_type=self._config.source_type,
             title=entry.title,
-            description=(f"Category: {entry.category}" if entry.category else None),
+            # The listing publishes no prose about an event — only the line
+            # itself — so there is no description to record. The section
+            # heading is a fact *about* the listing and travels as metadata.
+            description=None,
             venue=entry.venue,
             location=entry.city,
             url=entry.url,
@@ -117,7 +135,30 @@ class HtmlListingSource(IngestionSource):
             # lookback discard.
             raw_published_at=None,
             discovered_at=self._get_now(),
+            summary=_compose_summary(entry),
+            tags=[Tag(text=t, weight=w) for t, w in _authored_tags(entry.title)],
+            metadata=self._entry_metadata(entry),
         )
+
+    def _entry_metadata(self, entry: ListingEntry) -> dict[str, Any]:
+        """What the adapter states about this line, as data rather than prose."""
+        metadata: dict[str, Any] = self._category_metadata(entry)
+        metadata["authored_summary"] = True
+        if _authored_tags(entry.title):
+            metadata["authored_tags"] = True
+        return metadata
+
+    def _category_metadata(self, entry: ListingEntry) -> dict[str, str]:
+        """The section heading, when it says something the title does not.
+
+        `Karaoke & trivia` names two activities and every event beneath it
+        already says which one it is, so the heading only ever contradicted the
+        title. `Other` is a null bucket. Both are dropped rather than passed to
+        a model that will treat them as evidence.
+        """
+        if entry.category in _CARRIED_CATEGORIES:
+            return {"listing_category": entry.category}
+        return {}
 
     def _derive_id(self, entry: ListingEntry) -> str:
         """Build a stable id, since the listing offers no identifier of its own.
@@ -140,3 +181,36 @@ class HtmlListingSource(IngestionSource):
     def _log(self, message: str) -> None:
         if self._logger is not None:
             self._logger.info(message, component="html_source", duration_ms=0)
+
+
+def _compose_summary(entry: ListingEntry) -> str:
+    """One sentence built from the fields the line already gave us.
+
+    `7:00 PM - Trivia - The James - Essex` becomes "Trivia at The James in
+    Essex". Composed from the parsed fields rather than by re-splitting the
+    raw line, which we have already done once.
+    """
+    summary = entry.title
+    if entry.venue:
+        summary = f"{summary} at {entry.venue}"
+    if entry.city:
+        summary = f"{summary} in {entry.city}"
+    return summary
+
+
+def _authored_tags(title: str | None) -> tuple[tuple[str, float], ...]:
+    """Tags for a title that names its whole activity, or nothing.
+
+    Weights descend so the activity itself dominates, matching what extraction
+    is asked to produce. A title the listing files under `Karaoke & trivia`
+    that is neither — `DJ Bingo Night`, `Open Mic` — returns nothing and goes
+    to the model like anything else.
+    """
+    if title is None:
+        return ()
+    lowered = title.casefold()
+    for activity, tags in _AUTHORED_ACTIVITIES.items():
+        if lowered == activity or lowered.startswith(f"{activity} "):
+            weights = (1.0, 0.8, 0.6, 0.4)
+            return tuple(zip(tags, weights))
+    return ()

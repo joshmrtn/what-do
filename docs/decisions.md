@@ -1680,3 +1680,76 @@ which is the one thing the ordering is for. The time column carries what the hea
 to say.
 
 **Not to be re-proposed.** Recorded in the CLAUDE.md footgun table for the same reason.
+
+---
+
+## Removing the tag floor makes `tag_confidence` real, and it favours verbose sources
+
+**Decision:** `models.min_tags` drops to 1, split out from
+`scoring.min_tags_per_event`, which stays 5. Recorded here because the visible
+effect is on **ranking**, not on extraction.
+
+**What changes.** Until now every extraction returned exactly five tags —
+measured, never four, never six — because a sub-minimum reply was treated as a
+*failure* and retried until it padded. So `tag_confidence` was `min(1, 5/5) = 1.0`
+on all 861 stored rows: a multiplier that never multiplied. With the floor at 1,
+an honest one-tag extraction now yields `1/5 = 0.2`, and a score is shrunk 80%
+toward zero.
+
+That is the designed behaviour — confidence expresses how much evidence exists,
+and an event we know almost nothing about belongs mid-ranking. But it was
+*dormant*, and switching it on is a real reordering, not a refinement.
+
+**The bias it introduces** (user, 2026-08-11). The penalty is levied on tag
+count, which tracks **how much the source published**, not how good the event is
+or how well we understood it. NSNO prints one line per event; PEM and The Cabot
+print paragraphs. So:
+
+- every terse-source event is damped toward zero together, which flattens the
+  ordering *within* that source, and
+- a mediocre event from a verbose source now outranks a strong one from a terse
+  source, on nothing but the source's house style.
+
+**This is not double-counting.** A single tag that matches a preference perfectly
+produces a *high* `base_score` under `balanced_mean`, since the mean of one
+contribution is that contribution. Confidence is what stops one lucky match
+beating five good ones. Removing it is therefore not the fix.
+
+**Accepted for now, with the bias recorded rather than resolved.** Authored
+karaoke/trivia carry four tags (0.8) and stay competitive; the events that sink
+are name-only music listings we genuinely know nothing about. Whether they
+*deserve* to sink relative to a verbose source is the open question below.
+
+### Confidence will become relative to input length — agreed 2026-08-11
+
+**Chosen: (3) below.** Expected tag count scales with how much text the
+extraction was given. *A 40-character input honestly supports one tag; a
+300-word description yielding one tag is a failed extraction.* That is the
+distinction confidence has always claimed to draw, and tag count alone cannot
+draw it.
+
+It is preferred over the per-source alternatives because **input length already
+encodes the source's house style**, so a terse source earns a low expectation
+without anyone configuring one — including terse sources added later, when
+nobody remembers there is a knob. It needs a curve, and there is no data to fit
+one to yet.
+
+**Not to be built before a run with the floor at 1 has been observed.** The
+signal has never once fired — all 861 stored rows are exactly 1.0 — so anything
+calibrated today would be fitted to a mechanism nobody has seen work.
+
+The candidates, for the record:
+
+1. **Per-source expected tag count** — NSNO expects 1–2, PEM expects 5. Directly
+   addresses the bias; costs a config knob per source and the number is a guess.
+2. **A per-source confidence floor** — simpler, equally arbitrary.
+3. **Expected tags as a function of input length** — a 40-character input
+   honestly supports one tag; a 300-word description yielding one tag *is* a
+   failed extraction. This is the only candidate that measures what confidence
+   claims to measure — *did we get what was there* — and it needs no per-source
+   configuration, because the input length already carries the source's house
+   style.
+
+(3) looks right and is the most work. **Do not tune this before observing a run
+with the floor at 1** — the whole point is that the signal has never once been
+live, so there is no data yet about what it does.

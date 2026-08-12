@@ -556,3 +556,56 @@ def test_a_failing_checkpoint_does_not_end_the_stage():
 
     assert len(saved) == 2
     assert all(e.tags for e in result)
+
+
+class TestAuthoredContentIsNotOverwritten:
+    """Some sources state everything they know; the model can only invent past it.
+
+    NSNO's listing publishes one line — `7:00 PM - Trivia - The James - Essex`.
+    A summary composed from those fields carries all the signal there is, and
+    the model's version came back "an evening of karaoke and trivia" for events
+    that were only ever trivia.
+    """
+
+    def test_an_authored_summary_survives_extraction(self):
+        event = _make_event(
+            summary="Trivia at The James in Essex",
+            metadata={"authored_summary": True},
+        )
+        provider = _make_provider(summary="Join us for a night of karaoke and trivia.")
+
+        ExtractionStage(provider, None, logger=_make_logger()).process([event])
+
+        assert event.summary == "Trivia at The James in Essex"
+
+    def test_tags_still_come_from_the_model_when_only_the_summary_is_authored(self):
+        event = _make_event(
+            summary="Jazz Night at May Flower in Ipswich",
+            metadata={"authored_summary": True},
+        )
+        provider = _make_provider(tags=[Tag(text="jazz", weight=1.0)])
+
+        ExtractionStage(provider, None, logger=_make_logger()).process([event])
+
+        assert [t.text for t in event.tags] == ["jazz"]
+
+    def test_an_event_with_authored_tags_never_reaches_the_model(self):
+        event = _make_event(
+            summary="Trivia at The James in Essex",
+            tags=[Tag(text="trivia", weight=1.0), Tag(text="quiz night", weight=0.8)],
+            metadata={"authored_tags": True, "authored_summary": True},
+        )
+        provider = _make_provider()
+
+        ExtractionStage(provider, None, logger=_make_logger()).process([event])
+
+        provider.extract.assert_not_called()
+        assert [t.text for t in event.tags] == ["trivia", "quiz night"]
+
+    def test_an_ordinary_event_is_still_overwritten(self):
+        event = _make_event(summary="stale summary")
+        provider = _make_provider(summary="fresh summary")
+
+        ExtractionStage(provider, None, logger=_make_logger()).process([event])
+
+        assert event.summary == "fresh summary"

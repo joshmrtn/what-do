@@ -315,7 +315,7 @@ def build_dependencies(
             provider=OllamaExtractionProvider(
                 extraction_client,
                 model=config.models.llm_extraction,
-                min_tags=config.scoring.min_tags_per_event,
+                min_tags=config.models.min_tags,
             ),
             image_fetcher=HttpImageFetcher(),
             logger=logger,

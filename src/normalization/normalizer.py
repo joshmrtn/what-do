@@ -114,7 +114,9 @@ class NormalizationEngine:
         if title is None and start_time is None:
             return None
 
-        metadata: dict[str, Any] = {}
+        # The source's own structured facts come first, so the engine's notes
+        # about what is missing cannot be silently overwritten by a source.
+        metadata: dict[str, Any] = dict(candidate.metadata)
         if title is None:
             metadata["missing_title"] = True
         if start_time is None:
@@ -133,6 +135,11 @@ class NormalizationEngine:
             start_time=start_time,
             timing=candidate.timing,
             end_time=_normalize_timestamp(candidate.end_time, self._tz),
+            # Authored by the adapter for sources that state everything they
+            # know. Both are empty for every other source, where extraction
+            # fills them.
+            summary=candidate.summary,
+            tags=list(candidate.tags),
             metadata=metadata,
             created_at=now,
             updated_at=now,

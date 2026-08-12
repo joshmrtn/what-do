@@ -323,6 +323,13 @@ class ModelsConfig:
     response_format: str | None = "json"
     #: None defers to the server's own default.
     keep_alive: str | None = DEFAULT_LLM_KEEP_ALIVE
+    #: How few tags an extraction may return before it counts as failed.
+    #: **Not** `scoring.min_tags_per_event`, which asks a different question:
+    #: how much evidence counts as complete. One number served both until
+    #: 2026-08-11, so the only way to stop the model padding was to also
+    #: declare thin events fully evidenced. Measured: at five, gemma emitted
+    #: `null_data` and `missing_text` as tags rather than return four.
+    min_tags: int = 1
 
 
 #: When one night's listing gives way to the next. Not midnight: a calendar
@@ -578,6 +585,22 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
                 f"models.request_timeout_seconds must be positive, got {timeout}"
             )
 
+    def _min_tags(default: int) -> int:
+        """Read the extraction floor, rejecting anything below one.
+
+        Zero would let an extraction that produced no tags at all count as
+        successful, and an event with no tags cannot be scored.
+        """
+        if "min_tags" not in raw:
+            return default
+        try:
+            value = int(raw["min_tags"])
+        except (TypeError, ValueError) as error:
+            raise ConfigError(f"models.min_tags is not a number: {raw['min_tags']!r}") from error
+        if value < 1:
+            raise ConfigError(f"models.min_tags must be at least 1, got {value}")
+        return value
+
     def _number(key: str, default: float, low: float, high: float | None) -> float:
         """Read a numeric parameter, rejecting anything outside its range."""
         if key not in raw:
@@ -619,6 +642,7 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
         think=bool(raw.get("think", defaults.think)),
         response_format=response_format,
         keep_alive=keep_alive,
+        min_tags=_min_tags(defaults.min_tags),
     )
 
 

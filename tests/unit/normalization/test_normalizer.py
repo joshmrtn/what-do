@@ -10,6 +10,7 @@ import uuid
 import pytest
 
 from src.models.event_candidate import EventCandidate
+from src.models.tag import Tag
 from src.normalization.normalizer import NormalizationEngine
 
 
@@ -220,3 +221,45 @@ def test_multiple_candidates_all_normalized():
     result = engine.normalize(candidates, get_now=_now)
     assert len(result.events) == 3
     assert len(result.discards) == 0
+
+
+class TestCandidateMetadataSurvives:
+    """A fact a source states must not die at the normalization boundary.
+
+    The listing category is the first such fact. It reaches extraction only if
+    it makes it onto the Event.
+    """
+
+    def test_candidate_metadata_reaches_the_event(self):
+        candidate = _candidate(metadata={"listing_category": "Music"})
+
+        event = _normalize(candidate).events[0]
+
+        assert event.metadata["listing_category"] == "Music"
+
+    def test_it_does_not_displace_the_engines_own_notes(self):
+        candidate = _candidate(title=None, metadata={"listing_category": "Music"})
+
+        event = _normalize(candidate).events[0]
+
+        assert event.metadata["missing_title"] is True
+        assert event.metadata["listing_category"] == "Music"
+
+    def test_an_authored_summary_reaches_the_event(self):
+        candidate = _candidate(summary="Trivia at The James in Essex")
+
+        event = _normalize(candidate).events[0]
+
+        assert event.summary == "Trivia at The James in Essex"
+
+    def test_authored_tags_reach_the_event(self):
+        candidate = _candidate(tags=[Tag(text="trivia", weight=1.0)])
+
+        event = _normalize(candidate).events[0]
+
+        assert [t.text for t in event.tags] == ["trivia"]
+
+    def test_a_candidate_with_no_metadata_is_unchanged(self):
+        event = _normalize(_candidate()).events[0]
+
+        assert "listing_category" not in event.metadata

@@ -1110,3 +1110,31 @@ class TestSiteUrlBySourceType:
             "ics_one": "https://i.example/f.ics",
             "veezi_one": "https://v.example/s",
         }
+
+
+class TestExtractionFloorIsNotTheConfidenceDivisor:
+    """Two different questions that shared one number until 2026-08-11.
+
+    `models.min_tags` is how few tags the model may return before we call the
+    extraction failed. `scoring.min_tags_per_event` is how many tags count as
+    complete evidence. Tying them together meant the only way to stop the model
+    padding was to also declare thin events fully evidenced.
+    """
+
+    def test_the_extraction_floor_defaults_to_one(self, tmp_path):
+        cfg = _load(tmp_path, {})
+
+        assert cfg.models.min_tags == 1
+
+    def test_the_confidence_divisor_is_unchanged_at_five(self, tmp_path):
+        cfg = _load(tmp_path, {})
+
+        assert cfg.scoring.min_tags_per_event == 5
+
+    def test_they_are_configured_independently(self, tmp_path):
+        cfg = _load(
+            tmp_path,
+            {"models": {"min_tags": 3}, "scoring": {"min_tags_per_event": 8}},
+        )
+
+        assert (cfg.models.min_tags, cfg.scoring.min_tags_per_event) == (3, 8)

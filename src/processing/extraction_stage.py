@@ -20,6 +20,17 @@ def extraction_input(event: Event) -> str:
     return "\n".join(filter(None, [event.title, event.description]))
 
 
+def _has_authored_tags(event: Event) -> bool:
+    """Whether this event's tags were written by us rather than extracted.
+
+    Exempt for the same reason synthetic activities are: the tags are authored,
+    so there is nothing for a model to improve and everything for it to invent.
+    A hash rule alone cannot see this — the input changes, the authored output
+    should not.
+    """
+    return bool(event.metadata.get("authored_tags"))
+
+
 def _input_hash(text: str) -> str:
     """Stable digest of an extraction input."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -91,7 +102,7 @@ class ExtractionStage:
         """
         extracted = 0
         for event in events:
-            if event.is_synthetic:
+            if event.is_synthetic or _has_authored_tags(event):
                 continue
             text = extraction_input(event)
             if event.extraction_input_hash == _input_hash(text):
@@ -141,7 +152,13 @@ class ExtractionStage:
         event.extraction_input_hash = _input_hash(text)
 
         event.tags = result.tags
-        event.summary = result.summary
+        # A source that states everything it knows authors its own summary, and
+        # the model can only invent past it. NSNO publishes one line per event;
+        # asked to summarise `Trivia` under a `Karaoke & trivia` heading it
+        # produced "an evening of karaoke and trivia" for events that were only
+        # ever trivia — and that text is embedded and drives dedup pass 2.
+        if not event.metadata.get("authored_summary"):
+            event.summary = result.summary
         event.setting = result.setting
 
         if event.title is None:
