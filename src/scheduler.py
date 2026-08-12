@@ -304,7 +304,14 @@ def run_batch(
     extraction_stage.set_save_fn(None if dry_run else _save_one)
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
     if not dry_run and events:
-        events_repo.replace(stale_ids, events)
+        # Wrapped like every other stage. Unwrapped, this line could end a batch
+        # holding hours of extraction: it re-validates every event, so one bad
+        # one discarded all the rest and the run never reached embedding,
+        # scoring or ranking. Carrying on is a real recovery rather than a
+        # shrug — embedding rebuilds whatever made the event unwritable, and
+        # the save at the end of the run stores it. The stale ids simply go
+        # undeleted until the next run reconciles them again.
+        _stage("event persistence", lambda: events_repo.replace(stale_ids, events))
 
     embedded = _stage("embedding", lambda: embedding_stage.process(events))
     if embedded is None:

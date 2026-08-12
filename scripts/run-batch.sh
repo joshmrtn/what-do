@@ -43,7 +43,14 @@ ln -sfn "${LOG_FILE}" "${LOG_DIR}/batch-latest.log"
     echo "=== args: $* ==="
 } >>"${LOG_FILE}"
 
-PYTHONUNBUFFERED=1 "${BATCH}" "$@" >>"${LOG_FILE}" 2>&1
+# --llm-transcript is on by default here, not merely available. Extraction is
+# the expensive stage -- minutes an event on this hardware -- and a batch that
+# loses its output has no way to get it back except by paying for it twice. On
+# 2026-08-12 a save bug discarded roughly four and a half hours of model calls;
+# every one of them would have been replayable from a transcript. The cost is a
+# few hundred KB a night against a log directory that is otherwise tiny.
+# A later flag wins, so passing --llm-transcript explicitly still overrides this.
+PYTHONUNBUFFERED=1 "${BATCH}" --llm-transcript "$@" >>"${LOG_FILE}" 2>&1
 STATUS=$?
 
 {

@@ -118,8 +118,8 @@ class _FakeExtraction:
         for event in events:
             if event.tags:
                 continue
-            event.tags = [Tag(text="karaoke", weight=1.0)]
-            event.summary = "Karaoke night"
+            event.replace_tags([Tag(text="karaoke", weight=1.0)])
+            event.replace_summary("Karaoke night")
             event.setting = "indoor"
             did.append(event.event_id)
         self.extracted.append(did)
@@ -140,7 +140,7 @@ class _FakeEmbedding:
         for event in events:
             if event.tag_embeddings or not event.tags:
                 continue
-            event.tag_embeddings = [b"\x00\x01"]
+            event.attach_tag_embeddings([b"\x00\x01"] * len(event.tags))
             event.summary_embedding = b"\x02\x03"
             did.append(event.event_id)
         self.embedded.append(did)
@@ -245,9 +245,10 @@ class _SpyRepository:
     persistence to fail.
     """
 
-    def __init__(self, inner, on_save=None) -> None:
+    def __init__(self, inner, on_save=None, on_replace=None) -> None:
         self._inner = inner
         self._on_save = on_save
+        self._on_replace = on_replace
         self.snapshots: list[list[tuple[str, bool, bool]]] = []
         self.replaced: list[list[str]] = []
 
@@ -273,6 +274,9 @@ class _SpyRepository:
     def replace(self, stale_ids, events) -> None:
         self._record(events)
         self.replaced.append(list(stale_ids))
+        if self._on_replace is not None:
+            self._on_replace(events)
+            return
         if self._on_save is not None:
             self._on_save(events)
             return
@@ -353,7 +357,9 @@ def _run(db, *, fresh=None, deps=None, **kwargs):
     fakes.update(deps or {})
 
     save_spy = _SpyRepository(
-        SqliteEventRepository(db), on_save=kwargs.pop("on_save", None)
+        SqliteEventRepository(db),
+        on_save=kwargs.pop("on_save", None),
+        on_replace=kwargs.pop("on_replace", None),
     )
     recs_spy = _SpyRankingRepository()
 
@@ -981,3 +987,43 @@ def test_superseded_events_survive_a_batch_that_dies_before_persisting(db):
         _run(db, fresh=[_event("fresh-1", ["c1"])], on_save=explode)
 
     assert {e.event_id for e in load_events(db)} == {"winner", "loser"}
+
+
+class TestAFailedReplaceDoesNotCostTheNight:
+    """The post-extraction write is the one persistence call that can end a run.
+
+    On 2026-08-12 it did: one event with stale tag vectors made
+    `events_repo.replace` raise, and the batch died at that line having spent
+    four and a half hours on extraction — never reaching embedding, scoring or
+    ranking. Every other stage is wrapped so that "whatever has been saved stays
+    saved, and the batch carries on with what it has". This one was not.
+
+    The recovery is real rather than nominal: embedding rebuilds the vectors
+    that made the event unwritable, so the final save has a repaired event to
+    store.
+    """
+
+    def _explode(self, events):
+        raise ValueError("event evt-x has 1 tags but 5 tag vectors")
+
+    def test_the_batch_survives_it(self, db):
+        result, _, _, _ = _run(db, on_replace=self._explode)
+
+        assert result.outcome == "partial"
+
+    def test_the_failure_is_reported_rather_than_swallowed(self, db):
+        result, _, _, _ = _run(db, on_replace=self._explode)
+
+        assert any("has 1 tags but 5 tag vectors" in e for e in result.errors)
+
+    def test_the_run_still_reaches_ranking(self, db):
+        """The stages after the failure are the ones that produce the listing."""
+        _, _, _, recs_spy = _run(db, on_replace=self._explode)
+
+        assert recs_spy.calls == 1
+
+    def test_the_events_are_still_persisted_by_the_final_save(self, db):
+        """The extraction is what cost hours, so it must survive the failure."""
+        _, _, save_spy, _ = _run(db, on_replace=self._explode)
+
+        assert SqliteEventRepository(db).load_all() != []
