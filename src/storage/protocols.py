@@ -17,6 +17,7 @@ from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.models.run import RunRecord
+from src.storage.http_cache import CachedResponse
 
 
 class EventRepository(Protocol):
@@ -331,4 +332,29 @@ class WeatherCache(Protocol):
         now: datetime,
     ) -> None:
         """Store a forecast, replacing any entry for the same day and place."""
+        ...
+
+
+class HttpCache(Protocol):
+    """Stored responses with whatever validators a server offered.
+
+    Exists so politeness survives a process restart: without persisted
+    validators, a person re-running the batch a few times in an evening turns
+    every run into a full download of somebody else's server.
+    """
+
+    def get(self, url: str) -> CachedResponse | None:
+        """The cached response for a URL, or None if it was never fetched."""
+        ...
+
+    def put(
+        self,
+        url: str,
+        *,
+        body: str,
+        etag: str | None,
+        last_modified: str | None,
+        fetched_at: datetime,
+    ) -> None:
+        """Store a response, replacing any earlier entry for the same URL."""
         ...

@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 import pytest
 
 from src.storage.db import init_db
-from src.storage.http_cache import CachedResponse, read_cache, write_cache
+from src.storage.http_cache import CachedResponse
+from src.storage.sqlite.http_cache import SqliteHttpCache
 
 FETCHED_AT = datetime(2026, 8, 5, 2, 0, tzinfo=timezone.utc)
 URL = "https://example.com/calendar.ics"
@@ -22,13 +23,12 @@ def db(tmp_path):
 
 def test_missing_url_reads_as_none(db):
 
-    assert read_cache(db, URL) is None
+    assert SqliteHttpCache(db).get(URL) is None
 
 
 def test_round_trips_a_response(db):
 
-    write_cache(
-        db,
+    SqliteHttpCache(db).put(
         URL,
         body="BEGIN:VCALENDAR",
         etag='W/"abc"',
@@ -36,7 +36,7 @@ def test_round_trips_a_response(db):
         fetched_at=FETCHED_AT,
     )
 
-    cached = read_cache(db, URL)
+    cached = SqliteHttpCache(db).get(URL)
 
     assert cached == CachedResponse(
         body="BEGIN:VCALENDAR",
@@ -49,9 +49,10 @@ def test_round_trips_a_response(db):
 def test_validators_may_be_absent(db):
     """A server offering neither ETag nor Last-Modified still gets a cached body."""
 
-    write_cache(db, URL, body="X", etag=None, last_modified=None, fetched_at=FETCHED_AT)
+    SqliteHttpCache(db).put(
+        URL, body="X", etag=None, last_modified=None, fetched_at=FETCHED_AT)
 
-    cached = read_cache(db, URL)
+    cached = SqliteHttpCache(db).get(URL)
 
     assert cached is not None
     assert cached.body == "X"
@@ -61,10 +62,12 @@ def test_validators_may_be_absent(db):
 
 def test_writing_the_same_url_replaces_the_entry(db):
 
-    write_cache(db, URL, body="old", etag='"1"', last_modified=None, fetched_at=FETCHED_AT)
-    write_cache(db, URL, body="new", etag='"2"', last_modified=None, fetched_at=FETCHED_AT)
+    SqliteHttpCache(db).put(
+        URL, body="old", etag='"1"', last_modified=None, fetched_at=FETCHED_AT)
+    SqliteHttpCache(db).put(
+        URL, body="new", etag='"2"', last_modified=None, fetched_at=FETCHED_AT)
 
-    cached = read_cache(db, URL)
+    cached = SqliteHttpCache(db).get(URL)
 
     assert cached is not None
     assert cached.body == "new"
@@ -73,11 +76,12 @@ def test_writing_the_same_url_replaces_the_entry(db):
 
 def test_entries_are_isolated_per_url(db):
 
-    write_cache(db, URL, body="one", etag=None, last_modified=None, fetched_at=FETCHED_AT)
-    write_cache(
-        db, "https://other.example/c.ics", body="two",
+    SqliteHttpCache(db).put(
+        URL, body="one", etag=None, last_modified=None, fetched_at=FETCHED_AT)
+    SqliteHttpCache(db).put(
+        "https://other.example/c.ics", body="two",
         etag=None, last_modified=None, fetched_at=FETCHED_AT,
     )
 
-    assert read_cache(db, URL).body == "one"
-    assert read_cache(db, "https://other.example/c.ics").body == "two"
+    assert SqliteHttpCache(db).get(URL).body == "one"
+    assert SqliteHttpCache(db).get("https://other.example/c.ics").body == "two"

@@ -10,7 +10,7 @@ import pytest
 
 from src.ingestion.calendars.fetching import fetch_document
 from src.storage.db import init_db
-from src.storage.http_cache import write_cache
+from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.utils.logging import get_logger
 
 NOW = datetime(2026, 8, 8, 4, 0, tzinfo=timezone.utc)
@@ -77,9 +77,8 @@ def test_a_naive_cached_timestamp_does_not_break_the_fetch(db):
     raised `can't subtract offset-naive and offset-aware datetimes` — and since
     every configured source fetches through here, all seventeen failed at once.
     """
-    write_cache(
-        db_path=db,
-        url=URL,
+    SqliteHttpCache(db).put(
+        URL,
         body="STALE",
         etag=None,
         last_modified=None,

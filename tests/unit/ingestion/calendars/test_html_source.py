@@ -13,7 +13,7 @@ from src.config import FeedConfig
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.models.event_candidate import EventCandidate
 from src.storage.db import init_db
-from src.storage.http_cache import write_cache
+from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.utils.logging import get_logger
 
 EASTERN = zoneinfo.ZoneInfo("America/New_York")
@@ -277,8 +277,8 @@ def test_the_listing_date_comes_from_local_time_not_utc(db):
 
 def test_within_the_fetch_interval_no_request_is_made(db):
 
-    write_cache(
-        db, URL, body=_PAGE, etag=None, last_modified=None,
+    SqliteHttpCache(db).put(
+        URL, body=_PAGE, etag=None, last_modified=None,
         fetched_at=FIXED_NOW - timedelta(hours=1),
     )
     session = _session()

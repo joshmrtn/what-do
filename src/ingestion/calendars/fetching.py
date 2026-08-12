@@ -16,7 +16,8 @@ from typing import Any, Callable
 
 import requests
 
-from src.storage.http_cache import read_cache, write_cache
+from src.storage.protocols import HttpCache
+from src.storage.sqlite.http_cache import SqliteHttpCache
 
 #: Identifies the project rather than impersonating a browser.
 USER_AGENT = "what-do/1.0 (local event aggregator; nightly batch)"
@@ -31,6 +32,7 @@ def fetch_document(
     session: requests.Session,
     db_path: Path | str,
     get_now: Callable[[], datetime],
+    http_cache: HttpCache | None = None,
     min_fetch_interval_hours: float,
     label: str,
     logger: Any = None,
@@ -40,7 +42,10 @@ def fetch_document(
     Args:
         url: Document to fetch.
         session: Injected HTTP session, so tests never reach the network.
-        db_path: Database holding the response cache.
+        db_path: Database holding the response cache, used when no cache is
+            injected.
+        http_cache: Where conditional-request validators are stored. Defaults to
+            the SQLite cache over `db_path`.
         get_now: Injected clock.
         min_fetch_interval_hours: Floor between real requests. Zero disables it.
         label: Source name, used in log messages.
@@ -49,8 +54,10 @@ def fetch_document(
     Returns:
         The document body, from cache when refetching would be impolite.
     """
+    cache: HttpCache = http_cache if http_cache is not None else SqliteHttpCache(db_path)
+
     now = get_now()
-    cached = read_cache(db_path, url)
+    cached = cache.get(url)
 
     if cached is not None and _within_interval(
         cached.fetched_at, now, min_fetch_interval_hours
@@ -74,8 +81,7 @@ def fetch_document(
 
     if response.status_code == 304 and cached is not None:
         _log(logger, f"{label} is unchanged; serving the cached copy")
-        write_cache(
-            db_path,
+        cache.put(
             url,
             body=cached.body,
             etag=cached.etag,
@@ -85,8 +91,7 @@ def fetch_document(
         return cached.body
 
     body = response.text
-    write_cache(
-        db_path,
+    cache.put(
         url,
         body=body,
         etag=response.headers.get("ETag"),

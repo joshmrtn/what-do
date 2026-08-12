@@ -13,7 +13,7 @@ from src.config import FeedConfig
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.models.event_candidate import EventCandidate
 from src.storage.db import init_db
-from src.storage.http_cache import read_cache, write_cache
+from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.utils.logging import get_logger
 
 FIXED_NOW = datetime(2026, 8, 5, 2, 0, tzinfo=timezone.utc)
@@ -259,7 +259,7 @@ def test_first_fetch_stores_the_body_and_validators(db):
     )
     _make_source(db, session=session).fetch()
 
-    cached = read_cache(db, URL)
+    cached = SqliteHttpCache(db).get(URL)
     assert cached is not None
     assert cached.etag == 'W/"v1"'
     assert cached.last_modified == "Wed, 05 Aug 2026 01:00:00 GMT"
@@ -268,8 +268,8 @@ def test_first_fetch_stores_the_body_and_validators(db):
 
 def test_refetch_sends_conditional_headers(db):
 
-    write_cache(
-        db, URL, body=_ONE_EVENT, etag='W/"v1"',
+    SqliteHttpCache(db).put(
+        URL, body=_ONE_EVENT, etag='W/"v1"',
         last_modified="Wed, 05 Aug 2026 01:00:00 GMT",
         fetched_at=FIXED_NOW - timedelta(hours=12),
     )
@@ -283,8 +283,8 @@ def test_refetch_sends_conditional_headers(db):
 
 def test_not_modified_serves_the_cached_body(db):
 
-    write_cache(
-        db, URL, body=_ONE_EVENT, etag='W/"v1"', last_modified=None,
+    SqliteHttpCache(db).put(
+        URL, body=_ONE_EVENT, etag='W/"v1"', last_modified=None,
         fetched_at=FIXED_NOW - timedelta(hours=12),
     )
     session = _session(_response(body="", status=304))
@@ -298,8 +298,8 @@ def test_not_modified_serves_the_cached_body(db):
 def test_within_the_fetch_interval_no_request_is_made(db):
     """Re-running the batch by hand must not mean re-downloading."""
 
-    write_cache(
-        db, URL, body=_ONE_EVENT, etag=None, last_modified=None,
+    SqliteHttpCache(db).put(
+        URL, body=_ONE_EVENT, etag=None, last_modified=None,
         fetched_at=FIXED_NOW - timedelta(hours=1),
     )
     session = _session()
@@ -312,8 +312,8 @@ def test_within_the_fetch_interval_no_request_is_made(db):
 
 def test_once_the_interval_elapses_it_refetches(db):
 
-    write_cache(
-        db, URL, body=_ONE_EVENT, etag=None, last_modified=None,
+    SqliteHttpCache(db).put(
+        URL, body=_ONE_EVENT, etag=None, last_modified=None,
         fetched_at=FIXED_NOW - timedelta(hours=7),
     )
     session = _session()
@@ -325,8 +325,8 @@ def test_once_the_interval_elapses_it_refetches(db):
 
 def test_a_zero_interval_always_refetches(db):
 
-    write_cache(
-        db, URL, body=_ONE_EVENT, etag=None, last_modified=None, fetched_at=FIXED_NOW,
+    SqliteHttpCache(db).put(
+        URL, body=_ONE_EVENT, etag=None, last_modified=None, fetched_at=FIXED_NOW,
     )
     session = _session()
 
