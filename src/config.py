@@ -348,6 +348,13 @@ class ModelsConfig:
     #: declare thin events fully evidenced. Measured: at five, gemma emitted
     #: `null_data` and `missing_text` as tags rather than return four.
     min_tags: int = 1
+    #: How much model time one run may spend on extraction, or None for no
+    #: bound. Extraction is the only stage measured in minutes an event, so it
+    #: is the only one worth bounding — a cold start against a 45-day horizon
+    #: was measured at 14.9h and 19.7h, and any change to `extraction_input`
+    #: re-extracts the whole corpus. Events the budget defers write no hash and
+    #: are picked up by the next run, soonest first.
+    extraction_budget_minutes: float | None = 300.0
 
 
 #: When one night's listing gives way to the next. Not midnight: a calendar
@@ -619,6 +626,31 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
             raise ConfigError(f"models.min_tags must be at least 1, got {value}")
         return value
 
+    def _budget(default: float | None) -> float | None:
+        """Read the extraction budget, where an explicit null means no bound.
+
+        Distinguished from absent on purpose: absent takes the shipped default,
+        null asks for the unbounded behaviour that predates the key. Zero is
+        rejected because it would defer every event on every run while looking
+        configured.
+        """
+        if "extraction_budget_minutes" not in raw:
+            return default
+        value = raw["extraction_budget_minutes"]
+        if value is None:
+            return None
+        try:
+            minutes = float(value)
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                f"models.extraction_budget_minutes is not a number: {value!r}"
+            ) from error
+        if minutes <= 0:
+            raise ConfigError(
+                f"models.extraction_budget_minutes must be positive, got {minutes}"
+            )
+        return minutes
+
     def _number(key: str, default: float, low: float, high: float | None) -> float:
         """Read a numeric parameter, rejecting anything outside its range."""
         if key not in raw:
@@ -661,6 +693,7 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
         response_format=response_format,
         keep_alive=keep_alive,
         min_tags=_min_tags(defaults.min_tags),
+        extraction_budget_minutes=_budget(defaults.extraction_budget_minutes),
     )
 
 

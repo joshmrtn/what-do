@@ -345,6 +345,7 @@ def build_dependencies(
             image_fetcher=HttpImageFetcher(),
             logger=logger,
             get_now=get_now,
+            budget_minutes=config.models.extraction_budget_minutes,
         ),
         embedding_stage=EmbeddingStage(
             embedding_provider,

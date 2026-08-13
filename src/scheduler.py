@@ -291,6 +291,11 @@ def run_batch(
     # checkpoints included.
     extraction_stage.set_save_fn(None if dry_run else _save_one)
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
+    # Read off the stage rather than counted here: an event with no hash may
+    # have been deferred by the budget or refused by an unavailable provider,
+    # and only the stage knows which. Not an error — the run ranks what it has —
+    # but a count that stays high means the budget is set too low.
+    result.stage_counts["extraction_deferred"] = extraction_stage.deferred
     if not dry_run and events:
         # Wrapped like every other stage. Unwrapped, this line could end a batch
         # holding hours of extraction: it re-validates every event, so one bad

@@ -186,6 +186,16 @@ class _StageSpy:
             raise self.error
         return self._inner.process(events)
 
+    def __getattr__(self, name):
+        """Everything not recorded here belongs to the stage being wrapped.
+
+        Without this the spy silently *narrows* the interface it stands for —
+        `extraction_stage.deferred` raised `AttributeError` through the spy
+        while working perfectly in production, which is the drift a recording
+        double is supposed to be incapable of.
+        """
+        return getattr(self._inner, name)
+
 
 def _stage_log():
     return get_logger("batch_test_stages", stream=io.StringIO())
@@ -1377,3 +1387,18 @@ def test_one_failing_source_does_not_lose_the_others(db):
     assert result.failed_sources == ["broken"]
     assert result.outcome == "success"
     assert fakes["ranking_engine"].titles == [["Quiz Night"]]
+
+
+def test_the_run_reports_events_the_budget_deferred(db):
+    """A deferral is not a failure — the run continues and ranks what it has —
+    but a count that stays high run after run is the signal the budget is set
+    too low, and nothing else in the summary would say so."""
+    log = _stage_log()
+    stage = ExtractionStage(
+        _ExtractionModel(), None, log, get_now=lambda: NOW, budget_minutes=0
+    )
+    result, _, _, _ = _run(db, deps={"extraction_stage": _StageSpy(stage)})
+
+    assert result.outcome == "success"
+    assert result.stage_counts["extraction_deferred"] == stage.deferred
+    assert stage.deferred > 0

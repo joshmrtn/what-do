@@ -1138,3 +1138,42 @@ class TestExtractionFloorIsNotTheConfidenceDivisor:
         )
 
         assert (cfg.models.min_tags, cfg.scoring.min_tags_per_event) == (3, 8)
+
+
+class TestTheExtractionBudget:
+    """How much model time one run may spend on extraction.
+
+    Sits beside `models.min_tags` because both are extraction's terms for the
+    model rather than model selection. Named in full so it cannot be mistaken
+    for a bound on the run as a whole — extraction is the only stage measured
+    in minutes an event, and the only one worth bounding.
+    """
+
+    def test_it_defaults_to_five_hours(self, tmp_path):
+        """A bound out of the box, because the alternative is a fresh
+        deployment extracting a 45-day horizon in one sitting — measured at
+        14.9h and 19.7h — and nobody remembering to set the key."""
+        cfg = _load(tmp_path, {})
+
+        assert cfg.models.extraction_budget_minutes == 300
+
+    def test_it_can_be_raised(self, tmp_path):
+        cfg = _load(tmp_path, {"models": {"extraction_budget_minutes": 480}})
+
+        assert cfg.models.extraction_budget_minutes == 480
+
+    def test_it_can_be_disabled(self, tmp_path):
+        """Null means no bound, which is what every test that does not care
+        about the budget gets, and what the behaviour was before it existed."""
+        cfg = _load(tmp_path, {"models": {"extraction_budget_minutes": None}})
+
+        assert cfg.models.extraction_budget_minutes is None
+
+    def test_a_non_positive_budget_is_rejected(self, tmp_path):
+        """Zero would defer every event forever while looking configured."""
+        with pytest.raises(ConfigError, match="extraction_budget_minutes"):
+            _load(tmp_path, {"models": {"extraction_budget_minutes": 0}})
+
+    def test_a_non_numeric_budget_is_rejected(self, tmp_path):
+        with pytest.raises(ConfigError, match="extraction_budget_minutes"):
+            _load(tmp_path, {"models": {"extraction_budget_minutes": "overnight"}})

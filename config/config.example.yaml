@@ -243,6 +243,23 @@ models:
   # gemma4:e4b emitted `null_data` and `missing_text` as tags. Those get
   # embedded and scored against your preferences like any real tag.
   min_tags: 1
+
+  # How much model time one run may spend on extraction, in minutes.
+  #
+  # Extraction is the only stage measured in minutes an *event*, so it is the
+  # only one worth bounding. A first run against a 45-day horizon extracts a
+  # month and a half in one sitting — measured at 14.9h and 19.7h — and any
+  # change to the extraction input re-extracts the whole corpus.
+  #
+  # Events the budget defers write no hash, so the next run picks them up.
+  # Work is ordered soonest-first, which means tonight's events are always
+  # done before the backlog however deep it runs — so a bound costs lookahead,
+  # never tonight.
+  #
+  # 300 (5h) leaves a 02:00 batch finished by 07:00. Raise it if you want the
+  # horizon to fill in faster; set it to null for no bound at all.
+  extraction_budget_minutes: 300
+
   llm_extraction: "gemma4:e4b"
   llm_disambiguation: "gemma4:e2b"
   embeddings: "nomic-embed-text"

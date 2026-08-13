@@ -6,7 +6,7 @@ by extracting tags, summary, and filling missing fields via LLM.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from src.models.event import Event
@@ -17,6 +17,32 @@ from src.processing.extraction_input import (
 )
 from src.processing.extraction import ExtractionError, ExtractionProvider
 from src.processing.image_fetcher import ImageFetchError, ImageFetcher
+
+
+def _extraction_order(events: list[Event]) -> list[Event]:
+    """Soonest first, undated last, as a new list.
+
+    A budget means some events go unextracted, so which ones is a decision
+    rather than an accident: tonight's must be ready tomorrow however deep the
+    backlog runs. It also gives the unavailable-provider path the right failure
+    mode for free, since whatever a run does not reach is furthest out.
+
+    Sorted on a POSIX timestamp rather than on the datetime: sources genuinely
+    differ in whether they state an offset — JSON-LD does, HTML listings do not
+    — and comparing an aware value with a naive one raises. Reading a naive
+    value as local time is a guess about *ordering* only, never about the data.
+
+    Undated last because such an event is usually a standing listing rather
+    than an imminent one. It still ranks inline; this is only which of our own
+    work we do first.
+    """
+
+    def key(event: Event) -> tuple[int, float]:
+        if event.start_time is None:
+            return (1, 0.0)
+        return (0, event.start_time.timestamp())
+
+    return sorted(events, key=key)
 
 
 def _has_authored_tags(event: Event) -> bool:
@@ -56,6 +82,12 @@ class ExtractionStage:
             that saving only at the end risks losing all of it. Called only for
             real model calls — a pass that skips everything on its hash writes
             nothing.
+        budget_minutes: How long this stage may spend on model calls, or None
+            for no bound. Extraction is the only stage measured in minutes an
+            event, so it is the only one worth bounding: a cold start against a
+            45-day horizon was measured at 14.9h, and changing `extraction_input`
+            re-extracts the whole corpus. Events the budget defers write no hash
+            and are picked up by the next run.
     """
 
     def __init__(
@@ -65,12 +97,18 @@ class ExtractionStage:
         logger: Any,
         get_now: Callable[[], datetime] = datetime.now,
         save_fn: Callable[[Event], None] | None = None,
+        budget_minutes: float | None = None,
     ) -> None:
         self._provider = provider
         self._image_fetcher = image_fetcher
         self._logger = logger
         self._get_now = get_now
         self._save_fn = save_fn
+        self._budget_minutes = budget_minutes
+        #: How many events the last `process` wanted to extract and could
+        #: not, because the budget ran out. Describes the run just
+        #: finished, so it is reset at the top of every pass.
+        self.deferred = 0
 
     def set_save_fn(self, save_fn: Callable[[Event], None] | None) -> None:
         """Set where checkpoints go, or None to disable them.
@@ -90,19 +128,46 @@ class ExtractionStage:
             Same list with tags, summary, and optional field fills applied.
         """
         extracted = 0
-        for event in events:
+        self.deferred = 0
+        deadline = self._deadline()
+
+        # Iterated in priority order, returned in the caller's. The orchestrator
+        # hands this same list to embedding and to the save, so re-ordering it
+        # is a side effect nothing asked for.
+        for event in _extraction_order(events):
             if event.is_synthetic or _has_authored_tags(event):
                 continue
             text = extraction_input(event)
             if event.extraction_input_hash == input_hash(text):
                 continue
+            # After the skips, so an event that never reaches the model costs
+            # nothing against a budget denominated in model time. Before the
+            # call rather than during it: one event may overshoot, which is far
+            # cheaper than abandoning minutes already spent.
+            if deadline is not None and self._get_now() >= deadline:
+                self.deferred += 1
+                continue
             self._extract(event, text)
             extracted += 1
-            self._checkpoint(event, extracted)
+            self._checkpoint(event, extracted=extracted)
+
+        if self.deferred:
+            self._logger.info(
+                f"extraction budget spent after {extracted} events; "
+                f"{self.deferred} deferred to the next run",
+                component="extraction_stage",
+                duration_ms=0,
+            )
 
         return events
 
-    def _checkpoint(self, event: Event, extracted: int) -> None:
+    def _deadline(self) -> datetime | None:
+        """When this stage must stop starting new work, or None if unbounded."""
+        if self._budget_minutes is None:
+            return None
+        return self._get_now() + timedelta(minutes=self._budget_minutes)
+
+    def _checkpoint(self, event: Event, *, extracted: int) -> None:
         """Persist the event just extracted, never ending the stage.
 
         A failing save must not throw away the model time it was protecting —

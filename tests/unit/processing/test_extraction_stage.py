@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, call
 import io
 
@@ -1008,3 +1008,230 @@ class TestADegradedExtractionIsRecordedAndFinished:
         stage.process([event])
 
         assert "llm_extraction_failed" not in event.metadata
+
+
+class TestTheExtractionBudget:
+    """Extraction is the only stage measured in minutes an event, so it is the
+    only one that needs bounding.
+
+    A cold start against a 45-day horizon was measured at 14.9h and 19.7h, and
+    changing `extraction_input` re-extracts the whole corpus — ~1,440 events,
+    roughly 45h. Without a bound those land in one night. With one they land
+    over several, soonest-first, so tonight is always ready tomorrow.
+    """
+
+    @staticmethod
+    def _clock(minutes_per_event):
+        """A clock that advances only when the provider is called."""
+        state = {"now": datetime(2026, 6, 22, 2, 0, 0, tzinfo=timezone.utc)}
+
+        def get_now():
+            return state["now"]
+
+        def tick(*_args, **_kwargs):
+            state["now"] += timedelta(minutes=minutes_per_event)
+            return _make_provider().extract.return_value
+
+        return get_now, tick
+
+    def test_it_stops_once_the_budget_is_spent(self):
+        """Three, not two. Events start at 0, 4 and 8 minutes and the budget is
+        10, so the third starts inside it and finishes at 12 — the bounded
+        overshoot the check-before rule buys deliberately."""
+        get_now, tick = self._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=10
+        )
+        events = [_make_event(event_id=f"evt-{i}") for i in range(5)]
+
+        stage.process(events)
+
+        assert provider.extract.call_count == 3
+
+    def test_a_deferred_event_stays_retryable(self):
+        """No hash, so the next run picks it up — the same mechanism an
+        unavailable provider already uses."""
+        get_now, tick = self._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=10
+        )
+        events = [_make_event(event_id=f"evt-{i}") for i in range(5)]
+
+        stage.process(events)
+
+        assert events[-1].extraction_input_hash is None
+        assert events[-1].extraction_model is None
+
+    def test_no_budget_extracts_everything(self):
+        """Today's behaviour, and what almost every caller wants."""
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        events = [_make_event(event_id=f"evt-{i}") for i in range(5)]
+
+        stage.process(events)
+
+        assert provider.extract.call_count == 5
+
+    def test_the_budget_is_checked_before_an_event_not_during_it(self):
+        """One event may overshoot; the alternative is abandoning model time
+        already spent, which is the thing the checkpoint exists to protect."""
+        get_now, tick = self._clock(minutes_per_event=30)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=10
+        )
+        events = [_make_event(event_id=f"evt-{i}") for i in range(3)]
+
+        stage.process(events)
+
+        assert provider.extract.call_count == 1
+        assert events[0].extraction_input_hash is not None
+
+    def test_a_skipped_event_is_never_counted_as_deferred(self):
+        """An event whose hash matches never wanted the model, so a spent budget
+        has not denied it anything. Counting it would inflate the one number
+        that says whether the budget is set too low.
+
+        Asserted on the log rather than the call count, because a skip consumes
+        no model time either way — the call count cannot tell the orderings
+        apart, and a test that cannot fail is worse than no test.
+        """
+        stream = io.StringIO()
+        logger = get_logger("test_budget", stream=stream)
+        get_now, tick = self._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        # Zero budget: every event that wants the model is deferred immediately.
+        stage = ExtractionStage(provider, None, logger, get_now=get_now, budget_minutes=0)
+        done = _make_event(event_id="already-done", tags=[Tag(text="jazz")])
+        done.extraction_input_hash = extraction_input_hash(done)
+
+        stage.process([done, _make_event(event_id="evt-0")])
+
+        provider.extract.assert_not_called()
+        assert "1 deferred" in stream.getvalue()
+
+
+class TestExtractionOrder:
+    """Soonest first, so tonight is ready tomorrow however deep the backlog.
+
+    It also gives the unavailable-provider path the right failure mode for
+    free: whatever a run does not reach is the stuff furthest out.
+    """
+
+    @staticmethod
+    def _order_recording_provider():
+        """Records the title of each event as the model is asked about it."""
+        seen: list[str] = []
+        provider = MagicMock()
+
+        def record(text, **_kwargs):
+            seen.append(text.split("\n")[0])
+            return _make_provider().extract.return_value
+
+        provider.extract.side_effect = record
+        return provider, seen
+
+    def test_events_are_extracted_soonest_first(self):
+        provider, seen = self._order_recording_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        events = [
+            _make_event(event_id="c", title="Third", start_time=datetime(2026, 7, 3, tzinfo=timezone.utc)),
+            _make_event(event_id="a", title="First", start_time=datetime(2026, 7, 1, tzinfo=timezone.utc)),
+            _make_event(event_id="b", title="Second", start_time=datetime(2026, 7, 2, tzinfo=timezone.utc)),
+        ]
+
+        stage.process(events)
+
+        assert seen == ["First", "Second", "Third"]
+
+    def test_the_returned_list_keeps_its_original_order(self):
+        """`process` hands this list straight back to the orchestrator, which
+        saves it and passes it on. Re-ordering the caller's list is a side
+        effect nothing asked for."""
+        provider, _ = self._order_recording_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        events = [
+            _make_event(event_id="c", start_time=datetime(2026, 7, 3, tzinfo=timezone.utc)),
+            _make_event(event_id="a", start_time=datetime(2026, 7, 1, tzinfo=timezone.utc)),
+        ]
+
+        returned = stage.process(events)
+
+        assert [e.event_id for e in returned] == ["c", "a"]
+
+    def test_undated_events_go_last(self):
+        provider, seen = self._order_recording_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        events = [
+            _make_event(event_id="u", title="Undated", start_time=None),
+            _make_event(event_id="a", title="Dated", start_time=datetime(2026, 7, 1, tzinfo=timezone.utc)),
+        ]
+
+        stage.process(events)
+
+        assert seen == ["Dated", "Undated"]
+
+    def test_a_spent_budget_defers_the_furthest_out(self):
+        get_now, tick = TestTheExtractionBudget._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        # Three, not five: starts happen at 0 and 4 minutes, so a budget of 5
+        # would admit both and prove nothing about the order.
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=3
+        )
+        soon = _make_event(event_id="soon", start_time=datetime(2026, 7, 1, tzinfo=timezone.utc))
+        later = _make_event(event_id="later", start_time=datetime(2026, 9, 1, tzinfo=timezone.utc))
+
+        stage.process([later, soon])
+
+        assert soon.extraction_input_hash is not None
+        assert later.extraction_input_hash is None
+
+    def test_mixed_naive_and_aware_start_times_do_not_raise(self):
+        """Sources genuinely differ — JSON-LD states an offset, HTML listings do
+        not — and comparing the two forms directly raises."""
+        provider, seen = self._order_recording_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        events = [
+            _make_event(event_id="naive", title="Naive", start_time=datetime(2026, 7, 5)),
+            _make_event(event_id="aware", title="Aware", start_time=datetime(2026, 7, 1, tzinfo=timezone.utc)),
+        ]
+
+        stage.process(events)
+
+        assert len(seen) == 2
+
+
+def test_the_stage_reports_how_many_events_it_deferred():
+    """The orchestrator cannot count these itself: an event with no hash may
+    have been deferred, or the provider may have been unavailable, and those
+    want different responses. A deferral count that stays high run after run is
+    the signal the budget is set too low."""
+    get_now, tick = TestTheExtractionBudget._clock(minutes_per_event=4)
+    provider = MagicMock()
+    provider.extract.side_effect = tick
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=get_now, budget_minutes=3)
+    events = [_make_event(event_id=f"evt-{i}") for i in range(4)]
+
+    stage.process(events)
+
+    assert stage.deferred == 3
+
+
+def test_the_deferral_count_resets_between_runs():
+    """It describes the run just finished, not every run since startup."""
+    provider = _make_provider()
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now, budget_minutes=0)
+    stage.process([_make_event(event_id="evt-0")])
+    assert stage.deferred == 1
+
+    stage_again = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    stage_again.process([_make_event(event_id="evt-1")])
+    assert stage_again.deferred == 0

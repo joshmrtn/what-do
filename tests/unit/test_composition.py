@@ -327,3 +327,24 @@ class TestPersistenceIsWiredToTheDatabase:
         finally:
             conn.close()
         assert rows == ["cand-1"]
+
+
+def test_the_extraction_budget_reaches_the_stage(paths):
+    """The stage defaults `budget_minutes` to None because almost all of its 60
+    construction sites want no bound. That default's one real risk is this root
+    silently never passing one, leaving production unbounded while every test
+    still passes — so the wiring gets its own assertion rather than 60 noisier
+    call sites."""
+    config = _config(models=ModelsConfig(extraction_budget_minutes=90))
+
+    deps = _build(paths, config=config)
+
+    assert deps.extraction_stage._budget_minutes == 90
+
+
+def test_an_unbounded_budget_reaches_the_stage_as_none(paths):
+    config = _config(models=ModelsConfig(extraction_budget_minutes=None))
+
+    deps = _build(paths, config=config)
+
+    assert deps.extraction_stage._budget_minutes is None
