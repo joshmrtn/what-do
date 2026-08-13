@@ -20,6 +20,7 @@ from src.config import (
 from src.models.event import Event
 from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
+from src.processing.extraction_input import extraction_input
 from src.scoring.ranking import (
     RankingEngine,
 )
@@ -655,3 +656,35 @@ class TestTagConfidenceFollowsInputLength:
         )
 
         assert self._confidence(event) == pytest.approx(1.0)
+
+
+def test_confidence_measures_the_text_extraction_actually_read():
+    """One definition of the input, shared by the hasher and the measurer.
+
+    Extraction hashes this text to decide whether to spend minutes on an event
+    again; ranking measures it to decide how much a thin tag list means. A
+    second, drifting definition would let an event re-extract while being judged
+    against the length of something else — and the drift would be silent, since
+    both halves would still look individually correct.
+
+    Asserted through the confidence value rather than the reason string: the
+    reason calls `extraction_input` a second time, so pinning it passes happily
+    while the arithmetic reads something else entirely.
+
+    Guards a change already on the roadmap: feeding the TMDb synopsis into
+    extraction lengthens this text, and ranking has to see the same growth or it
+    will expect the tags of a title from a paragraph.
+    """
+    plain = _event("plain", tag_count=1)
+    plain.description = "A short description."
+
+    labelled = _event("labelled", tag_count=1)
+    labelled.description = "A short description."
+    # Part of what the model reads, so part of what it could have earned tags from.
+    labelled.metadata["listing_category"] = "Music and nightlife listings"
+
+    scores, _ = _rank_split([plain, labelled])
+    by_id = {s.event_id: s for s in scores}
+
+    assert len(extraction_input(labelled)) > len(extraction_input(plain))
+    assert by_id["labelled"].tag_confidence < by_id["plain"].tag_confidence
