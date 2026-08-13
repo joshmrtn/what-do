@@ -55,6 +55,8 @@ def _make_provider(tags=None, summary="A great event.", setting="unknown"):
         tags=tags or [Tag(text=t) for t in
                       ["jazz", "live music", "evening", "venue", "weekend"]],
         summary=summary,
+        model="fake-extraction-model",
+        prompt_version="fakever0",
         setting=setting,
     )
     return provider
@@ -305,7 +307,8 @@ def test_one_failed_event_does_not_stop_others():
         ExtractionError("bad"),
         ExtractionResult(
             title=None, venue=None, start_time=None, end_time=None,
-            tags=[Tag(text=c) for c in "abcde"], summary="Good."
+            tags=[Tag(text=c) for c in "abcde"], summary="Good.",
+            model="fake-extraction-model", prompt_version="fakever0",
         ),
     ]
 
@@ -427,6 +430,8 @@ def test_an_extraction_returning_no_tags_is_not_retried_forever():
         end_time=None,
         tags=[],
         summary="Nothing much to say about this one.",
+        model="fake-extraction-model",
+        prompt_version="fakever0",
     )
     stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
     event = _make_event()

@@ -139,6 +139,8 @@ class _ExtractionModel:
             # summary gives every event an identical one, and dedup pass 2 —
             # now real — merges them as duplicates of each other.
             summary=f"Karaoke night: {text}",
+            model="fake-extraction-model",
+            prompt_version="fakever0",
             setting="indoor",
         )
 

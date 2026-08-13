@@ -6,6 +6,7 @@ tags, summary, and optional title/venue/time corrections.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -33,6 +34,9 @@ class ExtractionResult:
         end_time: Parsed end datetime (None if not determinable).
         tags: Weighted descriptive tags for the event (minimum min_tags).
         summary: One-sentence event summary.
+        model: The model that actually produced this, which is not always the
+            one configured — a failover chain can answer from another.
+        prompt_version: Which prompt produced it, from `_prompt_version`.
         setting: "indoor", "outdoor", or "unknown".
     """
 
@@ -42,6 +46,13 @@ class ExtractionResult:
     end_time: datetime | None
     tags: list[Tag]
     summary: str
+    #: Provenance travels with the result rather than being read off the
+    #: provider afterwards, so a caller cannot record a model and prompt that
+    #: did not produce the tags in front of it. Both are required, with no
+    #: default: a default would let a construction site silently record nothing,
+    #: and the rows it wrote would be indistinguishable from honest ones.
+    model: str
+    prompt_version: str
     setting: str = "unknown"
 
 
@@ -206,6 +217,25 @@ Remember: tag only what the text supports, each with a centrality weight where
 Output ONLY the JSON."""
 
 
+def _prompt_version() -> str:
+    """Identify the instructions an extraction was given.
+
+    Derived from the prompt text rather than hand-maintained. A version constant
+    someone must remember to bump is bumped at the one moment they are thinking
+    about wording rather than bookkeeping, and a version that silently lies is
+    worse than none: the refit would pool rows produced by different prompts.
+
+    Both prompts are covered because the retry path produces the final answer
+    for some events, so two rows claiming one version must not have been given
+    different instructions.
+
+    Returns:
+        A short stable digest of the prompt text.
+    """
+    material = (_EXTRACT_PROMPT + _RETRY_PROMPT).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()[:8]
+
+
 class OllamaExtractionProvider(ExtractionProvider):
     """Extracts structured event data using a local Ollama LLM.
 
@@ -319,6 +349,8 @@ class OllamaExtractionProvider(ExtractionProvider):
             end_time=end_time,
             tags=tags,
             summary=summary,
+            model=self._model,
+            prompt_version=_prompt_version(),
             setting=_parse_setting(data.get("setting")),
         ), ""
 

@@ -84,6 +84,83 @@ def test_no_reference_date_omits_date_context():
 
 
 # ---------------------------------------------------------------------------
+# Provenance — what actually answered
+# ---------------------------------------------------------------------------
+
+
+def test_result_names_the_model_that_answered():
+    """Configured and actual can differ, and the refit needs the actual one."""
+    client = _make_client(_valid_response())
+    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+
+    result = provider.extract("some event text")
+
+    assert result.model == "gemma4:e4b"
+
+
+def test_result_names_the_model_after_a_retry():
+    """The retry is a second call and could in principle route elsewhere; the
+    result must describe the attempt that actually produced it."""
+    client = MagicMock()
+    client.chat.side_effect = ["not json at all", _valid_response()]
+    provider = OllamaExtractionProvider(client=client, model="gemma4:e2b", min_tags=5)
+
+    result = provider.extract("some event text")
+
+    assert result.model == "gemma4:e2b"
+
+
+def test_result_carries_a_prompt_version():
+    client = _make_client(_valid_response())
+    provider = OllamaExtractionProvider(client=client, min_tags=5)
+
+    result = provider.extract("some event text")
+
+    assert result.prompt_version
+
+
+def test_prompt_version_is_stable_across_calls():
+    """It groups rows for the refit, so it cannot vary with the event text."""
+    first = OllamaExtractionProvider(client=_make_client(_valid_response()), min_tags=5)
+    second = OllamaExtractionProvider(client=_make_client(_valid_response()), min_tags=5)
+
+    assert (
+        first.extract("a jazz night").prompt_version
+        == second.extract("an entirely different event").prompt_version
+    )
+
+
+def test_prompt_version_tracks_the_retry_prompt_too():
+    """The retry path produces the final answer for some events, so two rows
+    claiming one version must not have been given different instructions."""
+    from src.processing import extraction
+
+    before = extraction._prompt_version()
+    original = extraction._RETRY_PROMPT
+    try:
+        extraction._RETRY_PROMPT = original + "\nAnd be terse about it."
+        after = extraction._prompt_version()
+    finally:
+        extraction._RETRY_PROMPT = original
+
+    assert before != after
+
+
+def test_prompt_version_changes_when_the_extract_prompt_changes():
+    from src.processing import extraction
+
+    before = extraction._prompt_version()
+    original = extraction._EXTRACT_PROMPT
+    try:
+        extraction._EXTRACT_PROMPT = original + "\nAlways answer in limerick form."
+        after = extraction._prompt_version()
+    finally:
+        extraction._EXTRACT_PROMPT = original
+
+    assert before != after
+
+
+# ---------------------------------------------------------------------------
 # ExtractionProvider ABC
 # ---------------------------------------------------------------------------
 
@@ -99,6 +176,8 @@ def test_mock_provider_satisfies_abc():
                 end_time=None,
                 tags=["a", "b", "c", "d", "e"],
                 summary="A test event.",
+                model="mock-model",
+                prompt_version="mockver0",
             )
 
     provider = MockProvider()

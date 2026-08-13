@@ -1046,6 +1046,8 @@ class _CountingExtraction:
             end_time=None,
             tags=[Tag(text="live music", weight=1.0), Tag(text="bar", weight=0.4)],
             summary="An evening of live music at a local bar.",
+            model="fake-extraction-model",
+            prompt_version="fakever0",
             setting="indoor",
         )
 
