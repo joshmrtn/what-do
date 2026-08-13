@@ -120,13 +120,15 @@ def test_zero_width_space_is_stripped_from_the_title(cache):
     assert "​" not in candidate.venue
 
 
-def test_category_segment_is_prepended_to_the_description(cache):
-    """Category is real signal, but must not become a tag and bypass extraction."""
+def test_a_carried_category_becomes_structured_metadata(cache):
+    """Not prose. The prompt names `Event category` and says what it is — a
+    taxonomy from a listing site, not a claim about this event — and it can only
+    do that for a field it can see."""
 
     candidate = _make_source(cache).fetch()[0]
 
-    assert candidate.description is not None
-    assert candidate.description.startswith("Category: Music")
+    assert candidate.metadata["listing_category"] == "Music"
+    assert candidate.description is None
 
 
 def test_two_segment_prefix_has_no_category(cache):
@@ -143,7 +145,9 @@ def test_two_segment_prefix_has_no_category(cache):
     assert candidate.description is None
 
 
-def test_description_keeps_its_own_text_below_the_category(cache):
+def test_the_feeds_own_description_is_left_alone(cache):
+    """It used to be welded to the heading with a blank line that normalization
+    then collapsed, so the model read `Category: Music Doors at 7.`."""
 
     ics = _calendar(
         "UID:a@x\r\nSUMMARY:​[Venue\\, City\\, Music] Show\r\n"
@@ -151,8 +155,35 @@ def test_description_keeps_its_own_text_below_the_category(cache):
     )
     candidate = _make_source(cache, session=_session(_response(ics))).fetch()[0]
 
-    assert "Category: Music" in candidate.description
-    assert "Doors at 7." in candidate.description
+    assert candidate.description == "Doors at 7."
+    assert candidate.metadata["listing_category"] == "Music"
+
+
+def test_a_null_bucket_heading_is_dropped_entirely(cache):
+    """Measured on the live database: 30 stored events carried `Other` and 21
+    carried `Karaoke & trivia` into the model as unlabelled prose — the exact
+    headings the HTML path already withheld."""
+
+    for heading in ("Other", "Karaoke & trivia"):
+        ics = _calendar(
+            f"UID:a@x\r\nSUMMARY:​[Venue\\, City\\, {heading}] Trivia\r\n"
+            "DTSTART:20260806T230000Z"
+        )
+        candidate = _make_source(cache, session=_session(_response(ics))).fetch()[0]
+
+        assert "listing_category" not in candidate.metadata, heading
+        assert candidate.description is None, heading
+
+
+def test_a_dropped_heading_still_leaves_the_description(cache):
+    ics = _calendar(
+        "UID:a@x\r\nSUMMARY:​[Venue\\, City\\, Other] Show\r\n"
+        "DESCRIPTION:Doors at 7.\r\nDTSTART:20260806T230000Z"
+    )
+    candidate = _make_source(cache, session=_session(_response(ics))).fetch()[0]
+
+    assert candidate.description == "Doors at 7."
+    assert "listing_category" not in candidate.metadata
 
 
 def test_unconventional_summary_keeps_the_event_and_warns(cache):

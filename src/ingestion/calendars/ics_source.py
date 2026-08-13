@@ -22,6 +22,7 @@ import requests
 from src.storage.protocols import HttpCache
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
+from src.ingestion.calendars.listing_category import category_metadata
 from src.ingestion.ics import VEvent, parse_ics
 from src.ingestion.recurrence import Occurrence, expand_calendar
 from src.ingestion.source import IngestionSource
@@ -182,7 +183,7 @@ class IcsCalendarSource(IngestionSource):
             source=self._config.name,
             source_type=self._config.source_type,
             title=title,
-            description=self._build_description(event.description, category),
+            description=self._build_description(event.description),
             # A summary that names a venue is more specific than the feed's
             # blanket attribution, so the configured default only fills a gap.
             venue=venue or self._config.venue,
@@ -196,6 +197,9 @@ class IcsCalendarSource(IngestionSource):
             # the ingestion lookback discards on.
             raw_published_at=None,
             discovered_at=self._get_now(),
+            # Through the same filter the HTML adapter uses, because both
+            # adapters read the same listing's sections.
+            metadata=category_metadata(category),
         )
 
     def _candidate_id(self, occurrence: Occurrence, uid: str) -> str:
@@ -249,19 +253,19 @@ class IcsCalendarSource(IngestionSource):
         return title, venue, city, category
 
     @staticmethod
-    def _build_description(description: str | None, category: str | None) -> str | None:
-        """Combine the feed's description with the category the title declared.
+    def _build_description(description: str | None) -> str | None:
+        """The feed's own description, and nothing else.
 
-        Category never becomes a tag: populated tags are the documented bypass for
-        LLM Pass 1, so writing one there would suppress extraction entirely.
+        The category used to be prepended here. It is structured metadata now —
+        see `listing_category` — because as prose it read as event copy, and
+        normalization collapses the blank line that was meant to separate them:
+        the model was handed `Category: Music The Brethren is what happens...`.
+
+        Category never becomes a tag either way: populated tags are the
+        documented bypass for LLM Pass 1, so writing one there would suppress
+        extraction entirely.
         """
-        text = html_to_text(description) if description else None
-
-        if category and text:
-            return f"Category: {category}\n\n{text}"
-        if category:
-            return f"Category: {category}"
-        return text
+        return html_to_text(description) if description else None
 
     def _log(self, message: str, level: str = "info") -> None:
         if self._logger is None:

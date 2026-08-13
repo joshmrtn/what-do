@@ -22,15 +22,11 @@ from src.storage.protocols import HttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.fetching import fetch_document
 from src.ingestion.calendars.listing import ListingEntry, parse_listing
+from src.ingestion.calendars.listing_category import category_metadata
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.tag import Tag
 
-
-#: Section headings worth carrying. The site's vocabulary is stable — always
-#: Music, always Karaoke & trivia, sometimes Other, sometimes Sports — so an
-#: allowlist states the judgement instead of hiding it in a filter.
-_CARRIED_CATEGORIES = frozenset({"Music", "Sports"})
 
 #: Titles whose activity is fully stated by the title itself. The listing's
 #: `Karaoke & trivia` section also carries bingo nights and open mics, so the
@@ -149,16 +145,8 @@ class HtmlListingSource(IngestionSource):
         return metadata
 
     def _category_metadata(self, entry: ListingEntry) -> dict[str, str]:
-        """The section heading, when it says something the title does not.
-
-        `Karaoke & trivia` names two activities and every event beneath it
-        already says which one it is, so the heading only ever contradicted the
-        title. `Other` is a null bucket. Both are dropped rather than passed to
-        a model that will treat them as evidence.
-        """
-        if entry.category in _CARRIED_CATEGORIES:
-            return {"listing_category": entry.category}
-        return {}
+        """The section heading, when it says something the title does not."""
+        return category_metadata(entry.category)
 
     def _derive_id(self, entry: ListingEntry) -> str:
         """Build a stable id, since the listing offers no identifier of its own.
