@@ -12,11 +12,14 @@ user intent rather than a scoring judgement.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import replace
 from datetime import date
 
 from src.config import AppConfig
 from src.models.event import Event
+from src.processing.extraction_input import extraction_input
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.scoring.similarity import Reason, SimilarityResult
@@ -115,7 +118,8 @@ class RankingEngine:
                 Reason(
                     factor=CONFIDENCE_FACTOR,
                     matched_preference=(
-                        f"{len(event.tags)} of {self._config.scoring.min_tags_per_event} tags"
+                        f"{len(event.tags)} tags from "
+                        f"{len(extraction_input(event))} characters"
                     ),
                     similarity=confidence,
                     contribution=confident - base_score,
@@ -171,10 +175,30 @@ class RankingEngine:
         if event.is_synthetic:
             return 1.0
 
-        expected = self._config.scoring.min_tags_per_event
+        expected = self._expected_tags(event)
         if expected <= 0:
             return 1.0
         return min(1.0, len(event.tags) / expected)
+
+    def _expected_tags(self, event: Event) -> float:
+        """How many tags this event's input could reasonably have earned.
+
+        `cap × (1 − e^(−chars / saturation))`, over the same text extraction
+        read. A fixed floor asked the same question of a 25-character cinema
+        listing and a 2,000-character festival programme, so the terse source
+        was marked down for being terse — punishing honesty rather than
+        detecting a thin extraction.
+
+        Deliberately a crude fit. Length is a weak proxy for how much a
+        description actually distinguishes; a long one can honestly earn one
+        tag. It only has to beat a constant.
+        """
+        scoring = self._config.scoring
+        saturation = scoring.tag_confidence_saturation_chars
+        if saturation <= 0:
+            return float(scoring.tag_confidence_cap)
+        chars = len(extraction_input(event))
+        return scoring.tag_confidence_cap * (1.0 - math.exp(-chars / saturation))
 
     def _multiplier(self, match: str) -> float:
         scoring = self._config.scoring

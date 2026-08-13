@@ -713,11 +713,13 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     CLEAR = weather(62.0, 50.0, 5.0, 0.0, "clear")
     STORM = weather(88.0, 74.0, 18.0, 9.0, "thunderstorm")
 
-    def event(event_id, tags, summary, venue, setting="indoor", weather_record=None, source="apify"):
+    def event(event_id, tags, summary, venue, setting="indoor", weather_record=None,
+              source="apify", description=None):
         return Event(
             event_id=event_id, source_event_candidates=[event_id], source_type=source,
             created_at=now, updated_at=now, venue=venue, start_time=now,
-            title=event_id, summary=summary, setting=setting, weather=weather_record,
+            title=event_id, description=description, summary=summary,
+            setting=setting, weather=weather_record,
             tags=[Tag(text=t, weight=w) for t, w in tags],
         )
 
@@ -732,8 +734,10 @@ def test_ranking_smoke(tmp_path: Path) -> None:
 
     events = [
         event("karaoke-night", karaoke_tags, "a karaoke night with a full bar", "Koto"),
-        # Same event, one surviving tag: a thin extraction, not a different night.
-        event("karaoke-thin", [("karaoke", 1.0)], "a karaoke night with a full bar", "Koto"),
+        # Same event, one surviving tag from a description long enough to have
+        # earned several: a thin extraction, not a terse source.
+        event("karaoke-thin", [("karaoke", 1.0)], "a karaoke night with a full bar", "Koto",
+              description="A karaoke night with a full bar. " * 30),
         event("punk-show", [
             ("punk music", 1.0), ("live band", 0.9), ("loud", 0.5),
             ("all ages", 0.3), ("friday", 0.1),

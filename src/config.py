@@ -232,6 +232,24 @@ class ScoringConfig:
     match_multiplier_maybe: float = 1.0
     match_multiplier_no: float = 0.5
     min_tags_per_event: int = 5
+    #: How many tags an input of a given length can be expected to earn:
+    #: `cap × (1 − e^(−chars / saturation_chars))`. Fitted 2026-08-12 over 24
+    #: real events run through the production prompt — tag counts rise with
+    #: input length and flatten around five past ~400 characters.
+    #:
+    #: **A heuristic, and permanently so.** Input length is a poor proxy for how
+    #: much discriminative information a description carries; a long one can
+    #: honestly earn a single tag and a short one several. It replaces a fixed
+    #: floor that asked the same question of a 25-character cinema listing and a
+    #: 2,000-character festival programme, which punished the terse source
+    #: rather than the thin extraction.
+    #:
+    #: R² was 0.57 on that sample, so these want re-fitting as nights
+    #: accumulate. The values used are recorded per run in
+    #: `run_history.scoring_config`, because `config.yaml` is gitignored and a
+    #: past score is otherwise unexplainable once they move.
+    tag_confidence_cap: float = 5.0
+    tag_confidence_saturation_chars: float = 190.0
     # Logistic gate. Measured with nomic-embed-text: unrelated pairs sit at
     # 0.33-0.48 and related pairs at 0.77-0.86, so 0.60 falls between them.
     gate_midpoint: float = 0.60
@@ -772,6 +790,10 @@ def load_config(
         match_multiplier_maybe=multipliers["maybe"],
         match_multiplier_no=multipliers["no"],
         min_tags_per_event=int(scoring_data.get("min_tags_per_event", 5)),
+        tag_confidence_cap=float(scoring_data.get("tag_confidence_cap", 5.0)),
+        tag_confidence_saturation_chars=float(
+            scoring_data.get("tag_confidence_saturation_chars", 190.0)
+        ),
         gate_midpoint=float(scoring_data.get("gate_midpoint", 0.60)),
         gate_temperature=float(scoring_data.get("gate_temperature", 0.04)),
         aggregator=aggregator,

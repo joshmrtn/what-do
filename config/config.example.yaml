@@ -37,6 +37,27 @@ scoring:
     no: 0.5
   min_tags_per_event: 5
 
+  # How many tags an input of a given length can be expected to earn:
+  #   expected = tag_confidence_cap * (1 - e^(-chars / tag_confidence_saturation_chars))
+  # and tag_confidence = min(1, actual_tags / expected).
+  #
+  # Fitted 2026-08-12 over 24 real events run through the production prompt:
+  # tag counts rise with input length and flatten around five past ~400 chars
+  # (R^2 0.57, so the shape is sound and the constants are not).
+  #
+  # This replaced a fixed `min_tags_per_event` divisor, which asked the same
+  # question of a 25-character cinema listing and a 2,000-character festival
+  # programme — marking the terse source down for being terse. A one-tag event
+  # went from a flat 0.20 to 1.00 at 25 chars, converging on 0.20 only where the
+  # input really could have earned more.
+  #
+  # A heuristic, permanently. Input length is a weak proxy for how much a
+  # description actually distinguishes; a long one can honestly earn one tag.
+  # It only has to beat a constant. Re-fit as nights accumulate — the values
+  # used are recorded per run in run_history.scoring_config.
+  tag_confidence_cap: 5.0
+  tag_confidence_saturation_chars: 190.0
+
   # Logistic gate applied to every similarity before it can contribute.
   # Measured with nomic-embed-text: unrelated pairs land at 0.33-0.48 and
   # related pairs at 0.77-0.86, so 0.60 sits between the two distributions.

@@ -6,30 +6,17 @@ by extracting tags, summary, and filling missing fields via LLM.
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from typing import Any, Callable
 
 from src.models.event import Event
+from src.processing.extraction_input import (
+    extraction_input,
+    extraction_input_hash,
+    input_hash,
+)
 from src.processing.extraction import ExtractionError, ExtractionProvider
 from src.processing.image_fetcher import ImageFetchError, ImageFetcher
-
-
-def extraction_input(event: Event) -> str:
-    """The text LLM Pass 1 runs over, and the thing whose hash gates a re-run.
-
-    A listing's section heading is appended as its own labelled line rather than
-    folded into the description. The prompt names that label and says what it is
-    — a taxonomy from a listing site, not a claim about this event — which is
-    the whole reason it stopped being stored as prose.
-    """
-    category = event.metadata.get("listing_category")
-    parts = [
-        event.title,
-        event.description,
-        f"Event category: {category}" if category else None,
-    ]
-    return "\n".join(filter(None, parts))
 
 
 def _has_authored_tags(event: Event) -> bool:
@@ -41,16 +28,6 @@ def _has_authored_tags(event: Event) -> bool:
     should not.
     """
     return bool(event.metadata.get("authored_tags"))
-
-
-def _input_hash(text: str) -> str:
-    """Stable digest of an extraction input."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def extraction_input_hash(event: Event) -> str:
-    """The digest an event must carry for extraction to consider it done."""
-    return _input_hash(extraction_input(event))
 
 
 class ExtractionStage:
@@ -117,7 +94,7 @@ class ExtractionStage:
             if event.is_synthetic or _has_authored_tags(event):
                 continue
             text = extraction_input(event)
-            if event.extraction_input_hash == _input_hash(text):
+            if event.extraction_input_hash == input_hash(text):
                 continue
             self._extract(event, text)
             extracted += 1
@@ -161,7 +138,7 @@ class ExtractionStage:
 
         # Recorded only here, past the failure path, so a failed run stays
         # distinguishable from a finished one and is retried.
-        event.extraction_input_hash = _input_hash(text)
+        event.extraction_input_hash = input_hash(text)
 
         # Through `replace_tags` rather than by assignment: almost every event a
         # batch extracts arrives from storage carrying vectors for its stored

@@ -19,10 +19,14 @@ class InMemoryRunRepository:
     def __init__(self) -> None:
         self._runs: dict[str, RunRecord] = {}
 
-    def start(self, started_at: datetime) -> str:
+    def start(
+        self, started_at: datetime, scoring_config: str | None = None
+    ) -> str:
         """Record that a batch has begun, returning its run id."""
         run_id = str(uuid.uuid4())
-        self._runs[run_id] = RunRecord(run_id=run_id, started_at=started_at)
+        self._runs[run_id] = RunRecord(
+            run_id=run_id, started_at=started_at, scoring_config=scoring_config
+        )
         return run_id
 
     def finish(

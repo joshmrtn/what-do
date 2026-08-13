@@ -18,6 +18,7 @@ from src.config import (
     WeatherConfig,
 )
 from src.models.event import Event
+from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
 from src.scoring.ranking import (
     RankingEngine,
@@ -25,6 +26,10 @@ from src.scoring.ranking import (
 from src.scoring.similarity import Reason, SimilarityResult
 
 RUN_DATE = date(2025, 6, 21)
+#: Long enough that the curve expects a full tag set, so a short list is
+#: genuinely thin rather than merely terse.
+_LONG_INPUT = "A detailed description. " * 45
+
 NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
 
 PLEASANT = {
@@ -110,6 +115,7 @@ def _event(
     venue: str | None = "The Jazz Cellar",
     source_type: str = "instagram",
     scored: bool = True,
+    description: str | None = None,
 ) -> Event:
     similarity = (
         SimilarityResult(
@@ -138,6 +144,7 @@ def _event(
         created_at=NOW,
         updated_at=NOW,
         title="Test Event",
+        description=description,
         venue=venue,
         tags=[Tag(text=f"tag{i}") for i in range(tag_count)],
         setting=setting,
@@ -283,18 +290,22 @@ def test_more_tags_than_required_does_not_inflate_the_score():
 
 
 def test_thin_extraction_scales_the_score_down():
-    ranked = _rank([_event(tag_count=2, base_score=0.4)])
+    ranked = _rank([_event(tag_count=2, base_score=0.4, description=_LONG_INPUT)])
 
-    assert ranked[0].tag_confidence == pytest.approx(0.4)
-    assert ranked[0].final_score == pytest.approx(0.16)
+    # Loose on purpose. The curve approaches its cap asymptotically and its
+    # constants are a fit to a small sample that will be re-fitted as nights
+    # accumulate; pinning seven decimals here would fail on every tune without
+    # telling us anything about the behaviour under test.
+    assert ranked[0].tag_confidence == pytest.approx(0.40, abs=0.01)
+    assert ranked[0].final_score == pytest.approx(0.16, abs=0.01)
 
 
 def test_confidence_pulls_a_negative_score_up_toward_zero():
     """Symmetric, unlike the multiplier: thin evidence means uncertain, not bad."""
     scores = _scores(
         [
-            _event("thin", base_score=-0.5, tag_count=1),
-            _event("full", base_score=-0.5, tag_count=5),
+            _event("thin", base_score=-0.5, tag_count=1, description=_LONG_INPUT),
+            _event("full", base_score=-0.5, tag_count=5, description=_LONG_INPUT),
         ]
     )
 
@@ -305,8 +316,8 @@ def test_confidence_pulls_a_negative_score_up_toward_zero():
 def test_thin_positive_ranks_below_its_full_confidence_twin():
     scores = _scores(
         [
-            _event("thin", base_score=0.5, tag_count=1),
-            _event("full", base_score=0.5, tag_count=5),
+            _event("thin", base_score=0.5, tag_count=1, description=_LONG_INPUT),
+            _event("full", base_score=0.5, tag_count=5, description=_LONG_INPUT),
         ]
     )
 
@@ -483,7 +494,7 @@ def test_the_multiplier_is_explained():
 
 
 def test_low_confidence_is_explained():
-    reasons = _rank([_event(tag_count=2, base_score=0.4)])[0].reasons
+    reasons = _rank([_event(tag_count=2, base_score=0.4, description=_LONG_INPUT)])[0].reasons
 
     assert [r for r in reasons if r.factor == "low_tag_confidence"]
 
@@ -551,7 +562,7 @@ def test_the_components_behind_base_score_are_carried_not_discarded():
 
 def test_tag_confidence_belongs_to_the_score_not_the_placement():
     """It is a pure function of the event's own tags — nothing to do with tonight."""
-    scores, rankings = _rank_split([_event("a", base_score=0.6, tag_count=1)])
+    scores, rankings = _rank_split([_event("a", base_score=0.6, tag_count=1, description=_LONG_INPUT)])
 
     assert scores[0].tag_confidence < 1.0
     assert not hasattr(rankings[0], "tag_confidence")
@@ -579,3 +590,68 @@ def test_placements_are_ordered_best_first_and_numbered_from_one():
         ("mid", 2),
         ("low", 3),
     ]
+
+
+class TestTagConfidenceFollowsInputLength:
+    """Few tags is only weak evidence when the input could have supported more.
+
+    `min(1.0, len(tags) / 5)` asked the same question of every event, so a
+    twenty-five-character cinema listing that honestly yields one tag scored
+    0.2 — punished for its source being terse. Measured over 24 real events
+    (2026-08-12): tag counts rise with input length and saturate around five
+    past ~400 characters.
+
+    A heuristic, and permanently so. Input length is a poor proxy for how much
+    discriminative information a blob carries — a long description can honestly
+    earn one tag, and a short one several. It only has to beat a fixed floor.
+    """
+
+    def _scored(self, *, title, description, tag_count, source_type="instagram"):
+        event = _event(tag_count=tag_count, source_type=source_type)
+        event.title = title
+        event.description = description
+        return event
+
+    def _confidence(self, event, config=None):
+        scores, _ = _rank_split([event], config=config)
+        return scores[0].tag_confidence
+
+    def test_a_terse_listing_with_one_tag_is_fully_confident(self):
+        """Twenty-five characters cannot support more; one tag is the honest answer."""
+        event = self._scored(title="Spider-Man", description=None, tag_count=1)
+
+        assert self._confidence(event) == pytest.approx(1.0)
+
+    def test_a_long_description_with_one_tag_is_not(self):
+        event = self._scored(title="X" * 40, description="Y " * 500, tag_count=1)
+
+        assert self._confidence(event) < 0.35
+
+    def test_confidence_rises_with_the_tags_an_event_earned(self):
+        one = self._scored(title="X", description="Y " * 500, tag_count=1)
+        four = self._scored(title="X", description="Y " * 500, tag_count=4)
+
+        assert self._confidence(four) > self._confidence(one)
+
+    def test_it_never_exceeds_one(self):
+        """More tags than expected is not extra credit; it caps at full."""
+        event = self._scored(title="Short", description=None, tag_count=7)
+
+        assert self._confidence(event) == pytest.approx(1.0)
+
+    def test_the_curve_is_configurable(self):
+        """The constants are a fit to a small sample and will be re-fitted."""
+        event = self._scored(title="X" * 200, description=None, tag_count=1)
+
+        loose = self._confidence(event, _config(tag_confidence_cap=2.0))
+        tight = self._confidence(event, _config(tag_confidence_cap=8.0))
+
+        assert loose > tight
+
+    def test_a_synthetic_event_is_exempt(self):
+        """Its tags are hand-written, so a low count is authoring, not failure."""
+        event = self._scored(
+            title="X" * 400, description="Y " * 300, tag_count=1, source_type=SYNTHETIC
+        )
+
+        assert self._confidence(event) == pytest.approx(1.0)

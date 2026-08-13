@@ -27,6 +27,8 @@ class RunRecord:
             Kept apart from `errors` because a skip is a legitimate deployment
             state, and folding the two together loses the distinction the
             credential policy rests on.
+        scoring_config: The scoring constants in force, as JSON. None for a
+            run that recorded none.
     """
 
     run_id: str
@@ -37,3 +39,8 @@ class RunRecord:
     stage_counts: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     skipped_sources: list[str] = field(default_factory=list)
+    #: The scoring constants this run used, as JSON. `config.yaml` is
+    #: gitignored, so without this a past score cannot be explained once a
+    #: constant is tuned — and the tag confidence curve is expected to be
+    #: re-fitted as nights accumulate.
+    scoring_config: str | None = None

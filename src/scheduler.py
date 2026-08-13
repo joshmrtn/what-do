@@ -164,7 +164,14 @@ def run_batch(
 
     # Neither a dry run nor an ingest-only run did a batch, so recording one
     # would pollute the only durable record of what the nightly runs actually did.
-    run_id = None if dry_run or ingest_only else runs_repo.start(now)
+    # The scoring constants ride with the run. `config.yaml` is gitignored,
+    # so a score whose constants have since been tuned is otherwise
+    # unexplainable — the number survives and the arithmetic does not.
+    run_id = (
+        None
+        if dry_run or ingest_only
+        else runs_repo.start(now, scoring_config=_scoring_provenance(config))
+    )
 
     def _finish() -> BatchResult:
         """Complete the history row and hand back the result.
@@ -378,6 +385,16 @@ def _carry_forward(
     return reconciled + [
         e for e in stored if e.event_id not in claimed and in_scope(e)
     ]
+
+
+def _scoring_provenance(config: AppConfig) -> str:
+    """The scoring constants in force, as JSON, for `run_history`.
+
+    Serialised from the dataclass rather than re-read from the file, so it
+    records what the run actually used — including any default that
+    `config.yaml` never mentioned.
+    """
+    return json.dumps(asdict(config.scoring), sort_keys=True, default=str)
 
 
 def _scope_filter(

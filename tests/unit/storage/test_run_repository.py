@@ -156,3 +156,25 @@ class TestGet:
         assert record.completed_at is None
         assert record.outcome is None
         assert record.duration_ms is None
+
+
+class TestScoringProvenance:
+    """Which constants produced a score, recorded with the run that used them.
+
+    `config/config.yaml` is gitignored, so the scoring constants live in neither
+    version control nor the database. The moment one is tuned — and the tag
+    confidence curve is explicitly expected to be re-fitted as nights
+    accumulate — every past score becomes unexplainable: the number is stored,
+    the arithmetic that produced it is not.
+    """
+
+    def test_the_scoring_config_is_stored_with_the_run(self, repo):
+        run_id = repo.start(_START, scoring_config='{"tag_confidence_cap": 5.0}')
+
+        assert repo.get(run_id).scoring_config == '{"tag_confidence_cap": 5.0}'
+
+    def test_a_run_recorded_without_one_reads_back_as_none(self, repo):
+        """A dry run or an older row simply has nothing to say."""
+        run_id = repo.start(_START)
+
+        assert repo.get(run_id).scoring_config is None

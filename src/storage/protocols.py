@@ -87,7 +87,9 @@ class EventRepository(Protocol):
 class RunRepository(Protocol):
     """Persistence for `run_history`, the only durable record of a batch run."""
 
-    def start(self, started_at: datetime) -> str:
+    def start(
+        self, started_at: datetime, scoring_config: str | None = None
+    ) -> str:
         """Record that a batch has begun, returning its run id.
 
         Written at the start rather than the end so a run killed mid-flight
