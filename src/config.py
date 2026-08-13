@@ -42,7 +42,7 @@ class LocationConfig:
 #: ranked. Measured: northshorenightout publishes ~39 days out, so the earlier
 #: 30 truncated it. Adapters import this for their constructor fallbacks, so the
 #: default cannot drift between `config.yaml` and a call site.
-DEFAULT_HORIZON_DAYS = 45
+DEFAULT_HORIZON_DAYS = 90
 
 
 @dataclass

@@ -770,7 +770,7 @@ def test_horizon_days_defaults(tmp_path):
     Measured: northshorenightout publishes ~39 days out, so 30 truncated it.
     """
     assert _load(tmp_path, {}).scraping.horizon_days == DEFAULT_HORIZON_DAYS
-    assert DEFAULT_HORIZON_DAYS == 45
+    assert DEFAULT_HORIZON_DAYS == 90
 
 
 @pytest.mark.parametrize("bad", [0, -1])

@@ -786,7 +786,11 @@ def _scope_run(db, event):
 
 
 def test_events_beyond_the_horizon_are_not_ranked(db):
-    far = _event("far", ["c1"], title="Far", start_time=NOW + timedelta(days=90))
+    """Beyond whatever the horizon is, rather than beyond a number written here
+    twice. Pinned at 90 this read as a boundary test and was in fact an equality
+    test against the default, so raising the default broke it."""
+    beyond = timedelta(days=ScrapingConfig().horizon_days + 30)
+    far = _event("far", ["c1"], title="Far", start_time=NOW + beyond)
 
     assert _scope_run(db, far) == []
 

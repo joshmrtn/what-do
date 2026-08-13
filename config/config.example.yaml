@@ -22,7 +22,16 @@ scraping:
   # concert booked four months ahead is exactly the kind worth knowing about.
   # lookback_days applies to a post's publication date, which calendar sources
   # deliberately never set. The only lower bound is the event being over.
-  horizon_days: 45
+  # 90 as of 2026-08-13, raised from 45. The horizon stopped being the compute
+  # lever when `models.extraction_budget_minutes` arrived: cost is bounded by
+  # the budget now, work is ordered soonest-first, and a quiet night that does
+  # not spend its budget is reach we have already paid the network for.
+  #
+  # 90 rather than higher because most sources simply do not publish that far
+  # out — past a quarter there is realistically nothing to find. Pairs with #23
+  # (top N over M days): a deep, cheaply-maintained horizon is what makes
+  # spotting something good months out possible at all.
+  horizon_days: 90
   max_discovery_depth: 2
   candidate_promotion_threshold: 3
 
