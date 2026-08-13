@@ -112,8 +112,8 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
 
 1. **TDD always.** Write failing tests first. Never implement without a red test.
 2. **No network calls in tests.** All external services injected as dependencies so tests
-   substitute fakes. Violation = bug. The `model` and `external` tiers are the only
-   exception, they are excluded from every default run, and neither may gate a commit.
+   substitute fakes. Violation = bug. The `external` tier is the only exception:
+   it is excluded from every default run and may never gate a commit.
 
    **Fake only at an external boundary — never for code we own.** Dependency injection is
    throughout this codebase so that the *edges* can be substituted: a network call, a model,
@@ -182,16 +182,18 @@ unregistered marker fails collection instead of silently joining the default run
 |---|---|---|
 | *(unmarked)* | mocked; tests our code | every run |
 | `integration` | real SQLite, real Ollama **embeddings**, seconds | every run; skips **loudly** without Ollama |
-| `model` | real LLM **inference**; does a model comply with our prompts | selecting a model. Never a gate |
 | `external` | third-party API and a key | by hand. Never a gate |
 
 `model` and `external` are orthogonal and **stack** — a Gemini compliance test
-carries both. Default selection is `-m "not model and not external"`, so either
-marker alone is enough to keep a test out of the commit gate.
+Default selection is `-m "not external"`.
+
+**There is no `model` tier.** Whether a model is any *good* is the bench's
+question — `what-do-bench`, issue #2 — and a marker for it made `tests/model/`
+a second home for it. `--strict-markers` means a leftover `@pytest.mark.model`
+fails collection rather than quietly rejoining the default run.
 
 **The dividing line for what gets mocked:** anything asserting a qualitative or
-quantitative property of an LLM belongs in `model` (and ultimately the bench in
-issue #2, which owns deleting that tier). Everything else — transport, contract,
+quantitative property of an LLM belongs in the bench, not the suite. Everything else — transport, contract,
 prompt construction, JSON parsing, fence stripping, retry — is our code, is
 mocked, and runs every time.
 

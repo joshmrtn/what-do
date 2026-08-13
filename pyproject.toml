@@ -38,15 +38,18 @@ include = ["src*"]
 [project.scripts]
 what-do = "src.presentation.cli:main"
 what-do-run-batch = "src.scheduler:run"
+what-do-bench = "src.bench.cli:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-p tests.tier_plugin -p pytester --strict-markers -m 'not model and not external'"
+addopts = "-p tests.tier_plugin -p pytester --strict-markers -m 'not external'"
 # Tiers are named for the reason to run a test, not for what it costs.
-# `model` and `external` are orthogonal and stack: a Gemini compliance test is both.
+# `model` is gone: asking whether a model is any good is the bench's job
+# (`what-do-bench`, issue #2), and a marker for it made `tests/model/` a second
+# home for the question. --strict-markers means a leftover usage fails
+# collection rather than quietly rejoining the default run.
 markers = [
     "integration: real SQLite and real Ollama embeddings; runs by default, skips loudly without Ollama",
-    "model: asserts a model's compliance with our prompts; run when selecting a model, never a gate. Migrates to the bench in #2",
     "external: needs a third-party API and a key; run by hand, never a gate",
 ]
 

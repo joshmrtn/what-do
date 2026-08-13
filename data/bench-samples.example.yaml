@@ -1,0 +1,105 @@
+# Bench samples — the cases that have actually broken extraction.
+#
+# Copy to data/bench-samples.yaml (gitignored) and add your own. Every event
+# here is anonymised: the venue and performer names are invented, and the shape
+# — how long the text is, what it omits, what it accidentally implies — is kept
+# exactly, because the shape is what the model trips over.
+#
+# `note` is required. A sample earns its place by being hard, and without the
+# note the next reader cannot tell a case that once broke the extractor from an
+# ordinary event that wandered in.
+
+- name: bare-performer-name
+  title: Ava Valianti
+  venue: The Blue Room
+  location: Riverport
+  listing_category: Music
+  note: >-
+    The shape that failed ten times in one night. A person's name and nothing
+    else. The anti-invention rule correctly forbids guessing a genre from a
+    name, and the model answered by nulling every field including the summary —
+    an honest reply the schema then rejected.
+
+- name: title-is-its-own-activity
+  title: Stand-up Comedy
+  venue: Hollow Chapel
+  location: Riverport
+  note: >-
+    No category: this sat under a heading the allowlist drops. The model
+    returned one true tag, `stand-up comedy`, and the title-echo rule deleted it
+    for matching the title exactly — leaving zero tags from a reply that was
+    completely correct.
+
+- name: band-name-is-a-common-word
+  title: Wildfire
+  venue: The Anchorage
+  location: Kingsmarket
+  listing_category: Music
+  note: >-
+    The echo rule is *right* here — `wildfire` is a band, not a subject — but
+    being right left the event with nothing. The case that justifies falling
+    back to the listing category rather than failing.
+
+- name: genre-hidden-in-a-proper-name
+  title: Verano Dance Company
+  venue: Windward Arts Centre
+  location: Stonecove
+  note: >-
+    `dance` is right there in the name, and the anti-invention rule still
+    refuses it, because the whole string reads as a proper noun. Nulled twice in
+    a row where a near-identical listing succeeded on its retry — the clearest
+    evidence that these replies are a coin flip.
+
+- name: relative-date-needs-a-reference
+  title: Live music this Saturday at 8pm
+  venue: The Vault Lounge
+  location: Stonecove
+  note: >-
+    Whether a model can do weekday arithmetic against a stated today. The
+    reference date is a Monday, so the answer is the 8th. Was a Gemini
+    compliance test; it measures the model, not us, so it belongs here.
+  reference_date: 2026-08-03
+
+- name: heading-welded-to-the-description
+  title: The Brethren
+  description: >-
+    Category: Music The Brethren is what happens when members of three local
+    bands come together. The band provides instrumental arrangements of popular
+    tunes guaranteed to shake your tailfeather.
+  venue: Gullwing Tavern
+  location: Kingsmarket
+  note: >-
+    What the ICS adapter produced before the category paths were unified — the
+    section heading welded onto the front of real prose, with the separating
+    blank line collapsed by normalisation. Kept because a model that copes with
+    this copes with any listing that leaks its own furniture.
+
+- name: rich-description-control
+  title: Midwinter Print Fair
+  description: >-
+    Twenty printmakers show relief, intaglio and screenprint work across two
+    floors. Demonstrations on the hour, a letterpress open to visitors, and a
+    bar serving mulled cider until nine. Free entry, all ages, wheelchair
+    accessible throughout.
+  venue: Windward Arts Centre
+  location: Stonecove
+  listing_category: Other
+  note: >-
+    The control. Plenty of text, several genuinely distinct activities, and a
+    category the allowlist drops. A model that cannot earn four or five
+    discriminating weights here is not being terse, it is being poor.
+
+- name: social-caption-with-emoji-and-a-handle
+  description: >-
+    🎵 Live jazz with the Harbourline Jazz Collective this Saturday at The Vault
+    Lounge! Doors open at 7pm, music starts at 8pm. $15 cover. Great cocktails,
+    cozy atmosphere, perfect for date night. Follow @harbourlinejazz for updates!
+  venue: The Vault Lounge
+  location: Stonecove
+  note: >-
+    The caption the deleted `model` tier used as its one compliance check.
+    Everything at once: an emoji that embeds to a constant vector, a relative
+    weekday, two times, a price, a handle, and enough atmosphere copy to tempt a
+    model into tagging `cocktails` at 1.0. Was `len(result.tags) >= 5`, which
+    measured the model and told us nothing about our code.
+  reference_date: 2026-06-22

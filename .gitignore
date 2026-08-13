@@ -5,6 +5,7 @@ logs/
 data/likes.txt
 data/dislikes.txt
 data/blocklist.json
+data/bench-samples.yaml
 __pycache__/
 *.pyc
 .mypy_cache/
