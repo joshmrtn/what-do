@@ -88,6 +88,8 @@ def _full_event(event_id="e1") -> Event:
         astronomical_data={"sunset": "20:15"},
         extraction_input_hash="extraction-hash-value",
         embedding_input_hash="embedding-hash-value",
+        extraction_model="gemma4:e4b",
+        extraction_prompt_version="a7f3c1e2",
         metadata={"listing_category": "Music", "authored_summary": True},
     )
     event.tag_embeddings = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
@@ -137,6 +139,11 @@ def test_round_trip_preserves_every_other_stored_field(repo):
     assert loaded.astronomical_data == {"sunset": "20:15"}
     assert loaded.extraction_input_hash == "extraction-hash-value"
     assert loaded.embedding_input_hash == "embedding-hash-value"
+    # Which model and prompt produced the tags. A row whose provenance is lost
+    # on reload is not merely undocumented — it becomes indistinguishable from
+    # the pre-provenance rows, so the refit has to discard it.
+    assert loaded.extraction_model == "gemma4:e4b"
+    assert loaded.extraction_prompt_version == "a7f3c1e2"
     assert loaded.metadata == {"listing_category": "Music", "authored_summary": True}
 
 

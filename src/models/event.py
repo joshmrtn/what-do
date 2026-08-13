@@ -66,6 +66,14 @@ class Event:
     #: this too, so embeddings follow automatically rather than leaving vectors
     #: describing tags the event no longer has.
     embedding_input_hash: str | None = None
+    #: Which model and prompt produced this event's tags, copied off the
+    #: extraction result so they describe what actually ran. Both stay None for
+    #: rows extracted before provenance was recorded, and for synthetic events,
+    #: whose tags are authored rather than extracted. The confidence curve can
+    #: only be refitted over rows that carry them: without them a fittable row
+    #: is indistinguishable from one tagged by a prompt since fixed.
+    extraction_model: str | None = None
+    extraction_prompt_version: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

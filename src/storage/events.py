@@ -29,7 +29,7 @@ EVENT_COLUMNS = (
     "description, location, start_time, end_time, summary, "
     "summary_embedding, weather, weather_cache_id, astronomical_data, metadata, "
     "created_at, updated_at, setting, timing, extraction_input_hash, "
-    "embedding_input_hash"
+    "embedding_input_hash, extraction_model, extraction_prompt_version"
 )
 
 
@@ -87,6 +87,8 @@ def event_to_row(event: Event) -> tuple[Any, ...]:
         event.timing,
         event.extraction_input_hash,
         event.embedding_input_hash,
+        event.extraction_model,
+        event.extraction_prompt_version,
     )
 
 
@@ -131,6 +133,8 @@ def row_to_event(
         timing=row[20] or "exact",
         extraction_input_hash=row[21],
         embedding_input_hash=row[22],
+        extraction_model=row[23],
+        extraction_prompt_version=row[24],
     )
 
 
