@@ -90,6 +90,7 @@ def _full_event(event_id="e1") -> Event:
         embedding_input_hash="embedding-hash-value",
         extraction_model="gemma4:e4b",
         extraction_prompt_version="a7f3c1e2",
+        extraction_degradation="tag count 0 is below minimum 1",
         metadata={"listing_category": "Music", "authored_summary": True},
     )
     event.tag_embeddings = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
@@ -144,6 +145,11 @@ def test_round_trip_preserves_every_other_stored_field(repo):
     # the pre-provenance rows, so the refit has to discard it.
     assert loaded.extraction_model == "gemma4:e4b"
     assert loaded.extraction_prompt_version == "a7f3c1e2"
+    # Asserted at a non-default value for the reason the whole fixture is: None
+    # round-trips perfectly through a column that does not exist, so a test that
+    # leaves it at its default passes against a writer and reader that never
+    # learned about it.
+    assert loaded.extraction_degradation == "tag count 0 is below minimum 1"
     assert loaded.metadata == {"listing_category": "Music", "authored_summary": True}
 
 

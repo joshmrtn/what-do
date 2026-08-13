@@ -90,6 +90,7 @@ def test_events_carries_extraction_provenance(tmp_path):
 
     assert columns.get("extraction_model") == "TEXT"
     assert columns.get("extraction_prompt_version") == "TEXT"
+    assert columns.get("extraction_degradation") == "TEXT"
 
 
 def test_events_carries_the_columns_their_features_will_wire(tmp_path):

@@ -202,7 +202,13 @@ CREATE TABLE IF NOT EXISTS events (
     -- them a row fit for the confidence curve is indistinguishable from one
     -- carrying tags from a prompt since fixed.
     extraction_model          TEXT,
-    extraction_prompt_version TEXT
+    extraction_prompt_version TEXT,
+    -- Every way the reply that produced this row's tags fell short, or NULL
+    -- where it met the schema in full. A thin answer used to be discarded, so
+    -- the row kept older tags and no record that tonight's run had rejected
+    -- anything. It is also what keeps the shortest inputs in the confidence
+    -- curve's dataset instead of holing it exactly where it is most sensitive.
+    extraction_degradation    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS event_tags (
