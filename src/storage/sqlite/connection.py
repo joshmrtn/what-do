@@ -83,7 +83,12 @@ CREATE TABLE IF NOT EXISTS venues (
     longitude        REAL,
     category         TEXT,
     discovery_source TEXT,
-    discovered_at    TEXT NOT NULL
+    discovered_at    TEXT NOT NULL,
+    -- Which spelling is the real one, for venue matching (#11). Adding it does
+    -- not fix the dedup bug on its own: dedup compares `events.venue` free text,
+    -- so `The Rhumb Line` vs `Rhumb Line` still needs normalising inside
+    -- `venues_match`.
+    canonical_name   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS venue_handles (
@@ -167,7 +172,37 @@ CREATE TABLE IF NOT EXISTS events (
     extraction_input_hash TEXT,
     embedding_input_hash  TEXT,
     created_at            TEXT NOT NULL,
-    updated_at            TEXT NOT NULL
+    updated_at            TEXT NOT NULL,
+    -- Everything below was added in one additive pass, and is listed in the
+    -- order the live database's `ALTER TABLE ADD COLUMN` statements applied it.
+    -- `ALTER` can only append, so keeping this order means a fresh database and
+    -- the migrated one agree column for column rather than merely as sets.
+    --
+    -- Most of these are deliberately inert: the column exists, nothing reads or
+    -- writes it, and the feature named below will wire it. A column is cheap to
+    -- add now and expensive later, because migrating means a hand operation
+    -- against a database holding ~40h of compute.
+    --
+    -- Which event replaced this one, once dedup soft-deletes instead of
+    -- deleting outright. Inert until the integrity-gaps pass.
+    superseded_by             TEXT REFERENCES events(id),
+    superseded_at             TEXT,
+    -- Why dedup merged: `fuzzy` / `semantic` / `reconcile`, and how close the
+    -- match was. Today a merge records nothing, so a past merge cannot be
+    -- explained at all. No CHECK constraint on `merged_by` — SQLite cannot add
+    -- one via ALTER, so constraining it here would make fresh databases
+    -- strictly stricter than the migrated one. Code enforces the values.
+    merged_by                 TEXT,
+    merge_similarity          REAL,
+    -- Inert: arrival class, and issue #5's "when was this posted".
+    arrival                   TEXT,
+    posted_at                 TEXT,
+    -- Which model and prompt produced this row's tags. Written from the night
+    -- these landed; rows extracted before have neither and never will. Without
+    -- them a row fit for the confidence curve is indistinguishable from one
+    -- carrying tags from a prompt since fixed.
+    extraction_model          TEXT,
+    extraction_prompt_version TEXT
 );
 
 CREATE TABLE IF NOT EXISTS event_tags (

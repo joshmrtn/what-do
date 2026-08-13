@@ -76,6 +76,68 @@ def test_event_scores_carries_the_confidence_and_both_components(tmp_path):
     assert columns.get("match") == "TEXT"
 
 
+def test_events_carries_extraction_provenance(tmp_path):
+    """Which model and prompt produced a row's tags.
+
+    Without these a fittable row is indistinguishable from one produced by the
+    prompt that invented genres from place names, so the confidence curve cannot
+    be refitted against accumulated data at all.
+    """
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    columns = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(events)")}
+    conn.close()
+
+    assert columns.get("extraction_model") == "TEXT"
+    assert columns.get("extraction_prompt_version") == "TEXT"
+
+
+def test_events_carries_the_columns_their_features_will_wire(tmp_path):
+    """Added ahead of the code that fills them, and deliberately so.
+
+    Migrating this database is a hand operation against ~40h of stored compute,
+    so every additive column the roadmap has agreed lands in one pass. They stay
+    NULL until dedup soft-delete, arrival and issue #5 reach them.
+    """
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    columns = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(events)")}
+    conn.close()
+
+    assert columns.get("superseded_by") == "TEXT"
+    assert columns.get("superseded_at") == "TEXT"
+    assert columns.get("merged_by") == "TEXT"
+    assert columns.get("merge_similarity") == "REAL"
+    assert columns.get("arrival") == "TEXT"
+    assert columns.get("posted_at") == "TEXT"
+
+
+def test_superseded_by_points_at_another_event(tmp_path):
+    """The soft-delete replaces a destructive delete, so the survivor must be
+    reachable from the row it replaced — a bare TEXT column would let dedup
+    record an id no event has."""
+    path = tmp_path / "test.db"
+    init_db(db_path=path)
+    conn = connect(path)
+    try:
+        keys = conn.execute("PRAGMA foreign_key_list(events)").fetchall()
+    finally:
+        conn.close()
+
+    assert any(row[2] == "events" and row[3] == "superseded_by" for row in keys)
+
+
+def test_venues_carries_canonical_name(tmp_path):
+    """`The Rhumb Line` and `Rhumb Line` are one venue; venue matching needs
+    somewhere to record which name is the real one."""
+    init_db(db_path=tmp_path / "test.db")
+    conn = sqlite3.connect(tmp_path / "test.db")
+    columns = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(venues)")}
+    conn.close()
+
+    assert columns.get("canonical_name") == "TEXT"
+
+
 def test_init_db_idempotent(tmp_path):
 
     db_path = tmp_path / "test.db"
