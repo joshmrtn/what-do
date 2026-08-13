@@ -1235,3 +1235,95 @@ def test_the_deferral_count_resets_between_runs():
     stage_again = ExtractionStage(provider, None, _make_logger(), get_now=_now)
     stage_again.process([_make_event(event_id="evt-1")])
     assert stage_again.deferred == 0
+
+
+def test_extraction_does_not_re_extract_for_a_change_it_made_itself():
+    """The venue the model fills is part of `extraction_input`, so a hash taken
+    before the fills describes text the event no longer has — and the next run
+    re-extracts every event whose venue we completed, at minutes apiece, for a
+    change we caused. Surfaced the moment the venue entered the input."""
+    provider = _make_provider()  # its result carries venue="Extracted Venue"
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event(venue=None)
+
+    stage.process([event])
+    assert event.venue == "Extracted Venue", "the fill this test is about did not happen"
+    stage.process([event])
+
+    assert provider.extract.call_count == 1
+
+
+class TestTheCategoryFallback:
+    """When extraction yields no usable tag, the listing's own heading is the
+    most honest tag available.
+
+    Safe by construction: `_CARRIED_CATEGORIES` already withholds `Other` and
+    `Karaoke & trivia`, so a heading only reaches `listing_category` when it
+    says something. `music` for a bare name under Music beats both invention
+    and silence.
+    """
+
+    def test_a_tagless_result_falls_back_to_the_listing_category(self):
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event(metadata={"listing_category": "Music"})
+
+        stage.process([event])
+
+        assert [t.text for t in event.tags] == ["music"]
+
+    def test_the_fallback_tag_carries_full_weight(self):
+        """Weight is centrality, not confidence. It is the only thing we know
+        about the event, so it is entirely central; `tag_confidence` is the
+        field that says how little we know, and it will already be low."""
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event(metadata={"listing_category": "Music"})
+
+        stage.process([event])
+
+        assert event.tags[0].weight == 1.0
+
+    def test_the_fallback_is_recorded_in_the_degradation(self):
+        """The refit fits against *model* behaviour, and this tag is not
+        something the model produced — counting it would teach the curve that
+        the model emits tags it never emitted."""
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event(metadata={"listing_category": "Music"})
+
+        stage.process([event])
+
+        assert "tag count 0" in event.extraction_degradation
+        assert "listing category" in event.extraction_degradation
+
+    def test_no_category_means_no_fallback(self):
+        """`Other` and `Karaoke & trivia` never reach the field, so an event
+        with nothing here had a heading worth withholding — or none at all."""
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.tags == []
+        assert "listing category" not in (event.extraction_degradation or "")
+
+    def test_a_result_with_tags_is_left_alone(self):
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event(metadata={"listing_category": "Music"})
+
+        stage.process([event])
+
+        assert "music" not in [t.text for t in event.tags]
+        assert event.extraction_degradation is None
+
+    def test_a_degraded_result_that_still_has_a_tag_is_left_alone(self):
+        """The shortfall may be the summary. One real tag is not nothing, and
+        appending the category would dilute it."""
+        provider = _degraded_provider(
+            reason="summary field is missing or not a string",
+            tags=[Tag(text="comedy", weight=1.0)],
+        )
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        event = _make_event(metadata={"listing_category": "Music"})
+
+        stage.process([event])
+
+        assert [t.text for t in event.tags] == ["comedy"]

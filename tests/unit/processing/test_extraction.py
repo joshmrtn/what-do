@@ -754,3 +754,76 @@ class TestDegradationIsRecordedNotRaised:
 
         with pytest.raises(ExtractionError):
             provider.extract("Jazz Night")
+
+
+class TestTheEchoTestCoversTheVenueLine:
+    """Measured, not anticipated. Of ten real inputs run through gemma4:e4b with
+    a venue line added, one came back tagged `essex` at 0.5 — the *city*, from
+    `Venue: The Farm, Essex`. A place is where the event is, never what it is.
+
+    Anchored to that line and still exact, for the reason the title rule is: a
+    substring rule would delete `jazz` from an event at The Jazz Club, which is
+    exactly the tag worth keeping.
+    """
+
+    @staticmethod
+    def _provider(tags):
+        payload = {
+            "title": None, "venue": None, "start_time": None, "end_time": None,
+            "tags": tags, "summary": "An evening of live music.", "setting": "unknown",
+        }
+        return OllamaExtractionProvider(client=_make_client(json.dumps(payload)), min_tags=1)
+
+    def test_a_tag_echoing_the_city_is_dropped(self):
+        provider = self._provider(
+            [{"tag": "music", "weight": 1.0}, {"tag": "essex", "weight": 0.5}]
+        )
+
+        result = provider.extract("Alexandra Kirby\nVenue: The Farm, Essex")
+
+        assert [t.text for t in result.tags] == ["music"]
+
+    def test_a_tag_echoing_the_venue_is_dropped(self):
+        provider = self._provider(
+            [{"tag": "music", "weight": 1.0}, {"tag": "lobsta land", "weight": 0.5}]
+        )
+
+        result = provider.extract("Steve Dennis\nVenue: Lobsta Land, Gloucester")
+
+        assert [t.text for t in result.tags] == ["music"]
+
+    def test_a_tag_echoing_the_whole_venue_line_is_dropped(self):
+        provider = self._provider(
+            [{"tag": "music", "weight": 1.0}, {"tag": "lobsta land, gloucester", "weight": 0.4}]
+        )
+
+        result = provider.extract("Steve Dennis\nVenue: Lobsta Land, Gloucester")
+
+        assert [t.text for t in result.tags] == ["music"]
+
+    def test_a_real_tag_that_appears_inside_a_venue_name_survives(self):
+        """The case that makes this rule non-trivial, and the reason it stays
+        exact: an event at The Jazz Club is very often about jazz."""
+        provider = self._provider(
+            [{"tag": "jazz", "weight": 1.0}, {"tag": "live music", "weight": 0.8}]
+        )
+
+        result = provider.extract("Trio Night\nVenue: The Jazz Club, Stonecove")
+
+        assert [t.text for t in result.tags] == ["jazz", "live music"]
+
+    def test_an_input_with_no_venue_line_is_unaffected(self):
+        provider = self._provider([{"tag": "music", "weight": 1.0}])
+
+        result = provider.extract("Steve Dennis\nEvent category: Music")
+
+        assert [t.text for t in result.tags] == ["music"]
+
+    def test_the_title_rule_still_applies(self):
+        provider = self._provider(
+            [{"tag": "wildfire", "weight": 1.0}, {"tag": "music", "weight": 0.8}]
+        )
+
+        result = provider.extract("Wildfire\nVenue: The Anchorage, Kingsmarket")
+
+        assert [t.text for t in result.tags] == ["music"]

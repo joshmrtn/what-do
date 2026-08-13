@@ -22,14 +22,25 @@ from src.models.event import Event
 def extraction_input(event: Event) -> str:
     """The text LLM Pass 1 runs over, and the thing whose hash gates a re-run.
 
-    A listing's section heading is appended as its own labelled line rather than
-    folded into the description. The prompt names that label and says what it is
-    — a taxonomy from a listing site, not a claim about this event — which is
-    the whole reason it stopped being stored as prose.
+    Everything the source told us about the event, each fact on its own labelled
+    line where a label is what makes it legible. The prompt names those labels
+    and says what they are — a section heading is a listing site's taxonomy, a
+    venue is a place — which is the whole reason neither is folded into the
+    description as prose.
+
+    The venue and city were omitted for months while `_compose_summary` built
+    exactly that string one function away. `Steve Dennis` was the entire input
+    for an event we knew was at Lobsta Land in Gloucester, and the model
+    answered by nulling every field, honestly: a performer's name supports no
+    tag, and the anti-invention rule forbids guessing one. Measured on the real
+    model, adding this line turned those all-null replies into real tags.
     """
+    place = ", ".join(p for p in (event.venue, event.location) if p)
     category = event.metadata.get("listing_category")
     parts = [
         event.title,
+        # Above the description: what it is, where it is, then what it says.
+        f"Venue: {place}" if place else None,
         event.description,
         f"Event category: {category}" if category else None,
     ]

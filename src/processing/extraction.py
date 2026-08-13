@@ -106,24 +106,49 @@ _PLACEHOLDER_TAGS = frozenset(
 )
 
 
+#: The label `extraction_input` puts in front of the venue and city. Parsed back
+#: out here rather than passed in, because the label exists precisely to make
+#: that line machine-readable — and this function already reads the title out by
+#: line position, which is the weaker version of the same move.
+_VENUE_LABEL = "Venue: "
+
+
+def _echoes(source_text: str) -> set[str]:
+    """The things a tag may repeat back without saying anything.
+
+    The title — `Lee Hawkins` produced the tag `lee hawkins` — and the venue
+    line, each part of it and the whole. Measured: of ten real inputs run with a
+    venue line added, one came back tagged `essex`, the city, at 0.5.
+
+    Deliberately exact rather than substring, so an event at The Jazz Club keeps
+    its `jazz` tag. A looser rule would delete exactly the tags worth having.
+    """
+    lines = source_text.split("\n")
+    echoes = {lines[0].strip().casefold()} if lines else set()
+
+    for line in lines[1:]:
+        if not line.startswith(_VENUE_LABEL):
+            continue
+        place = line[len(_VENUE_LABEL) :].strip().casefold()
+        echoes.add(place)
+        echoes.update(part.strip() for part in place.split(","))
+    return {e for e in echoes if e}
+
+
 def _drop_meaningless(tags: list[Tag], source_text: str) -> list[Tag]:
     """Remove tags that carry no information about the event.
 
     Two kinds. A **placeholder** names the idea of a tag — `genre`, `artist` —
-    and says nothing. A **title echo** repeats the act's own name back:
-    `Lee Hawkins` produced the tag `lee hawkins`, which then gets embedded and
-    compared against preference lines as though it meant something.
-
-    The echo test is deliberately exact and anchored to the title line only, so
-    `Jazz Night` keeps its `jazz` tag. A looser substring rule would delete
-    exactly the genre tags that make a title worth reading.
+    and says nothing. An **echo** repeats something the input already stated:
+    the act's own name, or where it is being held. Both get embedded and scored
+    against preference lines as though they meant something.
     """
-    title = source_text.split("\n", 1)[0].strip().casefold()
+    echoes = _echoes(source_text)
     return [
         tag
         for tag in tags
         if tag.text.casefold() not in _PLACEHOLDER_TAGS
-        and tag.text.casefold() != title
+        and tag.text.casefold() not in echoes
     ]
 
 

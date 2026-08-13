@@ -15,7 +15,12 @@ from src.processing.extraction_input import (
     extraction_input_hash,
     input_hash,
 )
-from src.processing.extraction import ExtractionError, ExtractionProvider
+from src.models.tag import Tag
+from src.processing.extraction import (
+    ExtractionError,
+    ExtractionProvider,
+    ExtractionResult,
+)
 from src.processing.image_fetcher import ImageFetchError, ImageFetcher
 
 
@@ -54,6 +59,33 @@ def _has_authored_tags(event: Event) -> bool:
     should not.
     """
     return bool(event.metadata.get("authored_tags"))
+
+
+def _with_category_fallback(
+    event: Event, result: ExtractionResult
+) -> tuple[list[Tag], str | None]:
+    """The listing's own heading, when extraction produced no usable tag.
+
+    `music` for a bare performer name under a Music heading beats both invention
+    and silence, and it is safe by construction: `_CARRIED_CATEGORIES` already
+    withholds `Other` and `Karaoke & trivia`, so a heading only ever reaches
+    `listing_category` when it says something the title does not.
+
+    Weight 1.0 because weight is *centrality*, not confidence — it is the only
+    thing known about the event, so it is entirely central. How little is known
+    is `tag_confidence`'s job, and on a one-tag event it will already be low.
+
+    Recorded in the degradation rather than passing silently, because the refit
+    fits against what a *model* does: a fallback tag it never emitted would
+    teach the curve that it did.
+    """
+    category = event.metadata.get("listing_category")
+    if result.tags or not category:
+        return result.tags, result.degradation
+
+    note = "fell back to listing category"
+    reason = f"{result.degradation}; {note}" if result.degradation else note
+    return [Tag(text=category.casefold(), weight=1.0)], reason
 
 
 class ExtractionStage:
@@ -211,11 +243,6 @@ class ExtractionStage:
                 duration_ms=0,
             )
 
-        # Recorded only here, past the unavailable path, so a run that never got
-        # an answer stays distinguishable from one that did and is retried. A
-        # degradation is an answer, so it writes the hash like any other.
-        event.extraction_input_hash = input_hash(text)
-
         # Copied off the result rather than read from the provider, so it
         # describes the attempt that actually answered. Written beside the hash
         # and for the same reason: a failed re-extraction leaves both alone, so
@@ -224,12 +251,14 @@ class ExtractionStage:
         # almost every event skips — from blanking what it recorded before.
         event.extraction_model = result.model
         event.extraction_prompt_version = result.prompt_version
-        event.extraction_degradation = result.degradation
+
+        tags, degradation = _with_category_fallback(event, result)
+        event.extraction_degradation = degradation
 
         # Through `replace_tags` rather than by assignment: almost every event a
         # batch extracts arrives from storage carrying vectors for its stored
         # tags, and those describe tags it is about to stop having.
-        event.replace_tags(result.tags)
+        event.replace_tags(tags)
         # A source that states everything it knows authors its own summary, and
         # the model can only invent past it. NSNO publishes one line per event;
         # asked to summarise `Trivia` under a `Karaoke & trivia` heading it
@@ -247,6 +276,14 @@ class ExtractionStage:
             event.start_time = result.start_time
         if event.end_time is None:
             event.end_time = result.end_time
+
+        # Hashed *after* the fills, not before, because extraction can change
+        # its own input: the venue it fills is part of `extraction_input`, so a
+        # hash taken beforehand describes text the event no longer has and the
+        # next run re-extracts for a change we made ourselves. Still past the
+        # unavailable path, so a run that never got an answer stays retryable —
+        # and a degradation is an answer, so it writes the hash like any other.
+        event.extraction_input_hash = extraction_input_hash(event)
 
     def _fetch_image(self, event: Event) -> bytes | None:
         """Fetch image bytes for the event if an image URL is present."""
