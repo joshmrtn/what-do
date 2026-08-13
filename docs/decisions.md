@@ -1720,7 +1720,7 @@ karaoke/trivia carry four tags (0.8) and stay competitive; the events that sink
 are name-only music listings we genuinely know nothing about. Whether they
 *deserve* to sink relative to a verbose source is the open question below.
 
-### Confidence will become relative to input length — agreed 2026-08-11
+### Confidence will become relative to input length — agreed 2026-08-11, DELIVERED 2026-08-12 (see the end of this file)
 
 **Chosen: (3) below.** Expected tag count scales with how much text the
 extraction was given. *A 40-character input honestly supports one tag; a
@@ -1852,3 +1852,62 @@ table rewrite.
 
 Because migrating now costs something, **schema changes want batching**: survey
 the roadmap for everything that will touch the DDL before opening the patient.
+
+## Tag confidence follows the input, and knows it is a heuristic
+
+**Shipped 2026-08-12**, delivering "Confidence will become relative to input
+length" above.
+
+`tag_confidence` was `min(1.0, len(tags) / min_tags_per_event)` — a fixed
+divisor of 5, asking the same question of a 25-character cinema listing and a
+2,000-character festival programme. It read 1.00 on every stored row only
+because the prompt forced five tags and rejected fewer. The moment that floor
+dropped to 1, an honest one-tag listing would have scored **0.20**: marked down
+for its source being terse, which is punishing honesty rather than detecting a
+thin extraction.
+
+```
+expected_tags  = cap × (1 − e^(−chars / saturation))     cap 5.0, saturation 190
+tag_confidence = min(1, actual_tags / expected_tags)
+```
+
+`chars` is the length of `extraction_input(event)` — **the same text extraction
+hashes**, not a second definition. A one-tag event now scores 1.00 at 25
+characters and reaches 0.20 only where the input really could have earned more.
+
+### Why a saturating curve rather than a log
+
+Measured over 24 real events driven through the production prompt: counts rise
+1.25 → 2.5 → 3.0 → 5.0 and then **flatten** (4.75, 4.75). A logarithmic fit keeps
+climbing to 5.4 tags at 2,000 characters and contradicts the last two buckets.
+Raw data at `~/claude-docs/what-do/measurements/`.
+
+### It is a heuristic, permanently
+
+Input length is a weak proxy for how much a description actually distinguishes.
+A long one can honestly earn a single tag and a short one several — R² was 0.57,
+so the curve explains a bit over half the variance. It does not need to be right;
+it needs to beat a constant, which it does.
+
+**The ceiling, which no amount of refitting moves:** "expected tags" is *what the
+model typically does*, not what is correct. This measures **conformity to the
+extractor's own habits**. An event the model reliably mis-tags looks perfectly
+confident. Only a labelled sample can say otherwise — issue #2's bench.
+
+Because of that, tests assert *relationships and rough magnitudes*, never exact
+confidence values. Pinning decimals would fail on every re-fit while saying
+nothing about the behaviour under test.
+
+### The constants are recorded per run, and this was not optional
+
+`config/config.yaml` is gitignored, so the constants live in neither version
+control nor the database. With a nightly re-fit planned, a tuned constant would
+leave every past score unexplainable — the number stored, the arithmetic that
+produced it gone. `run_history.scoring_config` (NULL on all five prior runs) now
+carries the whole `ScoringConfig`, serialised from the dataclass rather than
+re-read from the file, so it records what the run *used* including defaults the
+file never mentioned.
+
+This is the reproducibility half that does **not** depend on preference
+revisions: which constants were used and which preferences were used are
+separable questions, and only the first was urgent.
