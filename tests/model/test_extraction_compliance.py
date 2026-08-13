@@ -75,8 +75,8 @@ def test_real_extraction_produces_valid_result():
 
     assert len(results) == 1
     result = results[0]
-    assert not result.metadata.get("llm_extraction_failed"), (
-        f"Extraction failed: {result.metadata}"
+    assert result.extraction_degradation is None, (
+        f"Extraction fell short: {result.extraction_degradation}"
     )
     assert len(result.tags) >= 5
     assert result.summary is not None and len(result.summary) > 0

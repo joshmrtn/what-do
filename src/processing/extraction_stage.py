@@ -128,16 +128,27 @@ class ExtractionStage:
                 text, image_bytes=image_bytes, reference_date=self._get_now()
             )
         except ExtractionError as exc:
+            # Only "no reply at all" reaches here. A reply that fell short comes
+            # back as a result carrying its `degradation`, because that is
+            # deterministic and re-running it buys nothing; this is not, so the
+            # event keeps no hash and the next run tries again.
             self._logger.error(
-                f"LLM extraction failed for event {event.event_id}: {exc}",
+                f"LLM extraction unavailable for event {event.event_id}: {exc}",
                 component="extraction_stage",
                 duration_ms=0,
             )
-            event.metadata["llm_extraction_failed"] = True
             return
 
-        # Recorded only here, past the failure path, so a failed run stays
-        # distinguishable from a finished one and is retried.
+        if result.degradation is not None:
+            self._logger.warning(
+                f"LLM extraction degraded for event {event.event_id}: {result.degradation}",
+                component="extraction_stage",
+                duration_ms=0,
+            )
+
+        # Recorded only here, past the unavailable path, so a run that never got
+        # an answer stays distinguishable from one that did and is retried. A
+        # degradation is an answer, so it writes the hash like any other.
         event.extraction_input_hash = input_hash(text)
 
         # Copied off the result rather than read from the provider, so it
@@ -148,6 +159,7 @@ class ExtractionStage:
         # almost every event skips — from blanking what it recorded before.
         event.extraction_model = result.model
         event.extraction_prompt_version = result.prompt_version
+        event.extraction_degradation = result.degradation
 
         # Through `replace_tags` rather than by assignment: almost every event a
         # batch extracts arrives from storage carrying vectors for its stored

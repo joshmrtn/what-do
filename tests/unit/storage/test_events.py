@@ -63,7 +63,7 @@ def _full_event() -> Event:
         summary="A karaoke night at Koto.",
         weather={"temperature_f": 70.0, "condition": "clear"},
         astronomical_data={"sunset": "20:15"},
-        metadata={"llm_extraction_failed": False},
+        metadata={"listing_category": "Music"},
     )
     event.tag_embeddings = [encode_vector([1.0, 2.0, 3.0]), encode_vector([4.0, 5.0, 6.0])]
     event.summary_embedding = encode_vector([7.0, 8.0, 9.0])

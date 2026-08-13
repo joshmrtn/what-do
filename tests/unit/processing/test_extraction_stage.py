@@ -44,7 +44,7 @@ def _make_logger():
     return get_logger("test_stage", stream=io.StringIO())
 
 
-def _make_provider(tags=None, summary="A great event.", setting="unknown"):
+def _make_provider(tags=None, summary="A great event.", setting="unknown", degradation=None):
 
     provider = MagicMock()
     provider.extract.return_value = ExtractionResult(
@@ -52,15 +52,23 @@ def _make_provider(tags=None, summary="A great event.", setting="unknown"):
         venue="Extracted Venue",
         start_time=datetime(2026, 6, 22, 20, 0, 0),
         end_time=None,
-        tags=tags or [Tag(text=t) for t in
-                      ["jazz", "live music", "evening", "venue", "weekend"]],
+        # `is None`, not `or` — an empty list is exactly what a degraded reply
+        # returns, and `or` would quietly hand it the five-tag default instead.
+        tags=[Tag(text=t) for t in
+              ["jazz", "live music", "evening", "venue", "weekend"]]
+        if tags is None else tags,
         summary=summary,
         model="fake-extraction-model",
         prompt_version="fakever0",
-        degradation=None,
+        degradation=degradation,
         setting=setting,
     )
     return provider
+
+
+def _degraded_provider(reason="tag count 0 is below minimum 1", tags=None, summary=None):
+    """A provider whose model answered, and whose answer fell short."""
+    return _make_provider(tags=[] if tags is None else tags, summary=summary, degradation=reason)
 
 
 def _make_fetcher(content: bytes = b"fake image bytes"):
@@ -367,8 +375,10 @@ def test_image_fetch_error_logs_warning_and_continues():
 # ---------------------------------------------------------------------------
 
 
-def test_extraction_error_sets_flag_and_continues():
-
+def test_an_unavailable_provider_leaves_the_event_alone_and_continues():
+    """No flag is written any more. It was read nowhere, so it marked a failure
+    that nothing downstream could see; an absent hash is the real record, and
+    it is the one that gets the event retried."""
     provider = MagicMock()
     provider.extract.side_effect = ExtractionError("LLM confused")
     stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
@@ -376,8 +386,9 @@ def test_extraction_error_sets_flag_and_continues():
     event = _make_event()
     results = stage.process([event])
 
-    assert results[0].metadata.get("llm_extraction_failed") is True
+    assert results[0].metadata == {}
     assert results[0].tags == []
+    assert results[0].extraction_input_hash is None
 
 
 def test_one_failed_event_does_not_stop_others():
@@ -415,7 +426,7 @@ def test_one_failed_event_does_not_stop_others():
     results = stage.process([event1, event2])
 
     assert len(results) == 2
-    assert results[0].metadata.get("llm_extraction_failed") is True
+    assert results[0].extraction_input_hash is None
     assert results[1].tags == [Tag(text=c) for c in "abcde"]
 
 
@@ -872,3 +883,128 @@ class TestReExtractionOfAStoredEvent:
 
         assert event.summary == "Trivia at The Paddle Inn."
         assert event.summary_embedding == b"v-authored"
+
+
+class TestADegradedExtractionIsRecordedAndFinished:
+    """A model that answered thinly has finished with this input.
+
+    Measured: the same eight events failed on 2026-08-12 and again on 08-13,
+    each burning minutes of model time to produce an identical rejection. The
+    shortfall is deterministic, so the run is done — the hash goes down and the
+    event stops being re-paid for nightly. That is the opposite of a transport
+    failure, which may well succeed tomorrow and must stay retryable.
+    """
+
+    def test_a_degraded_extraction_records_its_provenance(self):
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.extraction_model == "fake-extraction-model"
+        assert event.extraction_prompt_version == "fakever0"
+
+    def test_a_degraded_extraction_writes_the_input_hash(self):
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.extraction_input_hash == extraction_input_hash(event)
+
+    def test_a_degraded_extraction_is_not_re_paid_on_the_next_pass(self):
+        provider = _degraded_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+        stage.process([event])
+
+        assert provider.extract.call_count == 1
+
+    def test_a_degraded_extraction_records_what_it_fell_short_on(self):
+        stage = ExtractionStage(
+            _degraded_provider(reason="tag count 0 is below minimum 1; summary field is missing"),
+            None,
+            _make_logger(),
+            get_now=_now,
+        )
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.extraction_degradation == (
+            "tag count 0 is below minimum 1; summary field is missing"
+        )
+
+    def test_a_clean_extraction_records_no_degradation(self):
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.extraction_degradation is None
+
+    def test_a_later_clean_extraction_clears_an_earlier_degradation(self):
+        """The field describes the tags the event has now, like its provenance."""
+        provider = _degraded_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        event = _make_event()
+        stage.process([event])
+
+        event.description = "An entirely rewritten description, so the hash differs."
+        provider.extract.return_value = _make_provider().extract.return_value
+        stage.process([event])
+
+        assert event.extraction_degradation is None
+
+    def test_it_wipes_tags_it_can_no_longer_justify(self):
+        """The seven events this was measured on kept tags from the forced-five
+        prompt — `genre`, `artist`, a title echo — and ranked on them while
+        claiming tonight's provenance. Zero tags is the honest position, and
+        `tag_confidence` puts zero evidence at mid-ranking, where it belongs."""
+        stage = ExtractionStage(_degraded_provider(), None, _make_logger(), get_now=_now)
+        event = _make_event(tags=[Tag(text="genre", weight=0.5), Tag(text="artist", weight=0.3)])
+
+        stage.process([event])
+
+        assert event.tags == []
+
+    def test_the_usable_half_of_a_degraded_reply_is_still_adopted(self):
+        stage = ExtractionStage(
+            _degraded_provider(summary="This is a stand-up comedy event."),
+            None,
+            _make_logger(),
+            get_now=_now,
+        )
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.summary == "This is a stand-up comedy event."
+
+    def test_a_transport_failure_still_leaves_the_event_retryable(self):
+        """The distinction the whole design turns on: no hash, so it runs again."""
+        provider = MagicMock()
+        provider.extract.side_effect = ExtractionError("model unavailable")
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+
+        assert event.extraction_input_hash is None
+        assert event.extraction_degradation is None
+
+    def test_the_dead_failure_flag_is_gone(self):
+        """Asserted on the transport path, which is the one that wrote it — a
+        degraded event never carried the flag, so checking there would pass
+        against code that still sets it. It was read nowhere in `src/`, so
+        every failure it marked was invisible to everything downstream."""
+        provider = MagicMock()
+        provider.extract.side_effect = ExtractionError("model unavailable")
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        event = _make_event()
+
+        stage.process([event])
+
+        assert "llm_extraction_failed" not in event.metadata

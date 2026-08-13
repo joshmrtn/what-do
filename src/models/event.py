@@ -74,6 +74,13 @@ class Event:
     #: is indistinguishable from one tagged by a prompt since fixed.
     extraction_model: str | None = None
     extraction_prompt_version: str | None = None
+    #: Every way the reply that produced these tags fell short of the schema,
+    #: or None where it met it in full. Written beside the provenance and for
+    #: the same reason: it describes the tags the event has now. This is what
+    #: lets a thin row stay legible instead of being discarded — the rate
+    #: climbing off its measured 4.3% is the signal a source or a model has
+    #: changed underneath us.
+    extraction_degradation: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
