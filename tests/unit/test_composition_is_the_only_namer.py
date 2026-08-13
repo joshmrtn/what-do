@@ -55,6 +55,10 @@ _RAW_CONNECTION = {
     # `build_view_storage`, the same factory both other roots use, so it names
     # no implementation of its own.
     "bench/cli.py",
+    # The schema checker. Not debt: opening a database directly *is* its job —
+    # it compares a real file against a throwaway one built from `_SCHEMA`, and
+    # a repository would hide the very difference it exists to find. Read-only.
+    "storage/schema_check.py",
     # The module-level storage functions the repositories wrap rather than
     # restate. Goes when nothing calls them directly.
     "storage/events.py",

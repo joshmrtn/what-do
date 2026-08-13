@@ -39,6 +39,7 @@ include = ["src*"]
 what-do = "src.presentation.cli:main"
 what-do-run-batch = "src.scheduler:run"
 what-do-bench = "src.bench.cli:run"
+what-do-check-schema = "src.storage.schema_check:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

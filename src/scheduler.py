@@ -36,6 +36,7 @@ from src.processing.extraction_stage import ExtractionStage
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
+from src.storage.schema_check import Finding, check_database, format_findings
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, init_db
 from src.storage.protocols import (
     CandidateRepository,
@@ -547,6 +548,7 @@ def run(
     build_dependencies_fn: Callable[..., BatchDependencies] = build_dependencies,
     run_batch_fn: Callable[..., BatchResult] = run_batch,
     init_db_fn: Callable[[Path], None] = init_db,
+    check_schema_fn: Callable[[Path], list[Finding]] = check_database,
     transcript_factory: Callable[..., Any] = LLMTranscript,
 ) -> int:
     """Entry point for `what-do-run-batch`.
@@ -560,6 +562,9 @@ def run(
         build_dependencies_fn: Injected for testing.
         run_batch_fn: Injected for testing.
         init_db_fn: Injected for testing.
+        check_schema_fn: Injected for testing. Defaults to the real check,
+            which is asserted separately against a database on disk — a seam
+            only tests ever reach is a seam production never exercises.
         transcript_factory: Builds the LLM transcript. Injected so a test can
             assert the file chosen without one being opened.
 
@@ -586,6 +591,21 @@ def run(
     # to exist even on a dry run, which promises to write no events, no
     # recommendations, and no deletes.
     init_db_fn(db_path)
+
+    # After healing, before anything is built. `_SCHEMA` is all CREATE TABLE IF
+    # NOT EXISTS, so `init_db` above adds a missing *table* and silently skips a
+    # missing *column*: every fresh database — every test — has it and the live
+    # file does not. This is the only check that can tell.
+    #
+    # It aborts rather than reports, and applies to `--dry-run` and
+    # `--ingest-only` alike. A drift that reaches a stage kills the run minutes
+    # later anyway, having burnt model time first; and a dry run that passes
+    # against a schema the real run would die on gives exactly the false
+    # confidence it exists to prevent.
+    schema_findings = check_schema_fn(db_path)
+    if schema_findings:
+        print(format_findings(db_path, schema_findings), file=stdout)
+        return 1
 
     transcript = None
     if args.llm_transcript is not None:

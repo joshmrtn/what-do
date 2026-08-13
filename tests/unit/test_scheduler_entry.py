@@ -10,6 +10,8 @@ import pytest
 from src.ingestion.ingestion_service import RawCandidateRecord
 from src.models.event_candidate import EventCandidate
 from src.scheduler import BatchResult, run
+from src.storage.schema_check import Finding, check_database
+from src.storage.sqlite.connection import init_db
 
 NOW = datetime(2026, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
 
@@ -85,7 +87,7 @@ def _fake_build(**kwargs):
 def invoke(tmp_path):
     """Drive run() with every real construction seam replaced."""
 
-    def _invoke(argv, result=None, build=None, raw=None):
+    def _invoke(argv, result=None, build=None, raw=None, check_schema=None):
         batch = _Recorder(result, raw=raw)
         config_calls: list = []
 
@@ -102,6 +104,7 @@ def invoke(tmp_path):
             build_dependencies_fn=build or _fake_build,
             run_batch_fn=batch,
             init_db_fn=lambda path: None,
+            check_schema_fn=check_schema or (lambda path: []),
         )
         return code, batch, stdout.getvalue(), config_calls
 
@@ -139,6 +142,9 @@ def _invoke_with_transcript(argv, tmp_path, factory):
         build_dependencies_fn=_build,
         run_batch_fn=_Recorder(),
         init_db_fn=lambda path: None,
+        # Stubbed alongside `init_db_fn`: this helper never creates the database
+        # it names, and the real check opens it read-only.
+        check_schema_fn=lambda path: [],
         transcript_factory=factory,
     )
     return built
@@ -338,3 +344,65 @@ def test_the_default_clock_is_timezone_aware():
     from src.scheduler import _default_now
 
     assert _default_now().tzinfo is not None
+
+
+class TestTheSchemaGate:
+    """`_SCHEMA` is all `CREATE TABLE IF NOT EXISTS`, so a new column serves
+    every fresh database and leaves the live file untouched until a hand
+    migration runs. Every test passes either way. This is the one check that can
+    see the difference, so it runs before anything else does.
+    """
+
+    def test_a_drifted_schema_stops_the_batch(self, invoke):
+        """Abort rather than report. A drift that reaches a stage kills the run
+        minutes later anyway, having burnt model time first — aborting only
+        moves the death to the cheap end."""
+        drift = [Finding("events", "events.extraction_degradation is missing")]
+        builds: list = []
+
+        code, batch, out, _ = invoke(
+            [],
+            build=lambda **kw: builds.append(kw),
+            check_schema=lambda path: drift,
+        )
+
+        assert code == 1
+        assert builds == [], "dependencies were built despite the drift"
+        assert batch.kwargs == {}, "the batch ran despite the drift"
+        assert "extraction_degradation" in out
+
+    def test_a_clean_schema_lets_the_batch_proceed(self, invoke):
+        code, batch, _, _ = invoke([], check_schema=lambda path: [])
+
+        assert code == 0
+        assert batch.kwargs, "the batch never ran"
+
+    def test_the_gate_applies_to_a_dry_run_too(self, invoke):
+        """The tempting exception, and the wrong one: a dry run exists to say
+        the pipeline is sound, so one that passes against a schema the real run
+        would die on gives exactly the false confidence it exists to prevent."""
+        code, batch, _, _ = invoke(
+            ["--dry-run"], check_schema=lambda path: [Finding("events", "drift")]
+        )
+
+        assert code == 1
+        assert batch.kwargs == {}
+
+    def test_the_gate_applies_to_ingest_only_too(self, invoke):
+        """`--ingest-only` writes candidates, so it was never in the safe
+        category to begin with."""
+        code, batch, _, _ = invoke(
+            ["--ingest-only"], check_schema=lambda path: [Finding("events", "drift")]
+        )
+
+        assert code == 1
+        assert batch.kwargs == {}
+
+    def test_the_real_check_is_the_default(self, tmp_path):
+        """A seam only tests reach is a seam production never exercises — the
+        naive-clock failure exactly. So the default is asserted against a real
+        database on disk."""
+        db = tmp_path / "clean.db"
+        init_db(db)
+
+        assert check_database(db) == []
