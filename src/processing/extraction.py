@@ -20,7 +20,14 @@ from src.utils.text import normalize_embedding_text
 
 
 class ExtractionError(Exception):
-    """Raised when structured extraction fails after retries."""
+    """Raised when a provider cannot answer at all.
+
+    Not for a thin answer. A reply that falls short of the schema is a
+    `degradation` on the result — it is deterministic, so it will fall short
+    identically tomorrow, and discarding it threw away both the usable half of
+    the reply and the provenance the refit needs. This means "there was no
+    reply", which may well succeed on the next run.
+    """
 
 
 @dataclass
@@ -32,11 +39,14 @@ class ExtractionResult:
         venue: Extracted venue name (None if not determinable).
         start_time: Parsed start datetime (None if not determinable).
         end_time: Parsed end datetime (None if not determinable).
-        tags: Weighted descriptive tags for the event (minimum min_tags).
-        summary: One-sentence event summary.
+        tags: Weighted descriptive tags for the event (may be empty; see
+            `degradation`).
+        summary: One-sentence event summary, or None where the model gave none.
         model: The model that actually produced this, which is not always the
             one configured — a failover chain can answer from another.
         prompt_version: Which prompt produced it, from `_prompt_version`.
+        degradation: Every way this reply fell short of the schema, joined with
+            "; ", or None when it met it in full.
         setting: "indoor", "outdoor", or "unknown".
     """
 
@@ -45,7 +55,7 @@ class ExtractionResult:
     start_time: datetime | None
     end_time: datetime | None
     tags: list[Tag]
-    summary: str
+    summary: str | None
     #: Provenance travels with the result rather than being read off the
     #: provider afterwards, so a caller cannot record a model and prompt that
     #: did not produce the tags in front of it. Both are required, with no
@@ -53,6 +63,10 @@ class ExtractionResult:
     #: and the rows it wrote would be indistinguishable from honest ones.
     model: str
     prompt_version: str
+    #: Required, with no default, for that same reason and a sharper one: a
+    #: default of None would let a construction site claim a clean extraction it
+    #: never checked, which is precisely the silence this field exists to break.
+    degradation: str | None
     setting: str = "unknown"
 
 
@@ -292,10 +306,10 @@ class OllamaExtractionProvider(ExtractionProvider):
             chat_kwargs["images"] = [image_bytes]
 
         raw = self._client.chat(**chat_kwargs)
-        result, error = self._parse_and_validate(raw, text)
+        result = self._parse_and_validate(raw, text)
 
-        if result is None:
-            retry_prompt = _RETRY_PROMPT.format(reason=error)
+        if result.degradation is not None:
+            retry_prompt = _RETRY_PROMPT.format(reason=result.degradation)
             retry_messages = messages + [
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": retry_prompt},
@@ -305,17 +319,17 @@ class OllamaExtractionProvider(ExtractionProvider):
                 retry_kwargs["images"] = [image_bytes]
 
             raw = self._client.chat(**retry_kwargs)
-            result, error = self._parse_and_validate(raw, text)
-
-        if result is None:
-            raise ExtractionError(f"Extraction failed after 1 retry: {error}")
+            result = self._parse_and_validate(raw, text)
 
         return result
 
-    def _parse_and_validate(
-        self, reply: str, source_text: str
-    ) -> tuple[ExtractionResult | None, str]:
-        """Parse raw LLM output into ExtractionResult, returning (result, error_reason).
+    def _parse_and_validate(self, reply: str, source_text: str) -> ExtractionResult:
+        """Parse raw LLM output into a result, naming every way it fell short.
+
+        Never returns None. A reply short of the schema still carries whatever
+        it did get right — `Stand-up Comedy` returned a true summary and one
+        true tag, and rejecting the reply threw away both — and it carries its
+        provenance, without which the refit cannot see the row at all.
 
         Args:
             reply: What the model sent back.
@@ -325,34 +339,51 @@ class OllamaExtractionProvider(ExtractionProvider):
         """
         data = _decode_json_object(reply)
         if data is None:
-            return None, "JSON parse error — response was not valid JSON"
+            return self._degraded("JSON parse error — response was not valid JSON")
+
+        reasons: list[str] = []
 
         raw_tags = data.get("tags")
-        if not isinstance(raw_tags, list):
-            return None, f"tag count 0 is below minimum {self._min_tags}"
-
-        tags = _drop_meaningless(self._parse_tags(raw_tags), source_text)
+        tags = (
+            _drop_meaningless(self._parse_tags(raw_tags), source_text)
+            if isinstance(raw_tags, list)
+            else []
+        )
         if len(tags) < self._min_tags:
-            return None, f"tag count {len(tags)} is below minimum {self._min_tags}"
+            reasons.append(f"tag count {len(tags)} is below minimum {self._min_tags}")
 
-        summary = data.get("summary")
-        if not summary or not isinstance(summary, str):
-            return None, "summary field is missing or not a string"
-
-        start_time = self._parse_dt(data.get("start_time"))
-        end_time = self._parse_dt(data.get("end_time"))
+        raw_summary = data.get("summary")
+        summary = raw_summary if raw_summary and isinstance(raw_summary, str) else None
+        if summary is None:
+            reasons.append("summary field is missing or not a string")
 
         return ExtractionResult(
             title=data.get("title") or None,
             venue=data.get("venue") or None,
-            start_time=start_time,
-            end_time=end_time,
+            start_time=self._parse_dt(data.get("start_time")),
+            end_time=self._parse_dt(data.get("end_time")),
             tags=tags,
             summary=summary,
             model=self._model,
             prompt_version=_prompt_version(),
+            degradation="; ".join(reasons) if reasons else None,
             setting=_parse_setting(data.get("setting")),
-        ), ""
+        )
+
+    def _degraded(self, reason: str) -> ExtractionResult:
+        """A result carrying nothing but its provenance and why there is nothing."""
+        return ExtractionResult(
+            title=None,
+            venue=None,
+            start_time=None,
+            end_time=None,
+            tags=[],
+            summary=None,
+            model=self._model,
+            prompt_version=_prompt_version(),
+            degradation=reason,
+            setting="unknown",
+        )
 
     @staticmethod
     def _parse_tags(raw_tags: list[Any]) -> list[Tag]:

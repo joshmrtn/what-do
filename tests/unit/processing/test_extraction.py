@@ -178,6 +178,7 @@ def test_mock_provider_satisfies_abc():
                 summary="A test event.",
                 model="mock-model",
                 prompt_version="mockver0",
+                degradation=None,
             )
 
     provider = MockProvider()
@@ -233,41 +234,42 @@ def test_start_time_parsed_as_datetime():
 
 
 # ---------------------------------------------------------------------------
-# Schema enforcement — invalid outputs trigger ExtractionError + retry
+# Schema enforcement — a shortfall degrades after retry, it does not raise
 # ---------------------------------------------------------------------------
 
 
-def test_fewer_than_min_tags_raises_after_retry():
+def test_fewer_than_min_tags_degrades_after_retry():
 
     # Both calls return only 3 tags
     client = _make_client(_valid_response(tags=["a", "b", "c"]))
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
-    with pytest.raises(ExtractionError, match="tag"):
-        provider.extract("some event text")
+    result = provider.extract("some event text")
 
+    assert "tag" in result.degradation
     assert client.chat.call_count == 2
 
 
-def test_missing_summary_raises_after_retry():
+def test_missing_summary_degrades_after_retry():
 
     client = _make_client(_valid_response(include_summary=False))
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
-    with pytest.raises(ExtractionError, match="summary"):
-        provider.extract("some event text")
+    result = provider.extract("some event text")
 
+    assert "summary" in result.degradation
+    assert result.summary is None
     assert client.chat.call_count == 2
 
 
-def test_invalid_json_raises_after_retry():
+def test_invalid_json_degrades_after_retry():
 
     client = _make_client("Here is the event info: Jazz night tonight, it should be fun!")
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
-    with pytest.raises(ExtractionError, match="JSON"):
-        provider.extract("some event text")
+    result = provider.extract("some event text")
 
+    assert "JSON" in result.degradation
     assert client.chat.call_count == 2
 
 
@@ -306,8 +308,11 @@ def test_prose_with_no_json_at_all_still_fails():
     client = _make_client("Jazz night tonight, it should be fun!")
     provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
-    with pytest.raises(ExtractionError, match="JSON"):
-        provider.extract("some event text")
+    result = provider.extract("some event text")
+
+    assert "JSON" in result.degradation
+    assert result.tags == []
+    assert result.summary is None
 
 
 def test_retry_succeeds_on_second_attempt():
@@ -452,8 +457,9 @@ def test_min_tag_count_enforced_on_weighted_tags():
     client = _make_client(_weighted(_FIVE_WEIGHTED[:3]))
     provider = OllamaExtractionProvider(client=client, min_tags=5)
 
-    with pytest.raises(ExtractionError, match="tag"):
-        provider.extract("punk show tonight")
+    result = provider.extract("punk show tonight")
+
+    assert "tag" in result.degradation
 
 
 def test_tag_entry_without_text_is_skipped():
@@ -511,8 +517,10 @@ def test_tag_of_only_invisible_characters_is_dropped():
     client = _make_client(_weighted(pairs))
     provider = OllamaExtractionProvider(client=client, min_tags=6)
 
-    with pytest.raises(ExtractionError, match="tag count 5"):
-        provider.extract("punk show tonight")
+    result = provider.extract("punk show tonight")
+
+    assert "tag count 5" in result.degradation
+    assert len(result.tags) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -652,8 +660,97 @@ class TestPlaceholderTagsAreRejected:
 
         assert [t.text for t in result.tags] == ["jazz", "music"]
 
-    def test_dropping_every_tag_is_still_a_failure(self):
+    def test_dropping_every_tag_degrades_rather_than_failing(self):
         provider = _provider(min_tags=1, tags=[{"tag": "genre", "weight": 0.5}])
 
+        result = provider.extract("Tyler Bard")
+
+        assert result.tags == []
+        assert "tag count 0" in result.degradation
+
+
+class TestDegradationIsRecordedNotRaised:
+    """A shortfall is graded, not discarded.
+
+    `tag_confidence` already pulls thin evidence toward mid-ranking; refusing
+    the result outright was a second, cruder judgement on top of a working one.
+    The measured cost was ten events a night ranking on tags from a prompt
+    version we had rejected, invisibly, because a failure wrote nothing at all.
+    """
+
+    def test_a_clean_extraction_records_no_degradation(self):
+        provider = _provider(min_tags=1)
+
+        assert provider.extract("Jazz Night").degradation is None
+
+    def test_a_degraded_result_still_carries_its_provenance(self):
+        """The refit's dataset is exactly the rows a failure used to omit, and
+        they are the shortest inputs — the region the curve is most sensitive
+        in. A degraded row with no model on it is a row the refit cannot use."""
+        client = _make_client(_valid_response(tags=[]))
+        provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=1)
+
+        result = provider.extract("Limón Dance Company")
+
+        assert result.model == "gemma4:e4b"
+        assert result.prompt_version
+
+    def test_the_usable_half_of_a_partial_reply_survives(self):
+        """`Stand-up Comedy` returned a real summary and one true tag; the echo
+        rule ate the tag and the whole reply went with it. Whatever the model
+        did get right is kept."""
+        client = _make_client(
+            json.dumps(
+                {
+                    "title": "Stand-up Comedy",
+                    "venue": None,
+                    "start_time": None,
+                    "end_time": None,
+                    "tags": [{"tag": "stand-up comedy", "weight": 1.0}],
+                    "summary": "This is a stand-up comedy event.",
+                    "setting": "unknown",
+                }
+            )
+        )
+        provider = OllamaExtractionProvider(client=client, min_tags=1)
+
+        result = provider.extract("Stand-up Comedy")
+
+        assert result.tags == []
+        assert result.summary == "This is a stand-up comedy event."
+        assert result.title == "Stand-up Comedy"
+        assert "tag count 0" in result.degradation
+
+    def test_every_shortfall_in_one_reply_is_named(self):
+        """The all-null reply is short of both, and a counter that only ever
+        sees the first reason cannot tell the two failure shapes apart."""
+        client = _make_client(
+            json.dumps(
+                {
+                    "title": None,
+                    "venue": None,
+                    "start_time": None,
+                    "end_time": None,
+                    "tags": [],
+                    "summary": None,
+                    "setting": None,
+                }
+            )
+        )
+        provider = OllamaExtractionProvider(client=client, min_tags=1)
+
+        result = provider.extract("Limón Dance Company")
+
+        assert "tag count 0" in result.degradation
+        assert "summary" in result.degradation
+
+    def test_a_provider_that_cannot_answer_at_all_still_raises(self):
+        """`ExtractionError` stops meaning 'the reply was thin' and keeps
+        meaning 'there was no reply' — the case that must not write a hash,
+        because unlike a shortfall it may well succeed tomorrow."""
+        client = MagicMock()
+        client.chat.side_effect = ExtractionError("model unavailable")
+        provider = OllamaExtractionProvider(client=client, min_tags=1)
+
         with pytest.raises(ExtractionError):
-            provider.extract("Tyler Bard")
+            provider.extract("Jazz Night")

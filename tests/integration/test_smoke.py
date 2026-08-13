@@ -1048,6 +1048,7 @@ class _CountingExtraction:
             summary="An evening of live music at a local bar.",
             model="fake-extraction-model",
             prompt_version="fakever0",
+            degradation=None,
             setting="indoor",
         )
 

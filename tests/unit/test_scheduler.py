@@ -141,6 +141,7 @@ class _ExtractionModel:
             summary=f"Karaoke night: {text}",
             model="fake-extraction-model",
             prompt_version="fakever0",
+            degradation=None,
             setting="indoor",
         )
 

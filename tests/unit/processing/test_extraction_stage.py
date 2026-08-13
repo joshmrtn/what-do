@@ -57,6 +57,7 @@ def _make_provider(tags=None, summary="A great event.", setting="unknown"):
         summary=summary,
         model="fake-extraction-model",
         prompt_version="fakever0",
+        degradation=None,
         setting=setting,
     )
     return provider
@@ -142,7 +143,7 @@ def test_re_extraction_replaces_provenance_with_what_just_ran():
     provider.extract.return_value = ExtractionResult(
         title=None, venue=None, start_time=None, end_time=None,
         tags=[Tag(text="trivia")], summary="A trivia night.",
-        model="gemma4:e2b", prompt_version="newver01",
+        model="gemma4:e2b", prompt_version="newver01", degradation=None,
     )
     stage.process([event])
 
@@ -403,6 +404,7 @@ def test_one_failed_event_does_not_stop_others():
             title=None, venue=None, start_time=None, end_time=None,
             tags=[Tag(text=c) for c in "abcde"], summary="Good.",
             model="fake-extraction-model", prompt_version="fakever0",
+            degradation=None,
         ),
     ]
 
@@ -526,6 +528,7 @@ def test_an_extraction_returning_no_tags_is_not_retried_forever():
         summary="Nothing much to say about this one.",
         model="fake-extraction-model",
         prompt_version="fakever0",
+        degradation=None,
     )
     stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
     event = _make_event()
