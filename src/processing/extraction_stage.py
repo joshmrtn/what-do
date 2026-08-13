@@ -140,6 +140,15 @@ class ExtractionStage:
         # distinguishable from a finished one and is retried.
         event.extraction_input_hash = input_hash(text)
 
+        # Copied off the result rather than read from the provider, so it
+        # describes the attempt that actually answered. Written beside the hash
+        # and for the same reason: a failed re-extraction leaves both alone, so
+        # a row keeps the provenance of the tags it still has. The skip path
+        # never reaches here at all, which is what stops a normal night — where
+        # almost every event skips — from blanking what it recorded before.
+        event.extraction_model = result.model
+        event.extraction_prompt_version = result.prompt_version
+
         # Through `replace_tags` rather than by assignment: almost every event a
         # batch extracts arrives from storage carrying vectors for its stored
         # tags, and those describe tags it is about to stop having.

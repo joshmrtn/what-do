@@ -68,6 +68,100 @@ def _make_fetcher(content: bytes = b"fake image bytes"):
     return fetcher
 
 
+# ---------------------------------------------------------------------------
+# Provenance — which model and prompt produced the tags in front of us
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_records_the_model_and_prompt_that_ran():
+    provider = _make_provider()
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+
+    assert event.extraction_model == "fake-extraction-model"
+    assert event.extraction_prompt_version == "fakever0"
+
+
+def test_a_skipped_extraction_leaves_provenance_intact():
+    """The path nearly every event on a normal night takes.
+
+    Blanking provenance here would leave the refit with exactly the holes it has
+    today, from code that reads as correct — the event keeps its tags, and the
+    only thing lost is the record of what produced them.
+    """
+    provider = _make_provider()
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+    stage.process([event])
+
+    assert provider.extract.call_count == 1, "the second pass re-extracted"
+    assert event.extraction_model == "fake-extraction-model"
+    assert event.extraction_prompt_version == "fakever0"
+
+
+def test_a_failed_extraction_records_no_provenance():
+    """Nothing produced these tags, so nothing may claim to have."""
+    provider = MagicMock()
+    provider.extract.side_effect = ExtractionError("model unavailable")
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+
+    stage.process([event])
+
+    assert event.extraction_model is None
+    assert event.extraction_prompt_version is None
+
+
+def test_a_failed_re_extraction_does_not_erase_earlier_provenance():
+    """A retry that fails must not downgrade a row that was fine yesterday."""
+    provider = _make_provider()
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+    stage.process([event])
+
+    event.description = "An entirely rewritten description, so the hash differs."
+    provider.extract.side_effect = ExtractionError("model unavailable")
+    stage.process([event])
+
+    assert event.extraction_model == "fake-extraction-model"
+    assert event.extraction_prompt_version == "fakever0"
+
+
+def test_re_extraction_replaces_provenance_with_what_just_ran():
+    """Provenance describes the tags the event currently has, not its history."""
+    provider = _make_provider()
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event()
+    stage.process([event])
+
+    event.description = "An entirely rewritten description, so the hash differs."
+    provider.extract.return_value = ExtractionResult(
+        title=None, venue=None, start_time=None, end_time=None,
+        tags=[Tag(text="trivia")], summary="A trivia night.",
+        model="gemma4:e2b", prompt_version="newver01",
+    )
+    stage.process([event])
+
+    assert event.extraction_model == "gemma4:e2b"
+    assert event.extraction_prompt_version == "newver01"
+
+
+def test_synthetic_events_record_no_extraction_provenance():
+    """Their tags are authored, so no model or prompt produced them."""
+    provider = _make_provider()
+    stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+    event = _make_event(source_type=SYNTHETIC, tags=[Tag(text="board games")])
+
+    stage.process([event])
+
+    assert event.extraction_model is None
+    assert event.extraction_prompt_version is None
+
+
 def test_reference_date_from_get_now_passed_to_provider():
 
     provider = _make_provider()
