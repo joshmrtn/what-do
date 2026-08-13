@@ -1911,3 +1911,81 @@ file never mentioned.
 This is the reproducibility half that does **not** depend on preference
 revisions: which constants were used and which preferences were used are
 separable questions, and only the first was urgent.
+
+---
+
+## Provenance travels on the result, not alongside it
+
+`ExtractionResult` carries `model` and `prompt_version`, and the stage copies
+them onto the event. The alternative — the stage reading `provider.model` and a
+module-level version constant — was rejected for one reason: it records what was
+*configured* rather than what *answered*. Those are the same thing until a
+failover chain routes elsewhere, and the moment they differ the recorded value
+is confidently wrong, which is worse than absent.
+
+Both fields are **required, with no default**. A default is what makes a
+missing-provenance bug silent: a construction site that forgets them writes
+rows indistinguishable from honest ones, and the rows exist precisely to be
+distinguished. Required means `mypy --strict` enumerates every site instead.
+
+### The version is derived from the prompt, never hand-maintained
+
+`_prompt_version()` is a digest of the prompt text. A version constant someone
+must remember to bump is bumped at the one moment they are thinking about
+wording rather than bookkeeping — and a version that silently lies is worse than
+none, because the refit would pool rows produced by different instructions and
+never know.
+
+It covers `_RETRY_PROMPT` as well as `_EXTRACT_PROMPT`. The retry path produces
+the final answer for some events, so two rows claiming one version must not have
+been given different instructions.
+
+### It is written past the failure path, beside the input hash
+
+The same placement, for the same reason. A failed re-extraction leaves both
+alone, so a row keeps the provenance of the tags it still has rather than being
+downgraded by an attempt that produced nothing. And the skip path never reaches
+the assignment at all — which is the load-bearing part, because on a normal
+night almost every event skips. Blanking there would have reproduced exactly the
+gap the columns exist to close, from code that reads as correct.
+
+Synthetic and authored-tag events record nothing, because nothing extracted
+them.
+
+## A DDL change is two artefacts, and only one of them is tested
+
+`_SCHEMA` is built entirely from `CREATE TABLE IF NOT EXISTS`. Adding a column
+there serves every database created *fresh* — which is every database the test
+suite ever sees — and leaves the live file untouched until a hand migration
+runs.
+
+So the suite is green whether or not the migration happened. **No test can see
+the difference**, and no test can be written that would: the thing being checked
+is the state of a file the suite never opens.
+
+The check that closes the gap is comparing the live schema against a freshly
+initialised one, column for column. Run before the 2026-08-12 migration it
+reported the nine missing columns; run after, it reported only a pre-existing
+`event_scores` column-order difference left by the C2 hand migration.
+
+That ordering difference is benign, and it is worth knowing *why*: every SELECT
+in the codebase names its columns, and there is no `SELECT *` in `src/`, so the
+positional row reads index the SELECT list rather than the table. One `SELECT *`
+would turn a cosmetic drift into a live-only bug the suite cannot reach.
+
+### Nine columns landed at once, seven of them inert
+
+Migrating now means a hand operation against a database holding roughly 40h of
+compute, so every additive column the roadmap had agreed went in one pass rather
+than paying that cost per feature. Seven have no reader and no writer; each
+carries a comment naming the feature that will wire it.
+
+They are appended in the order the migration applies them, because `ALTER TABLE`
+can only append. Keeping `_SCHEMA` in that order means a fresh database and the
+migrated one agree column for column rather than merely as sets — which is what
+makes the comparison above a strict check instead of a fuzzy one.
+
+`merged_by` gets no `CHECK` constraint despite having three legal values.
+SQLite cannot add one via `ALTER`, so putting it in `_SCHEMA` would make fresh
+databases strictly stricter than the migrated one — a divergence worse than the
+missing constraint. Code enforces the values when dedup provenance is built.
