@@ -38,7 +38,7 @@ def _event(**kwargs) -> Event:
 
 
 def _dedup(events: list[Event], cfg: DeduplicationConfig = _DEFAULT_CFG) -> list[Event]:
-    return DeduplicationEngine().deduplicate(events, cfg)
+    return DeduplicationEngine().deduplicate(events, cfg).events
 
 
 # --- identical pair merges ---
@@ -256,3 +256,109 @@ def test_single_event_returned_unchanged():
 
 def test_empty_list_returns_empty():
     assert _dedup([]) == []
+
+
+class TestDecisionsAreReported:
+    """A merge that records nothing cannot be explained, and a comparison that
+    records nothing cannot be learned from.
+
+    The scores both passes compute were discarded inside a `bool`-returning
+    predicate. They are the labelled data a future dedup model trains on, and
+    the *rejections* are most of it: measured on the live corpus, the whole
+    database holds two merges and 1,629 considered-and-rejected pairs.
+    """
+
+    @staticmethod
+    def _decisions(events, cfg=_DEFAULT_CFG):
+        return DeduplicationEngine().deduplicate(events, cfg).decisions
+
+    def test_a_merged_pair_is_reported_with_its_score(self):
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Night", source_event_candidates=["cand-b"])
+
+        decisions = self._decisions([a, b])
+
+        assert len(decisions) == 1
+        assert decisions[0].verdict == "merged"
+        assert decisions[0].score == pytest.approx(1.0)
+
+    def test_a_rejected_pair_is_reported_with_its_score(self):
+        """The blind spot a row-shaped design cannot express: two events were
+        compared and judged *different*. Most of the training signal is here."""
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Poetry Slam", source_event_candidates=["cand-b"])
+
+        decisions = self._decisions([a, b])
+
+        assert len(decisions) == 1
+        assert decisions[0].verdict == "distinct"
+        assert 0.0 < decisions[0].score < _DEFAULT_CFG.fuzzy_title_threshold
+
+    def test_a_pair_failing_the_structural_guards_is_not_reported(self):
+        """Never compared, so there is nothing to record. The guards discard
+        99.87% of all pairs — recording them would be recording nothing."""
+        a = _event(venue="The Vault", source_event_candidates=["cand-a"])
+        b = _event(venue="Somewhere Else", source_event_candidates=["cand-b"])
+
+        assert self._decisions([a, b]) == []
+
+    def test_a_transitive_cluster_reports_every_pair_it_compared(self):
+        """A~B and B~C collapse all three, and A~C is compared on the way.
+
+        One `merge_similarity` on the surviving row cannot express three
+        comparisons with three different scores — which is why the decision,
+        not the row, is the unit of record.
+        """
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Nite", source_event_candidates=["cand-b"])
+        c = _event(title="Jazz Night!", source_event_candidates=["cand-c"])
+
+        decisions = self._decisions([a, b, c])
+
+        assert len(decisions) == 3
+        assert len({d.score for d in decisions}) > 1, "each pair scored on its own"
+
+    def test_the_pair_is_identified_the_same_whichever_order_it_arrives(self):
+        """One row per pair, so `(a, b)` and `(b, a)` must be the same pair."""
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Night", source_event_candidates=["cand-b"])
+
+        forward = self._decisions([a, b])[0]
+        backward = self._decisions([b, a])[0]
+
+        assert (forward.record_a, forward.record_b) == (backward.record_a, backward.record_b)
+        assert forward.record_a < forward.record_b
+
+    def test_pass_one_names_itself_and_keys_on_candidates(self):
+        """Pass 1's events are minted per run, so keying on their ids would
+        make every pair new every night and accumulate nothing. At this point
+        each event carries exactly one candidate, and candidate ids are stable."""
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Night", source_event_candidates=["cand-b"])
+
+        decision = self._decisions([a, b])[0]
+
+        assert decision.pass_name == "fuzzy"
+        assert decision.record_kind == "candidate"
+        assert {decision.record_a, decision.record_b} == {"cand-a", "cand-b"}
+
+    def test_a_record_with_no_stable_id_is_merged_but_not_recorded(self):
+        """A decision keyed on an id that will not exist tomorrow is worse than
+        no decision — it would never match again and would accumulate forever."""
+        a = _event(title="Jazz Night", source_event_candidates=[])
+        b = _event(title="Jazz Night", source_event_candidates=["cand-b"])
+
+        result = DeduplicationEngine().deduplicate([a, b], _DEFAULT_CFG)
+
+        assert len(result.events) == 1, "the merge still happens"
+        assert result.decisions == []
+
+    def test_the_merged_events_are_unchanged_by_reporting(self):
+        """This adds an output. It must not alter one."""
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Night", source_event_candidates=["cand-b"])
+
+        result = DeduplicationEngine().deduplicate([a, b], _DEFAULT_CFG)
+
+        assert len(result.events) == 1
+        assert set(result.events[0].source_event_candidates) == {"cand-a", "cand-b"}

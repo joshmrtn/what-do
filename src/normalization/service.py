@@ -75,9 +75,11 @@ class NormalizationService:
                 duration_ms=0,
             )
 
+        # `.decisions` is not read yet — storing them is the next commit. The
+        # merge behaviour is unchanged either way.
         events = self._deduplicator.deduplicate(
             norm_result.events, self._config.deduplication
-        )
+        ).events
 
         return NormalizationResult(
             normalized=len(events),

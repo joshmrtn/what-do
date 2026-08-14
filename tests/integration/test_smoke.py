@@ -514,7 +514,7 @@ def test_semantic_matching_smoke(tmp_path: Path) -> None:
         assert len(decode_vector(e.tag_embeddings[0])) == 768
         assert e.summary_embedding is not None
 
-    deduped = SemanticDeduplicationEngine().deduplicate(events, DeduplicationConfig())
+    deduped = SemanticDeduplicationEngine().deduplicate(events, DeduplicationConfig()).events
     ids = {e.event_id for e in deduped}
     assert "karaoke-next-week" in ids, "a weekly recurrence must not be merged away"
     assert len(deduped) >= 3

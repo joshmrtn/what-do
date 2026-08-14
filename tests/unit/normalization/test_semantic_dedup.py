@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import math
 
+import pytest
+
 from src.config import DeduplicationConfig
 from src.models.event import Event
 from src.models.tag import Tag
@@ -54,7 +56,7 @@ def _cfg(threshold=0.92, window=2.0) -> DeduplicationConfig:
 
 
 def _dedupe(events, cfg=None):
-    return SemanticDeduplicationEngine().deduplicate(events, cfg or _cfg())
+    return SemanticDeduplicationEngine().deduplicate(events, cfg or _cfg()).events
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +233,61 @@ def test_single_event_returned_unchanged():
     event = _event("a", summary_embedding=_reference())
 
     assert _dedupe([event]) == [event]
+
+
+class TestDecisionsAreReported:
+    """Pass 2's cosine is the score a future dedup model learns from.
+
+    `Wood & Bone` merged into a sibling at 0.926 against a 0.92 threshold and
+    the database recorded nothing about it — the merge was found months later
+    only because the event had never been scored.
+    """
+
+    @staticmethod
+    def _decisions(events, cfg=None):
+        return SemanticDeduplicationEngine().deduplicate(events, cfg or _cfg()).decisions
+
+    def test_a_merged_pair_carries_the_cosine_it_merged_at(self):
+        a = _event("e1", summary_embedding=_reference())
+        b = _event("e2", summary_embedding=_vec_at(0.95))
+
+        decisions = self._decisions([a, b])
+
+        assert len(decisions) == 1
+        assert decisions[0].verdict == "merged"
+        assert decisions[0].score == pytest.approx(0.95, abs=1e-6)
+
+    def test_a_near_miss_carries_its_cosine_too(self):
+        """0.90 against a 0.92 threshold: the pair a model most needs to see."""
+        a = _event("e1", summary_embedding=_reference())
+        b = _event("e2", summary_embedding=_vec_at(0.90))
+
+        decisions = self._decisions([a, b])
+
+        assert decisions[0].verdict == "distinct"
+        assert decisions[0].score == pytest.approx(0.90, abs=1e-6)
+
+    def test_a_missing_vector_is_unknown_not_distinct(self):
+        """No comparison happened, so there is no verdict to record. Recording
+        one would teach a model that an absent vector means "different"."""
+        a = _event("e1", summary_embedding=_reference())
+        b = _event("e2", summary_embedding=None)
+
+        assert self._decisions([a, b]) == []
+
+    def test_a_pair_failing_the_structural_guards_is_not_reported(self):
+        a = _event("e1", summary_embedding=_reference(), venue="The Vault")
+        b = _event("e2", summary_embedding=_vec_at(0.99), venue="Elsewhere")
+
+        assert self._decisions([a, b]) == []
+
+    def test_pass_two_names_itself_and_keys_on_events(self):
+        """Stored events, so their ids are stable across runs."""
+        a = _event("e1", summary_embedding=_reference())
+        b = _event("e2", summary_embedding=_vec_at(0.95))
+
+        decision = self._decisions([a, b])[0]
+
+        assert decision.pass_name == "semantic"
+        assert decision.record_kind == "event"
+        assert {decision.record_a, decision.record_b} == {"e1", "e2"}

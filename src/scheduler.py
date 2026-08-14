@@ -335,7 +335,8 @@ def run_batch(
 
     events = _stage(
         "semantic_dedup",
-        lambda: semantic_deduplicator.deduplicate(events, config.deduplication),
+        # `.decisions` is not read yet — storing them is the next commit.
+        lambda: semantic_deduplicator.deduplicate(events, config.deduplication).events,
         default=events,
     )
     _save(events)

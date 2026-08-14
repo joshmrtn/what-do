@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -11,14 +11,61 @@ from rapidfuzz import fuzz
 from src.config import DeduplicationConfig
 from src.models.event import Event
 
+#: A pair the pass judged the same event.
+VERDICT_MERGED = "merged"
+#: A pair the pass compared and judged different. Most of the training signal.
+VERDICT_DISTINCT = "distinct"
 
-def _title_match(a: str | None, b: str | None, threshold: float) -> bool:
-    """True when titles are considered the same under the given threshold."""
+
+@dataclass(frozen=True)
+class Comparison:
+    """What a pass concluded about one pair it was able to compare.
+
+    Separate from the verdict because the threshold belongs to the pass: the
+    caller decides what counts as a duplicate, and this records what was
+    measured either way.
+    """
+
+    score: float
+    duplicate: bool
+
+
+@dataclass(frozen=True)
+class MergeDecision:
+    """One comparison, as it will be stored and later read back by a person.
+
+    `record_a` is always the lexicographically smaller id, so a pair has one
+    identity regardless of the order it was iterated in.
+    """
+
+    pass_name: str
+    record_kind: str
+    record_a: str
+    record_b: str
+    score: float
+    verdict: str
+
+
+@dataclass(frozen=True)
+class DedupResult:
+    """The merged events, and every decision that produced them."""
+
+    events: list[Event]
+    decisions: list[MergeDecision]
+
+
+def _title_similarity(a: str | None, b: str | None) -> float | None:
+    """How alike two titles are, or None when there is nothing to compare.
+
+    Two absent titles score 1.0 rather than None: `_title_match` has always
+    treated them as matching, and reporting no decision for a pair that *does*
+    merge would leave the merge unexplained — the thing this exists to prevent.
+    """
     if a is None and b is None:
-        return True
+        return 1.0
     if a is None or b is None:
-        return False
-    return fuzz.token_sort_ratio(a, b) / 100.0 >= threshold
+        return None
+    return float(fuzz.token_sort_ratio(a, b)) / 100.0
 
 
 def venues_match(a: str | None, b: str | None) -> bool:
@@ -47,12 +94,33 @@ def times_match(
     return abs((a_time - b_time).total_seconds()) <= window_hours * 3600
 
 
-def _are_duplicates(a: Event, b: Event, cfg: DeduplicationConfig) -> bool:
-    return (
-        _title_match(a.title, b.title, cfg.fuzzy_title_threshold)
-        and venues_match(a.venue, b.venue)
-        and times_match(a.start_time, b.start_time, cfg.time_window_hours)
-    )
+def _compare(a: Event, b: Event, cfg: DeduplicationConfig) -> Comparison | None:
+    """Pass 1's comparison: the title, gated by the structural guards.
+
+    The guards come first because they decide whether the pair is compared at
+    all — a different venue is not a low score, it is no comparison. They also
+    discard 99.87% of pairs, which is what makes recording the rest affordable.
+    """
+    if not venues_match(a.venue, b.venue):
+        return None
+    if not times_match(a.start_time, b.start_time, cfg.time_window_hours):
+        return None
+
+    similarity = _title_similarity(a.title, b.title)
+    if similarity is None:
+        return None
+    return Comparison(score=similarity, duplicate=similarity >= cfg.fuzzy_title_threshold)
+
+
+def _candidate_identity(event: Event) -> str | None:
+    """The stable id for a Pass 1 record.
+
+    Pass 1 runs before anything is stored, on events whose uuids are minted per
+    run — keyed on those, every pair would be new every night and nothing would
+    ever accumulate. At this point each event carries exactly one candidate,
+    and candidate ids are deterministic.
+    """
+    return event.source_event_candidates[0] if event.source_event_candidates else None
 
 
 def _null_count(event: Event) -> int:
@@ -139,26 +207,44 @@ def merge_cluster(events: list[Event]) -> Event:
 
 
 def cluster_and_merge(
-    events: list[Event], is_duplicate: Callable[[Event, Event], bool]
-) -> list[Event]:
-    """Group events into clusters by a pairwise predicate and merge each cluster.
+    events: list[Event],
+    compare: Callable[[Event, Event], Comparison | None],
+    identify: Callable[[Event], str | None],
+    pass_name: str,
+    record_kind: str,
+) -> DedupResult:
+    """Group events into clusters by a pairwise comparison and merge each cluster.
 
     Greedy union-find: duplicates are transitive, so if A matches B and B
     matches C, all three collapse into one record. Shared by both dedup passes,
-    which differ only in their predicate.
+    which differ only in how they compare.
+
+    Every comparison the passes *make* is reported, not only the ones that
+    merge. A rejection is the label a future dedup model most needs and the one
+    a surviving row can never express: measured on the live corpus, two merges
+    against 1,629 considered-and-rejected pairs.
 
     Args:
         events: Events to cluster.
-        is_duplicate: Pairwise test for whether two events are the same event.
+        compare: Pairwise comparison, or None when the pair was never compared —
+            a failed structural guard or a missing vector. None is *unknown*,
+            not "different", so it records nothing.
+        identify: The stable id of the record a decision should name, or None
+            when it has none. A decision keyed on an id that will not exist
+            tomorrow would never match again, so it is not recorded at all.
+        pass_name: Which pass is comparing — `fuzzy`, `semantic`, `reconcile`.
+        record_kind: What `identify` returns — `candidate` or `event`.
 
     Returns:
-        One merged Event per cluster (order not guaranteed).
+        One merged Event per cluster (order not guaranteed), and every decision
+        made along the way.
     """
     if not events:
-        return []
+        return DedupResult(events=[], decisions=[])
 
     n = len(events)
     parent = list(range(n))
+    decisions: list[MergeDecision] = []
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -173,14 +259,37 @@ def cluster_and_merge(
 
     for i in range(n):
         for j in range(i + 1, n):
-            if is_duplicate(events[i], events[j]):
+            comparison = compare(events[i], events[j])
+            if comparison is None:
+                continue
+            if comparison.duplicate:
                 union(i, j)
+
+            left, right = identify(events[i]), identify(events[j])
+            if left is None or right is None:
+                continue
+            # Sorted, so a pair has one identity however it is iterated and one
+            # row wherever it is stored.
+            record_a, record_b = sorted((left, right))
+            decisions.append(
+                MergeDecision(
+                    pass_name=pass_name,
+                    record_kind=record_kind,
+                    record_a=record_a,
+                    record_b=record_b,
+                    score=comparison.score,
+                    verdict=VERDICT_MERGED if comparison.duplicate else VERDICT_DISTINCT,
+                )
+            )
 
     clusters: dict[int, list[Event]] = {}
     for i, event in enumerate(events):
         clusters.setdefault(find(i), []).append(event)
 
-    return [merge_cluster(cluster) for cluster in clusters.values()]
+    return DedupResult(
+        events=[merge_cluster(cluster) for cluster in clusters.values()],
+        decisions=decisions,
+    )
 
 
 class DeduplicationEngine:
@@ -190,7 +299,7 @@ class DeduplicationEngine:
     events are assigned to clusters; each cluster merges into one canonical event.
     """
 
-    def deduplicate(self, events: list[Event], config: DeduplicationConfig) -> list[Event]:
+    def deduplicate(self, events: list[Event], config: DeduplicationConfig) -> DedupResult:
         """Merge duplicate events within the given list.
 
         Args:
@@ -198,8 +307,13 @@ class DeduplicationEngine:
             config: Deduplication thresholds and windows.
 
         Returns:
-            Deduplicated list of Events (order not guaranteed).
+            Deduplicated events (order not guaranteed), and every comparison
+            this pass made — merged and rejected alike.
         """
         return cluster_and_merge(
-            events, lambda a, b: _are_duplicates(a, b, config)
+            events,
+            lambda a, b: _compare(a, b, config),
+            _candidate_identity,
+            pass_name="fuzzy",
+            record_kind="candidate",
         )
