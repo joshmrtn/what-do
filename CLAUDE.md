@@ -299,6 +299,12 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Verifying a migration after `COMMIT` | The check finds the damage and it is already written. `foreign_key_check`, row counts and any FK target belong **inside the transaction**, with a rollback on failure. This is how the `event_scores` rebuild shipped a broken database on its first attempt |
 | A schema check that only compares columns | It cannot see referential integrity. A database whose foreign keys all dangle matches `_SCHEMA` column for column. Compare the shape **and** assert `PRAGMA foreign_key_check` is empty |
 | Adding an `ExtractionResult` field with a default | A default lets a construction site record nothing, and its rows are then indistinguishable from honest ones — the failure the provenance columns exist to prevent. Required with no default makes `mypy --strict` enumerate the sites instead |
+| A mutable default on a `NamedTuple` | `merges: dict[str, str] = {}` is **one dict shared by every instance that omits it**, so a caller who mutates it leaks into the next. `field(default_factory=...)` does not exist here. Make it required and let `mypy --strict` name the sites |
+| Spending a scarce resource before checking the work is wanted | Extraction is soonest-first, and "soonest" can be *behind* us. Two whole 480-minute budgets went on events that had already happened. The budget did not cause it — it revealed a cost that was free when nothing was scarce. Any queue with a bound needs the scope check *inside* it, at the seam that sees every item whichever door it came in by |
+| A recording double that pins a signature | `_DedupSpy.deduplicate(self, events, config)` broke the moment the real method grew a `now`. A spy exists to record and forward; the instant it declares the shape of what it forwards, it has started reimplementing. Use `**kwargs`, or `__getattr__`, as `_StageSpy` does |
+| Reasoning from the shapes the code already has | "Losers are destroyed, so provenance goes on the survivor, so Pass 1 can never be explained" — every step true, conclusion wrong, because the premise was the thing to change. Ask what this would look like with no existing code, then decide what to keep. It turned a lossy row-shaped design into `dedup_decisions`, which can record the label a row *cannot*: "compared, and judged different" |
+| Assuming O(n²) means unaffordable | The dedup guards cut 1.39M possible pairs to **1,784 actually scored**. The expensive-looking thing was already cheap and nobody had measured it. Measure the population before designing around its size |
+| Attributing an LLM transcript prompt to one event | A recurring series produces **byte-identical `extraction_input` across dates** — the same title, venue and category on every occurrence. Two events matched one prompt and a whole diagnosis was built on the wrong one. Key on the stored hash, never on prompt text |
 
 ---
 
@@ -377,6 +383,7 @@ kept. `0 kept of 0 fetched` means broken or empty; `0 kept of 213 fetched` means
 and its dates are landing outside the window. Add `--raw [PATH]` to dump every candidate **as
 fetched, before filtering**, as JSON Lines with the discard reason.
 
-Baseline as of 2026-08-12: **1106 candidates from 18 sources** (was 991 on 2026-08-08 — the
-horizon advances, so this grows). Expected zeroes are `do617_koto`, `do617_bit_bar` and `moon`;
+Baseline as of 2026-08-14: **1234 ingested from 18 sources** at `horizon_days: 90` (was 1091 at
+45 days on 2026-08-13 — raising the horizon a whole quarter added only ~143, because most sources
+simply do not publish that far out). Expected zeroes are `do617_koto`, `do617_bit_bar` and `moon`;
 anything else at zero is a regression.

@@ -49,7 +49,11 @@ class ReconcileResult(NamedTuple):
 
     events: list[Event]
     stale_event_ids: list[str]
-    merges: dict[str, str] = {}
+    # Required, with no default: a `{}` default on a NamedTuple is one dict
+    # shared by every instance that omits it, and a caller who then mutated it
+    # would leak into the next. Required instead, so `mypy --strict` names
+    # every construction site rather than letting one quietly share state.
+    merges: dict[str, str]
 
 
 def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
