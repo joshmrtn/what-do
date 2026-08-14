@@ -7,6 +7,8 @@ cluster already merged there arrives as a single event.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from src.config import DeduplicationConfig
 from src.models.event import Event
 from src.normalization.deduplicator import (
@@ -62,7 +64,10 @@ class SemanticDeduplicationEngine:
     """
 
     def deduplicate(
-        self, events: list[Event], config: DeduplicationConfig
+        self,
+        events: list[Event],
+        config: DeduplicationConfig,
+        now: datetime | None = None,
     ) -> DedupResult:
         """Merge semantically duplicate events within the given list.
 
@@ -84,4 +89,5 @@ class SemanticDeduplicationEngine:
             lambda event: event.summary or "",
             pass_name="semantic",
             record_kind="event",
+            now=now,
         )

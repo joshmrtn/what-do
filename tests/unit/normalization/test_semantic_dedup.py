@@ -291,3 +291,56 @@ class TestDecisionsAreReported:
         assert decision.pass_name == "semantic"
         assert decision.record_kind == "event"
         assert {decision.record_a, decision.record_b} == {"e1", "e2"}
+
+
+class TestLosersAreKeptNotDropped:
+    """Pass 2's losers already stayed in the database — silently, unranked and
+    unexplained. `Wood & Bone` sat there for days and was found only because it
+    had never been scored.
+
+    Marking them changes no behaviour: they are already excluded from every
+    ranking. It stops the row lying about what it is, and makes the cluster a
+    labelled example rather than an orphan.
+    """
+
+    def _merging_pair(self):
+        return (
+            _event("winner", summary_embedding=_reference(), summary="A jazz evening."),
+            _event("loser", summary_embedding=_vec_at(0.95), summary="Jazz, evening."),
+        )
+
+    def test_the_loser_is_returned_alongside_the_winner(self):
+        result = SemanticDeduplicationEngine().deduplicate(list(self._merging_pair()), _cfg())
+
+        assert len(result.events) == 1, "one live event, as before"
+        assert len(result.superseded) == 1
+
+    def test_the_loser_points_at_the_winner(self):
+        result = SemanticDeduplicationEngine().deduplicate(list(self._merging_pair()), _cfg())
+
+        loser = result.superseded[0]
+        assert loser.superseded_by == result.events[0].event_id
+        assert loser.event_id != result.events[0].event_id
+
+    def test_the_loser_records_which_pass_merged_it_and_at_what_score(self):
+        result = SemanticDeduplicationEngine().deduplicate(list(self._merging_pair()), _cfg())
+
+        loser = result.superseded[0]
+        assert loser.merged_by == "semantic"
+        assert loser.merge_similarity == pytest.approx(0.95, abs=1e-6)
+
+    def test_nothing_is_superseded_when_nothing_merges(self):
+        a = _event("e1", summary_embedding=_reference())
+        b = _event("e2", summary_embedding=_vec_at(0.10))
+
+        result = SemanticDeduplicationEngine().deduplicate([a, b], _cfg())
+
+        assert result.superseded == []
+        assert len(result.events) == 2
+
+    def test_the_winner_is_not_marked_superseded(self):
+        """It survived. A winner carrying a merge pointer would be excluded from
+        every future load by the repository's default filter."""
+        result = SemanticDeduplicationEngine().deduplicate(list(self._merging_pair()), _cfg())
+
+        assert result.events[0].superseded_by is None

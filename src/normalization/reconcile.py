@@ -39,10 +39,17 @@ _CARRIED_FIELDS = (
 
 
 class ReconcileResult(NamedTuple):
-    """Reconciled events, and stored ids left with no event to belong to."""
+    """Reconciled events, the ids a merge displaced, and what displaced them.
+
+    `merges` maps each displaced event to the one that absorbed it. Reconcile
+    always knew this and reported only a list to delete — but a loser that is
+    kept has to be able to say what took its place, or the row is an orphan
+    with no account of itself.
+    """
 
     events: list[Event]
     stale_event_ids: list[str]
+    merges: dict[str, str] = {}
 
 
 def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
@@ -63,6 +70,14 @@ def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
     # as a duplicate for the life of the database.
     index: dict[str, list[Event]] = {}
     for event in stored:
+        # A superseded event is out of the reckoning entirely. It still lists
+        # the candidates it was merged on, so leaving it in the index would put
+        # it in collision with its own winner — marked stale and removed on the
+        # very next run, quietly destroying the loser that dedup provenance
+        # exists to keep. It also must never be adopted by a fresh event, or a
+        # listing re-enters wearing the id of the row that lost.
+        if event.superseded_by is not None:
+            continue
         for candidate_id in event.source_event_candidates:
             index.setdefault(candidate_id, []).append(event)
 
@@ -73,6 +88,7 @@ def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
     order: list[str | None] = []
     unmatched: dict[int, Event] = {}
     stale: set[str] = set()
+    merges: dict[str, str] = {}
 
     for position, event in enumerate(fresh):
         matches = _matches(event, index)
@@ -83,6 +99,7 @@ def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
 
         winner = matches[0]
         stale.update(loser.event_id for loser in matches[1:])
+        merges.update({loser.event_id: winner.event_id for loser in matches[1:]})
         if winner.event_id not in groups:
             groups[winner.event_id] = []
             winners[winner.event_id] = winner
@@ -107,7 +124,11 @@ def reconcile(fresh: list[Event], stored: list[Event]) -> ReconcileResult:
 
     # A winner cannot also be stale: it was adopted.
     stale.difference_update(winners)
-    return ReconcileResult(events=reconciled, stale_event_ids=sorted(stale))
+    for winner_id in winners:
+        merges.pop(winner_id, None)
+    return ReconcileResult(
+        events=reconciled, stale_event_ids=sorted(stale), merges=merges
+    )
 
 
 def _matches(event: Event, index: dict[str, list[Event]]) -> list[Event]:

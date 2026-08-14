@@ -48,7 +48,7 @@ class EventRepository(Protocol):
         """
         ...
 
-    def load_all(self) -> list[Event]:
+    def load_all(self, include_superseded: bool = False) -> list[Event]:
         """Every stored event, with tags, vectors and provenance reattached."""
         ...
 

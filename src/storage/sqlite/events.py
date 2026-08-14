@@ -48,9 +48,22 @@ class SqliteEventRepository:
         """Persist a single event. See `EventRepository.save_one`."""
         save_events([event], self._db_path, self._embedding_model)
 
-    def load_all(self) -> list[Event]:
-        """Every stored event, with tags, vectors and provenance reattached."""
-        return load_events(self._db_path, self._embedding_model)
+    def load_all(self, include_superseded: bool = False) -> list[Event]:
+        """Every live stored event, with tags, vectors and provenance reattached.
+
+        Superseded events are excluded unless asked for. The default is the
+        filtered one deliberately: a rule remembered at every call site is a
+        rule that will be forgotten, and forgetting here means an event dedup
+        already merged away rejoining a ranking as a duplicate.
+
+        Args:
+            include_superseded: Return merged-away events too. For inspection
+                and for training, where both sides of a cluster are the point.
+        """
+        events = load_events(self._db_path, self._embedding_model)
+        if include_superseded:
+            return events
+        return [event for event in events if event.superseded_by is None]
 
     def delete(self, event_ids: list[str]) -> None:
         """Remove events superseded by a merge."""

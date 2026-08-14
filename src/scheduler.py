@@ -309,7 +309,25 @@ def run_batch(
     # extraction with the duplicate gone and the winner unwritten. They ride
     # with the first save instead. `_carry_forward` already excludes them, so
     # nothing downstream sees them in the meantime.
-    reconciled, stale_ids = reconcile(normalized, stored)
+    reconciled, stale_ids, merges = reconcile(normalized, stored)
+    # Reconcile's delete was the pipeline's last destructive path. A cluster is
+    # a labelled training scenario and a destroyed loser cannot be one, so a
+    # displaced event is marked with what absorbed it and kept. No score: this
+    # pass matches on shared candidate ids, not on similarity, and inventing a
+    # number would misrepresent how the merge was decided.
+    #
+    # They stay out of the way on their own after this — `load_all` filters
+    # superseded rows by default, so the next run never sees them at all.
+    stored_by_id = {event.event_id: event for event in stored}
+    displaced: list[Event] = []
+    for loser_id, winner_id in merges.items():
+        loser = stored_by_id.get(loser_id)
+        if loser is None:
+            continue
+        loser.superseded_by = winner_id
+        loser.superseded_at = now
+        loser.merged_by = "reconcile"
+        displaced.append(loser)
 
     in_scope = _scope_filter(config, run_date, now)
     events = _carry_forward(reconciled, stored, stale_ids, in_scope)
@@ -349,7 +367,9 @@ def run_batch(
         # shrug — embedding rebuilds whatever made the event unwritable, and
         # the save at the end of the run stores it. The stale ids simply go
         # undeleted until the next run reconciles them again.
-        _stage("event persistence", lambda: events_repo.replace(stale_ids, events))
+        # Nothing is deleted: the displaced rows are written *alongside* the
+        # live ones, in the same transaction, carrying their supersession.
+        _stage("event persistence", lambda: events_repo.replace([], events + displaced))
 
     embedded = _stage("embedding", lambda: embedding_stage.process(events))
     if embedded is None:
@@ -366,8 +386,13 @@ def run_batch(
     _save(events)
 
     def _semantic_dedup() -> list[Event]:
-        deduped = semantic_deduplicator.deduplicate(events, config.deduplication)
+        deduped = semantic_deduplicator.deduplicate(events, config.deduplication, now=now)
         _record_decisions(deduped.decisions)
+        # The losers are saved, not dropped. They were already staying in the
+        # database unmarked — unranked, unexplained, and findable only by
+        # noticing an event that had never been scored. Saving them writes what
+        # absorbed them; the repository keeps them out of ordinary reads.
+        _save(deduped.superseded)
         return deduped.events
 
     events = _stage(

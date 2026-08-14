@@ -428,3 +428,69 @@ def test_tag_embeddings_returns_every_stored_vector_by_tag(repo):
 
 def test_tag_embeddings_is_empty_before_anything_is_saved(repo):
     assert repo.tag_embeddings() == {}
+
+
+# ----------------------------------------------------------------------
+# Superseded events — kept, and out of the way
+# ----------------------------------------------------------------------
+
+
+def _superseded(**kwargs) -> Event:
+    return _event(
+        superseded_by="winner-1",
+        superseded_at=_NOW,
+        merged_by="semantic",
+        merge_similarity=0.926,
+        **kwargs,
+    )
+
+
+def test_round_trip_preserves_the_dedup_provenance(repo):
+    """Four fields, four non-default values. A column that was never added
+    reads back as its default and every other assertion still passes.
+
+    The winner is saved too because `superseded_by` is a real foreign key —
+    a merge must point at an event that exists.
+    """
+    repo.save([_event(event_id="winner-1"), _superseded(event_id="loser-1")])
+
+    stored = next(
+        e for e in repo.load_all(include_superseded=True) if e.event_id == "loser-1"
+    )
+
+    assert stored.superseded_by == "winner-1"
+    assert stored.superseded_at == _NOW
+    assert stored.merged_by == "semantic"
+    assert stored.merge_similarity == pytest.approx(0.926)
+
+
+def test_a_superseded_event_is_not_loaded_by_default(repo):
+    """The default has to be correct, because the dangerous direction is
+    forgetting. A superseded event that quietly rejoined a ranking would be a
+    duplicate the dedup pass already decided against."""
+    repo.save([_event(event_id="winner-1"), _superseded(event_id="loser-1")])
+
+    assert [e.event_id for e in repo.load_all()] == ["winner-1"]
+
+
+def test_a_superseded_event_is_returned_when_asked_for(repo):
+    """It is kept, not hidden: the cluster is training data, and a person
+    cleaning it needs both sides."""
+    repo.save([_event(event_id="winner-1"), _superseded(event_id="loser-1")])
+
+    ids = {e.event_id for e in repo.load_all(include_superseded=True)}
+
+    assert ids == {"winner-1", "loser-1"}
+
+
+def test_an_ordinary_event_carries_no_dedup_provenance(repo):
+    """Absent, not falsy-by-default: an event nothing merged has nothing to say
+    about a merge, and a reader must be able to tell those apart."""
+    repo.save([_event(event_id="live-1")])
+
+    stored = repo.load_all()[0]
+
+    assert stored.superseded_by is None
+    assert stored.superseded_at is None
+    assert stored.merged_by is None
+    assert stored.merge_similarity is None

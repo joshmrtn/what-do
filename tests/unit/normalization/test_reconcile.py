@@ -237,3 +237,71 @@ def test_reconcile_does_not_mutate_its_inputs():
     assert fresh.event_id == "new-1"
     assert fresh.tags == []
     assert stored.weather == {"sampled_hour": 20}
+
+
+class TestSupersededEventsAreOutOfTheReckoning:
+    """The line that silently undoes the whole change.
+
+    Reconcile indexes every stored event by the candidates it claims, and marks
+    extras stale. A superseded loser still lists the candidates it was merged
+    on, so it collides with its own winner — and would be marked stale and
+    removed on the very next run, quietly destroying what "nothing is
+    destroyed" exists to keep.
+    """
+
+    def test_a_superseded_event_never_claims_a_candidate(self):
+        winner = _event("winner", ["c1"])
+        loser = _event("loser", ["c1"], superseded_by="winner")
+        fresh = _event("fresh", ["c1"])
+
+        result = reconcile([fresh], [winner, loser])
+
+        assert "loser" not in result.stale_event_ids, "a merged-away event is not stale"
+
+    def test_the_live_event_still_wins_the_candidate(self):
+        """Ignoring the loser must not cost the winner its identity."""
+        winner = _event("winner", ["c1"])
+        loser = _event("loser", ["c1"], superseded_by="winner")
+        fresh = _event("fresh", ["c1"])
+
+        result = reconcile([fresh], [winner, loser])
+
+        assert [e.event_id for e in result.events] == ["winner"]
+
+    def test_a_fresh_event_does_not_adopt_a_superseded_identity(self):
+        """Otherwise a listing re-enters wearing the id of the row that lost,
+        and the merge is undone without anything recording that it was."""
+        loser = _event("loser", ["c1"], superseded_by="winner")
+        fresh = _event("fresh", ["c1"])
+
+        result = reconcile([fresh], [loser])
+
+        assert result.events[0].event_id != "loser"
+
+
+class TestAMergeNamesTheWinnerItLostTo:
+    """Reconcile knew which event absorbed which and reported only a list of
+    ids to delete. Keeping the loser is only useful if the row can say what
+    took its place."""
+
+    def test_a_loser_is_reported_with_the_winner_that_absorbed_it(self):
+        rich = _enriched("rich", ["c1"])
+        thin = _event("thin", ["c1"])
+        fresh = _event("fresh", ["c1"])
+
+        result = reconcile([fresh], [rich, thin])
+
+        assert result.merges == {"thin": "rich"}
+
+    def test_a_winner_is_never_reported_as_a_loser(self):
+        rich = _enriched("rich", ["c1"])
+        thin = _event("thin", ["c1"])
+
+        result = reconcile([_event("fresh", ["c1"])], [rich, thin])
+
+        assert "rich" not in result.merges
+
+    def test_nothing_is_reported_when_nothing_collided(self):
+        result = reconcile([_event("fresh", ["c1"])], [_event("stored", ["c1"])])
+
+        assert result.merges == {}

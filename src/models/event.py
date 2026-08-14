@@ -81,6 +81,18 @@ class Event:
     #: climbing off its measured 4.3% is the signal a source or a model has
     #: changed underneath us.
     extraction_degradation: str | None = None
+    #: The event this one was merged into, or None if it stands on its own.
+    #: Dedup picks a winner but destroys nothing: the cluster is a labelled
+    #: training scenario, and a deleted loser cannot be one. Repositories
+    #: filter these out by default — the dangerous direction is forgetting.
+    superseded_by: str | None = None
+    superseded_at: datetime | None = None
+    #: Which pass merged it — `fuzzy`, `semantic`, `reconcile` — and the score
+    #: it merged at. Denormalised from `dedup_decisions` so "why is this row
+    #: here" needs no join; the decision table remains the system of record,
+    #: and is the only place a *rejection* is written.
+    merged_by: str | None = None
+    merge_similarity: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

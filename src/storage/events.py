@@ -30,7 +30,8 @@ EVENT_COLUMNS = (
     "summary_embedding, weather, weather_cache_id, astronomical_data, metadata, "
     "created_at, updated_at, setting, timing, extraction_input_hash, "
     "embedding_input_hash, extraction_model, extraction_prompt_version, "
-    "extraction_degradation"
+    "extraction_degradation, superseded_by, superseded_at, "
+    "merged_by, merge_similarity"
 )
 
 
@@ -91,6 +92,10 @@ def event_to_row(event: Event) -> tuple[Any, ...]:
         event.extraction_model,
         event.extraction_prompt_version,
         event.extraction_degradation,
+        event.superseded_by,
+        event.superseded_at.isoformat() if event.superseded_at else None,
+        event.merged_by,
+        event.merge_similarity,
     )
 
 
@@ -138,6 +143,10 @@ def row_to_event(
         extraction_model=row[23],
         extraction_prompt_version=row[24],
         extraction_degradation=row[25],
+        superseded_by=row[26],
+        superseded_at=_parse_dt(row[27]),
+        merged_by=row[28],
+        merge_similarity=row[29],
     )
 
 

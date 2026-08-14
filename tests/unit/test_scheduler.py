@@ -322,9 +322,12 @@ class _DedupSpy:
         self._inner = inner
         self.calls = 0
 
-    def deduplicate(self, events, config):
+    def deduplicate(self, events, config, **kwargs):
         self.calls += 1
-        return self._inner.deduplicate(events, config)
+        # Forwarded rather than restated: a recording double that pins the
+        # signature narrows the interface it stands for, and a spy that cannot
+        # pass an argument through has started reimplementing.
+        return self._inner.deduplicate(events, config, **kwargs)
 
 
 class _RankingSpy:
@@ -703,13 +706,22 @@ def test_stored_enrichment_is_adopted_by_the_matching_fresh_event(db):
     assert fakes["extraction_model"].calls == []
 
 
-def test_a_superseded_event_is_deleted(db):
-    """Without the delete the loser lingers forever as a duplicate in the output."""
+def test_a_superseded_event_leaves_the_working_set_but_not_the_database(db):
+    """Was `test_a_superseded_event_is_deleted`, which asserted the delete
+    itself. The requirement it was protecting — the loser must not linger as a
+    duplicate in the output — is unchanged; what satisfies it is not. The row
+    is kept as half of a labelled cluster, and the repository's default filter
+    is what keeps it out of the working set.
+    """
     save_events([_event("stored-a", ["c1"]), _event("stored-b", ["c2"])], db)
 
     _run(db, candidates=[_candidate("c1"), _candidate("c2")])
 
-    assert sorted(e.event_id for e in load_events(db)) == ["stored-a"]
+    live = SqliteEventRepository(db).load_all()
+    everything = SqliteEventRepository(db).load_all(include_superseded=True)
+
+    assert [e.event_id for e in live] == ["stored-a"], "the loser is out of the way"
+    assert sorted(e.event_id for e in everything) == ["stored-a", "stored-b"]
 
 
 def test_a_stored_event_with_no_fresh_counterpart_is_still_ranked(db):
@@ -1533,3 +1545,41 @@ def test_a_dry_run_records_no_decisions(db):
          dry_run=True)
 
     assert _stored_decisions(db) == []
+
+
+def test_an_event_a_merge_displaced_is_kept_not_deleted(db):
+    """Reconcile's delete was the last destructive path in the pipeline. A
+    cluster is a labelled training scenario, and a deleted loser cannot be
+    one — so a displaced event is marked and stays."""
+    rich = _event("rich", ["c1"], title="Karaoke Night", tags=[Tag(text="karaoke")])
+    thin = _event("thin", ["c1"], title="Karaoke Night")
+    save_events([rich, thin], db)
+
+    _run(db, candidates=[_candidate("c1", title="Karaoke Night")])
+
+    ids = {e.event_id for e in load_events(db)}
+    assert "thin" in ids, "the displaced event was destroyed"
+
+
+def test_a_displaced_event_records_what_absorbed_it(db):
+    rich = _event("rich", ["c1"], title="Karaoke Night", tags=[Tag(text="karaoke")])
+    thin = _event("thin", ["c1"], title="Karaoke Night")
+    save_events([rich, thin], db)
+
+    _run(db, candidates=[_candidate("c1", title="Karaoke Night")])
+
+    displaced = next(e for e in load_events(db) if e.event_id == "thin")
+    assert displaced.superseded_by == "rich"
+    assert displaced.merged_by == "reconcile"
+
+
+def test_a_displaced_event_never_rejoins_the_ranking(db):
+    """The whole risk of keeping it. It was merged away for a reason."""
+    rich = _event("rich", ["c1"], title="Karaoke Night", tags=[Tag(text="karaoke")])
+    thin = _event("thin", ["c1"], title="Karaoke Night")
+    save_events([rich, thin], db)
+
+    _run(db, candidates=[_candidate("c1", title="Karaoke Night")])
+    _, fakes, _, _ = _run(db, candidates=[_candidate("c1", title="Karaoke Night")])
+
+    assert "thin" not in fakes["ranking_engine"].ranked[0]

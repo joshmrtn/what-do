@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+import copy
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -56,10 +57,16 @@ class MergeDecision:
 
 @dataclass(frozen=True)
 class DedupResult:
-    """The merged events, and every decision that produced them."""
+    """The merged events, every decision that produced them, and the losers.
+
+    A cluster is a labelled training scenario, and a destroyed loser cannot be
+    one — so the events a merge absorbed come back marked rather than dropped.
+    Callers persist them; the repositories filter them out of ordinary reads.
+    """
 
     events: list[Event]
     decisions: list[MergeDecision]
+    superseded: list[Event] = field(default_factory=list)
 
 
 def content_fingerprint(text: str) -> str:
@@ -231,6 +238,7 @@ def cluster_and_merge(
     content_of: Callable[[Event], str],
     pass_name: str,
     record_kind: str,
+    now: datetime | None = None,
 ) -> DedupResult:
     """Group events into clusters by a pairwise comparison and merge each cluster.
 
@@ -314,10 +322,56 @@ def cluster_and_merge(
     for i, event in enumerate(events):
         clusters.setdefault(find(i), []).append(event)
 
-    return DedupResult(
-        events=[merge_cluster(cluster) for cluster in clusters.values()],
-        decisions=decisions,
-    )
+    merged: list[Event] = []
+    superseded: list[Event] = []
+    for cluster in clusters.values():
+        winner = merge_cluster(cluster)
+        merged.append(winner)
+        superseded.extend(
+            _mark_superseded(cluster, winner, decisions, pass_name, identify, now)
+        )
+
+    return DedupResult(events=merged, decisions=decisions, superseded=superseded)
+
+
+def _mark_superseded(
+    cluster: list[Event],
+    winner: Event,
+    decisions: list[MergeDecision],
+    pass_name: str,
+    identify: Callable[[Event], str | None],
+    now: datetime | None,
+) -> list[Event]:
+    """Every event the merge absorbed, marked with what absorbed it.
+
+    Keyed back to the decision that joined each loser to the cluster so the
+    score on the row is the one actually measured, not the cluster's best or
+    last. A loser with no recoverable decision still records the merge — losing
+    the score is better than losing the fact.
+    """
+    if len(cluster) == 1:
+        return []
+
+    scores = {
+        tuple(sorted((d.record_a, d.record_b))): d.score
+        for d in decisions
+        if d.verdict == VERDICT_MERGED
+    }
+    winner_id = identify(winner)
+
+    losers = []
+    for event in cluster:
+        if event.event_id == winner.event_id:
+            continue
+        loser = copy.deepcopy(event)
+        loser.superseded_by = winner.event_id
+        loser.superseded_at = now
+        loser.merged_by = pass_name
+        loser_id = identify(event)
+        if winner_id is not None and loser_id is not None:
+            loser.merge_similarity = scores.get(tuple(sorted((winner_id, loser_id))))
+        losers.append(loser)
+    return losers
 
 
 class DeduplicationEngine:

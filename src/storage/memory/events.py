@@ -53,9 +53,18 @@ class InMemoryEventRepository:
         """Persist a single event. See `EventRepository.save_one`."""
         self.save([event])
 
-    def load_all(self) -> list[Event]:
-        """Every stored event, in insertion order."""
-        return [copy.deepcopy(event) for event in self._events.values()]
+    def load_all(self, include_superseded: bool = False) -> list[Event]:
+        """Every live stored event, in insertion order.
+
+        Filters by default, exactly as the SQLite repository does — the
+        contract suite runs this assertion against both, which is why these two
+        have never drifted.
+        """
+        return [
+            copy.deepcopy(event)
+            for event in self._events.values()
+            if include_superseded or event.superseded_by is None
+        ]
 
     def delete(self, event_ids: list[str]) -> None:
         """Remove events by id, ignoring ids that are not present."""
