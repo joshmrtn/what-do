@@ -1989,3 +1989,126 @@ makes the comparison above a strict check instead of a fuzzy one.
 SQLite cannot add one via `ALTER`, so putting it in `_SCHEMA` would make fresh
 databases strictly stricter than the migrated one — a divergence worse than the
 missing constraint. Code enforces the values when dedup provenance is built.
+
+## The dedup decision is the artefact, not the surviving row
+
+Dedup provenance was scoped as "write the two columns the DDL pass left inert",
+`merged_by` and `merge_similarity`, onto whichever event survived a merge. That
+design was built up to and then thrown away, because reasoning from the existing
+shape had produced a conclusion the shape itself was responsible for:
+
+> losers are destroyed → provenance goes on the survivor → Pass 1 can never be
+> explained, because its losers never become rows.
+
+Every step follows. The premise was the thing to change.
+
+**A loser event is an artefact of the algorithm.** A different implementation
+would not produce one. What is durable is the *decision*: these two records were
+compared, by this pass, scoring this, and judged the same or not.
+
+**And a row cannot carry the label that matters most.** An event row can say "I
+was merged into X". It can never say *"I was compared against X and judged
+different"* — and for training a dedup model, the rejections are most of the
+signal. A row-shaped design can only ever record positives.
+
+### Recording every comparison is affordable, which nobody had checked
+
+The objection to a decision log was O(n²): 1.39M pairs across ~1,670 events.
+Measured, the structural guards run first and cut that to **1,784 actually
+scored**, of which **two** merged. The expensive-looking thing was already cheap.
+
+That number decided the design. It also showed what a positives-only corpus
+would have been: two examples, one of them — `Wood & Bone` at 0.926 against a
+0.92 threshold, two different bands at one festival — wrong.
+
+### Three strata, because the easy negatives are neither kept nor discarded
+
+Keeping all 1,631 scored pairs is affordable for a night and not for a year, and
+they are overwhelmingly the same easy negative. Discarding them is worse: they
+are the class a model will mostly meet in production, and one validated without
+them has never seen its working conditions. So they are **downsampled with the
+rate recorded** — the ordinary answer to an imbalanced class.
+
+Every merge is kept. Every rejection at or above `decision_floor` is kept. Below
+it, one in `decision_sample_denominator`. At 0.70 and 10 that is ~254 rows a
+night, against a score distribution whose mode sits at 0.51.
+
+Two properties are load-bearing rather than incidental:
+
+- **The sample is chosen by hashing the pair's identity**, never a random draw
+  or a list position. A pair is therefore always kept or always dropped. One
+  that flickered in and out night to night would churn the corpus and leave a
+  reader unable to recover why a comparison they saw last week is gone.
+- **The denominator is written on the row**, not only in config. Reweighting to
+  true prevalence needs the rate that produced *that* row, and the rate will be
+  tuned. A fully-kept stratum records 1, not the run's rate — those rows were
+  never sampled, and recording 10 would claim they were one in ten of their kind.
+
+`run_history.dedup_config` records the thresholds in force, for exactly the
+reason `scoring_config` exists: a verdict is a function of numbers that will
+change, and a retuned threshold otherwise reinterprets every label already
+stored.
+
+### The full population stays regenerable, so sampling costs no validation
+
+Nothing is deleted, so every pair can be recomputed at any time from retained
+records. That splits cleanly: **stored** is what cannot be recomputed — the
+verdict, under the config in force then — and **regenerated** is the population,
+on demand. One honest limit: re-extraction rewrites summaries, so a *historical*
+score is not reproducible afterwards. Regeneration gives current scores, stored
+rows give history, and neither substitutes for the other.
+
+Guard-rejected pairs are not stored at all. 1.39M of them, fully regenerable.
+
+### Pass 1 keys on candidates, which is what makes it explainable
+
+Pass 1 runs before anything is stored, on events whose uuids are minted per run.
+Keyed on those, every pair would be new every night and nothing would ever
+accumulate. At that point each event carries exactly one candidate, and
+candidate ids are deterministic — so Pass 1's decisions are candidate-to-candidate
+and Pass 2's are event-to-event. Hence `record_kind` on the row.
+
+This is also why **Pass 1 creates no loser event rows**, departing from the plan
+that said it should. Persisting them would write ~460 new rows every night for
+the same listings, forever, under ids that never match again. And it would
+duplicate what is already kept: `merge_cluster` unions every member's candidate
+ids onto the winner, `event_candidates` is never deleted, and the pairwise
+verdicts now live in `dedup_decisions` keyed on those same candidates. The
+cluster is recoverable whole through the candidate layer, which is where a
+person would look anyway.
+
+### Nothing is destroyed, and one line holds that up
+
+Pass 2 marks what it absorbed instead of dropping it; reconcile marks instead of
+deleting, which removed the pipeline's last destructive path. Repositories
+filter superseded rows **by default**, with `include_superseded=True` as the
+escape hatch, because the dangerous direction is forgetting — an event dedup
+already merged away rejoining a ranking is the duplicate the pass existed to
+remove.
+
+The line everything rests on is in `reconcile`: its claim index now **skips**
+superseded rows. A marked loser still lists the candidates it was merged on, so
+leaving it indexed puts it in collision with its own winner, where it is marked
+stale and removed on the very next run — destroying exactly what had just been
+kept, silently, one night later.
+
+Reconcile records no `merge_similarity`. It matches on shared candidate ids
+rather than a score, and inventing a number would misrepresent how the merge was
+decided.
+
+### The corpus has to be checkable by a person, so it fingerprints its inputs
+
+Dedup is imperfect and some of this data will need cleaning before it trains
+anything, which means a person must be able to read the listings behind a
+decision and judge it. Every decision resolves to `event_candidates` — Pass 1
+directly, Pass 2 through `event_source_candidates` — and those rows are never
+deleted.
+
+But they *are* overwritten: `write_candidates` is `INSERT OR REPLACE`, so a
+re-fetched listing replaces the text a decision was made on (#27). Each decision
+therefore stores a digest of what it actually compared, which does not recover
+the original but makes the substitution **detectable** rather than silent.
+
+The rule that follows, and it is not obvious: **verify through the candidates,
+never through an event's current summary.** The summary is both what Pass 2
+compared and what re-extraction overwrites.
