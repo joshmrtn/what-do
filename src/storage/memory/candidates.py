@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
 from src.models.event_candidate import EventCandidate
@@ -14,8 +15,16 @@ class InMemoryCandidateRepository:
         self._by_id: dict[str, EventCandidate] = {}
 
     def save(self, candidates: list[EventCandidate]) -> None:
-        """Insert candidates, replacing any stored under the same id."""
+        """Insert candidates, replacing any stored under the same id.
+
+        The published fields are replaced wholesale, but `discovered_at` is
+        kept from the row already held: a re-fetch is a fresh sighting of a
+        listing we already met, not a new discovery of it (#27).
+        """
         for candidate in candidates:
+            existing = self._by_id.get(candidate.id)
+            if existing is not None:
+                candidate = replace(candidate, discovered_at=existing.discovered_at)
             self._by_id[candidate.id] = candidate
 
     def for_window(

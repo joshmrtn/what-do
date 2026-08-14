@@ -28,10 +28,19 @@ def write_candidates(
     if not candidates:
         return
 
-    placeholders = ", ".join("?" * len(CANDIDATE_COLUMNS.split(", ")))
+    columns = CANDIDATE_COLUMNS.split(", ")
+    placeholders = ", ".join("?" * len(columns))
+    # An upsert rather than INSERT OR REPLACE, for one column's sake:
+    # `discovered_at` is absent from the SET list, so a re-fetch cannot restamp
+    # the first sighting. REPLACE is a delete and re-insert, which has no way to
+    # keep anything from the row it replaces (#27).
+    refreshed = ", ".join(
+        f"{c} = excluded.{c}" for c in columns if c not in ("id", "discovered_at")
+    )
     conn.executemany(
-        f"INSERT OR REPLACE INTO event_candidates ({CANDIDATE_COLUMNS}) "
-        f"VALUES ({placeholders})",
+        f"INSERT INTO event_candidates ({CANDIDATE_COLUMNS}) "
+        f"VALUES ({placeholders}) "
+        f"ON CONFLICT(id) DO UPDATE SET {refreshed}",
         [candidate_to_row(c) for c in candidates],
     )
 

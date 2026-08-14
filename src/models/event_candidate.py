@@ -44,3 +44,18 @@ class EventCandidate:
     #: activity. Paired with `metadata["authored_tags"]`, which exempts the
     #: event from extraction entirely.
     tags: list[Tag] = field(default_factory=list)
+    #: When a source was last seen publishing this listing, as against
+    #: `discovered_at`, which is when we first met it. One restamped field
+    #: cannot answer both, and was silently answering the second while being
+    #: read as the first (#27).
+    #:
+    #: An adapter never sets this: what it holds is a single *observation*, so
+    #: first and last are the same instant and `__post_init__` says so. The
+    #: split is a property of the stored history, and the repository is what
+    #: resolves it — `discovered_at` survives a re-fetch, this does not.
+    last_seen_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """A candidate nobody has stored yet was first seen when it was seen."""
+        if self.last_seen_at is None:
+            self.last_seen_at = self.discovered_at

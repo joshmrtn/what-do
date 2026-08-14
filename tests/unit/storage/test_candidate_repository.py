@@ -116,6 +116,48 @@ class TestRoundTrip:
         assert _in_window(repo) == []
 
 
+class TestFirstAndLastSeen:
+    """Two timestamps, because one field cannot answer two questions.
+
+    `discovered_at` is provenance — when we first met this listing. `last_seen_at`
+    is currency — whether a source is still publishing it. A single restamped
+    field silently means the second while being read as the first, which is #27.
+    """
+
+    def test_a_first_sighting_records_the_same_instant_for_both(self, repo):
+        """An adapter observing a listing has met it and seen it at once."""
+        repo.save([_candidate(discovered_at=_NOW)])
+
+        stored = _in_window(repo)[0]
+
+        assert stored.discovered_at == _NOW
+        assert stored.last_seen_at == _NOW
+
+    def test_refetching_moves_last_seen_and_leaves_first_discovery_alone(self, repo):
+        """The whole point: a republished listing is current, not newly found."""
+        later = _NOW + timedelta(days=3)
+        repo.save([_candidate(discovered_at=_NOW)])
+        repo.save([_candidate(discovered_at=later)])
+
+        stored = _in_window(repo)[0]
+
+        assert stored.discovered_at == _NOW
+        assert stored.last_seen_at == later
+
+    def test_last_seen_survives_a_round_trip_at_a_non_default_value(self, repo):
+        """Set apart from `discovered_at`, or the column need not exist to pass."""
+        repo.save([_candidate(discovered_at=_NOW, last_seen_at=_NOW + timedelta(days=1))])
+
+        stored = _in_window(repo)[0]
+
+        assert stored.last_seen_at == _NOW + timedelta(days=1)
+
+    def test_last_seen_comes_back_timezone_aware(self, repo):
+        repo.save([_candidate()])
+
+        assert _in_window(repo)[0].last_seen_at.tzinfo is not None
+
+
 class TestReplacement:
     def test_refetching_the_same_id_replaces_it(self, repo):
         repo.save([_candidate(title="Trivia")])

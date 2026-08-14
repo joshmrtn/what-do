@@ -24,7 +24,7 @@ from src.models.tag import Tag
 CANDIDATE_COLUMNS = (
     "id, source, source_type, url, image_url, raw_published_at, title, "
     "description, venue, location, start_time, end_time, discovered_at, "
-    "timing, summary, tags, metadata"
+    "timing, summary, tags, metadata, last_seen_at"
 )
 
 
@@ -48,6 +48,11 @@ def row_to_candidate(row: tuple[Any, ...]) -> EventCandidate:
         summary=row[14],
         tags=[Tag(text=t["tag"], weight=t["weight"]) for t in json.loads(row[15] or "[]")],
         metadata=json.loads(row[16] or "{}"),
+        # Not defaulted to `discovered_at` when absent: a stored row that lost
+        # its last sighting would then read as a first sighting, which is the
+        # conflation the column exists to end. Unreachable after the migration
+        # backfills, and loud rather than quiet if it ever is.
+        last_seen_at=datetime.fromisoformat(row[17]),
     )
 
 
@@ -71,6 +76,7 @@ def candidate_to_row(candidate: EventCandidate) -> tuple[Any, ...]:
         candidate.summary,
         json.dumps([{"tag": t.text, "weight": t.weight} for t in candidate.tags]),
         json.dumps(candidate.metadata),
+        (candidate.last_seen_at or candidate.discovered_at).isoformat(),
     )
 
 

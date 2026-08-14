@@ -134,7 +134,16 @@ CREATE TABLE IF NOT EXISTS event_candidates (
     -- and empty for every source that leaves both to extraction.
     summary          TEXT,
     tags             TEXT,
-    metadata         TEXT
+    metadata         TEXT,
+    -- Last observation, against `discovered_at`'s first. Declared last because
+    -- ALTER TABLE ADD COLUMN appends, so a fresh build and the migrated live
+    -- database agree on position as well as on name.
+    --
+    -- Nullable, deliberately: NOT NULL added by ALTER needs a DEFAULT that then
+    -- cannot be dropped without a table rebuild, and a fresh database carrying a
+    -- default the live one lacks is exactly the drift the schema check exists to
+    -- catch. The writer always supplies it and the reader raises on NULL.
+    last_seen_at     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS weather_cache (
