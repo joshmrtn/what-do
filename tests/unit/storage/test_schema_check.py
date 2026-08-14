@@ -14,7 +14,12 @@ import sqlite3
 
 import pytest
 
-from src.storage.schema_check import check_database, check_references, compare_schema
+from src.storage.schema_check import (
+    check_database,
+    check_decision_references,
+    check_references,
+    compare_schema,
+)
 from src.storage.sqlite.connection import init_db
 
 
@@ -288,3 +293,133 @@ class TestCheckingADatabaseOnDisk:
         findings = check_database(db)
 
         assert any("event_tags" in f.message for f in findings)
+
+
+class TestDecisionReferences:
+    """`dedup_decisions` stores ids from two different tables in one column pair.
+
+    `record_kind` says which — a candidate id for Pass 1, an event id for Pass 2
+    — and SQLite cannot express that, so no foreign key is declared and
+    `PRAGMA foreign_key_check` cannot see the table **at all**. The column
+    comparison cannot either: a database whose decisions all dangle matches
+    `_SCHEMA` exactly.
+
+    Nothing can orphan these rows today — both writers are inside the batch and
+    neither target is deleted any more. That is precisely why an orphan would go
+    unnoticed, and the table is a training corpus whose worth depends on every
+    row still tying back to something a person can read.
+    """
+
+    def _db(self, tmp_path, rows):
+        path = tmp_path / "live.db"
+        init_db(path)
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO event_candidates (id, source, source_type, discovered_at) "
+            "VALUES ('cand-1', 's', 't', '2026-08-14T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO events (id, source_type, created_at, updated_at) "
+            "VALUES ('evt-1', 't', '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO run_history (id, started_at) VALUES ('run-1', '2026-08-14T00:00:00+00:00')"
+        )
+        for kind, a, b in rows:
+            conn.execute(
+                "INSERT INTO dedup_decisions (pass_name, record_kind, record_a, record_b, "
+                "score, verdict, stratum, sample_denominator, content_hash_a, "
+                "content_hash_b, run_id, updated_at) "
+                "VALUES ('fuzzy', ?, ?, ?, 0.9, 'merged', 'merge', 1, 'h', 'h', "
+                "'run-1', '2026-08-14T00:00:00+00:00')",
+                (kind, a, b),
+            )
+        conn.commit()
+        return conn
+
+    def test_resolvable_decisions_produce_nothing(self, tmp_path):
+        conn = self._db(tmp_path, [("candidate", "cand-1", "cand-1"), ("event", "evt-1", "evt-1")])
+
+        assert check_decision_references(conn) == []
+
+    def test_a_candidate_decision_pointing_nowhere_is_reported(self, tmp_path):
+        conn = self._db(tmp_path, [("candidate", "cand-1", "gone")])
+
+        findings = check_decision_references(conn)
+
+        assert len(findings) == 1
+        assert "event_candidates" in findings[0].message
+
+    def test_an_event_decision_pointing_nowhere_is_reported(self, tmp_path):
+        conn = self._db(tmp_path, [("event", "missing", "evt-1")])
+
+        findings = check_decision_references(conn)
+
+        assert len(findings) == 1
+        assert "events" in findings[0].message
+
+    def test_both_sides_of_a_pair_are_checked(self, tmp_path):
+        """A decision is about a pair, so a check that only read `record_a`
+        would miss half of every dangle."""
+        conn = self._db(tmp_path, [("event", "gone-a", "gone-b")])
+
+        assert check_decision_references(conn) != []
+
+    def test_a_record_kind_nothing_can_resolve_is_reported(self, tmp_path):
+        """Worse than a dangle: a row nothing knows how to look up at all."""
+        conn = self._db(tmp_path, [("venue", "whatever", "whatever")])
+
+        findings = check_decision_references(conn)
+
+        assert len(findings) == 1
+        assert "venue" in findings[0].message
+
+    def test_a_superseded_event_still_resolves(self, tmp_path):
+        """Nothing is destroyed, so a decision about a merged-away event is
+        still verifiable. Reporting it would make the corpus look broken exactly
+        where dedup provenance is working."""
+        conn = self._db(tmp_path, [("event", "evt-1", "evt-1")])
+        conn.execute("UPDATE events SET superseded_by = 'other' WHERE id = 'evt-1'")
+        conn.commit()
+
+        assert check_decision_references(conn) == []
+
+    def test_counts_rather_than_one_finding_per_row(self, tmp_path):
+        """Seven thousand findings is a wall, not a report — the lesson from the
+        `event_scores` rebuild."""
+        conn = self._db(
+            tmp_path, [("event", "gone", "evt-1"), ("event", "also-gone", "evt-1")]
+        )
+
+        findings = check_decision_references(conn)
+
+        assert len(findings) == 1
+        assert "2" in findings[0].message
+
+    def test_a_database_without_the_table_is_not_an_error(self, tmp_path):
+        """An older database predates the table. Absent is not dangling."""
+        path = tmp_path / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE events (id TEXT PRIMARY KEY)")
+
+        assert check_decision_references(conn) == []
+
+
+def test_check_database_includes_decision_references(tmp_path):
+    """Wired into the gate the batch already runs, or it protects nothing."""
+    path = tmp_path / "live.db"
+    init_db(path)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO run_history (id, started_at) VALUES ('run-1', '2026-08-14T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO dedup_decisions (pass_name, record_kind, record_a, record_b, "
+        "score, verdict, stratum, sample_denominator, content_hash_a, content_hash_b, "
+        "run_id, updated_at) VALUES ('fuzzy', 'event', 'gone', 'gone', 0.9, 'merged', "
+        "'merge', 1, 'h', 'h', 'run-1', '2026-08-14T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    assert any("dedup_decisions" in f.message for f in check_database(path))

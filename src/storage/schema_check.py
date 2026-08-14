@@ -184,12 +184,96 @@ def check_references(conn: sqlite3.Connection) -> list[Finding]:
     ]
 
 
+#: Which table each `dedup_decisions.record_kind` names. Pass 1 compares
+#: candidates and Pass 2 compares events, so one column pair holds ids from two
+#: tables — which is why no foreign key can be declared for them.
+_DECISION_TARGETS = {"candidate": "event_candidates", "event": "events"}
+
+#: The columns naming a record. A decision is about a *pair*, so a check reading
+#: only `record_a` would miss half of every dangle.
+_DECISION_COLUMNS = ("record_a", "record_b")
+
+
+def check_decision_references(conn: sqlite3.Connection) -> list[Finding]:
+    """Every `dedup_decisions` row naming a record that is not there.
+
+    Separate from `check_references` because SQLite cannot see this table at
+    all. `record_kind` decides which table `record_a` and `record_b` point at,
+    and a foreign key cannot be conditional, so none is declared and
+    `PRAGMA foreign_key_check` has nothing to walk. The column comparison is
+    equally blind: a database whose every decision dangles matches `_SCHEMA`
+    exactly.
+
+    Nothing can orphan these rows today — both writers are inside the batch and
+    neither target is deleted any more. That is the reason to check rather than
+    a reason not to: the table is a training corpus whose worth depends on every
+    row still tying back to a record a person can read, and an orphan appearing
+    later would otherwise go unnoticed for a long time.
+
+    A superseded event still resolves. Nothing is destroyed, so a decision about
+    a merged-away event is exactly as verifiable as one about a survivor.
+
+    Counts, not one finding per row, for the reason `check_references` gives.
+    """
+    if not _has_table(conn, "dedup_decisions"):
+        # An older database predates the table. Absent is not dangling.
+        return []
+
+    findings: list[Finding] = []
+    kinds = {
+        str(row[0])
+        for row in conn.execute("SELECT DISTINCT record_kind FROM dedup_decisions")
+    }
+
+    for kind in sorted(kinds - set(_DECISION_TARGETS)):
+        count = conn.execute(
+            "SELECT COUNT(*) FROM dedup_decisions WHERE record_kind = ?", (kind,)
+        ).fetchone()[0]
+        findings.append(
+            Finding(
+                "dedup_decisions",
+                f"dedup_decisions: {count} row(s) have record_kind {kind!r}, "
+                "which names no table",
+            )
+        )
+
+    for kind, table in sorted(_DECISION_TARGETS.items()):
+        for column in _DECISION_COLUMNS:
+            count = conn.execute(
+                f"SELECT COUNT(*) FROM dedup_decisions d WHERE d.record_kind = ? "
+                f"AND NOT EXISTS (SELECT 1 FROM {table} t WHERE t.id = d.{column})",
+                (kind,),
+            ).fetchone()[0]
+            if count:
+                findings.append(
+                    Finding(
+                        "dedup_decisions",
+                        f"dedup_decisions: {count} row(s) name a {kind} in "
+                        f"{column} that {table} does not have",
+                    )
+                )
+
+    return findings
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    """Whether `conn` has a table of this name."""
+    count = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()[0]
+    return int(count) > 0
+
+
 def check_database(db_path: Path | str) -> list[Finding]:
     """Everything wrong with the schema at `db_path`, or nothing.
 
     Builds a throwaway database from `_SCHEMA` and compares against it, then
-    checks referential integrity. The two are different properties and a
-    database can pass either while failing the other.
+    checks referential integrity — twice, because there are two kinds. SQLite
+    walks the declared foreign keys; `check_decision_references` covers
+    `dedup_decisions`, whose ids are polymorphic so no key can be declared and
+    the PRAGMA sees nothing at all. All three are different properties and a
+    database can pass any of them while failing the others.
 
     The import is local: `init_db` lives in the module this one is checking, and
     at module scope the pair would import each other.
@@ -214,7 +298,7 @@ def check_database(db_path: Path | str) -> list[Finding]:
                 findings = compare_schema(expected, actual)
             finally:
                 expected.close()
-        return findings + check_references(actual)
+        return findings + check_references(actual) + check_decision_references(actual)
     finally:
         actual.close()
 
