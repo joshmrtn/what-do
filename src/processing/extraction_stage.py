@@ -137,10 +137,15 @@ class ExtractionStage:
         self._get_now = get_now
         self._save_fn = save_fn
         self._budget_minutes = budget_minutes
+        self._scope_fn: Callable[[Event], bool] | None = None
         #: How many events the last `process` wanted to extract and could
         #: not, because the budget ran out. Describes the run just
         #: finished, so it is reset at the top of every pass.
         self.deferred = 0
+        #: How many the last `process` skipped because ranking could never use
+        #: them. Same lifetime, and the pair reads as one sentence: what the
+        #: budget could not buy, and what it should never have been asked to.
+        self.out_of_scope = 0
 
     def set_save_fn(self, save_fn: Callable[[Event], None] | None) -> None:
         """Set where checkpoints go, or None to disable them.
@@ -149,6 +154,20 @@ class ExtractionStage:
         the stage — and a dry run sets None because it persists nothing at all.
         """
         self._save_fn = save_fn
+
+    def set_scope_fn(self, scope_fn: Callable[[Event], bool] | None) -> None:
+        """Set which events are worth spending model time on.
+
+        The orchestrator owns this for the same reason it owns `set_save_fn`:
+        the predicate depends on the run date, which `--run-date` may override,
+        so composition cannot build it. Left unset, every event is extracted.
+
+        It must be the *ranking* scope. An event ranking will discard is one no
+        extraction can help, and passing a different predicate here would spend
+        the budget on events the run then throws away — which is the failure
+        this exists to stop.
+        """
+        self._scope_fn = scope_fn
 
     def process(self, events: list[Event]) -> list[Event]:
         """Run extraction on each event that needs it.
@@ -161,6 +180,7 @@ class ExtractionStage:
         """
         extracted = 0
         self.deferred = 0
+        self.out_of_scope = 0
         deadline = self._deadline()
 
         # Iterated in priority order, returned in the caller's. The orchestrator
@@ -171,6 +191,14 @@ class ExtractionStage:
                 continue
             text = extraction_input(event)
             if event.extraction_input_hash == input_hash(text):
+                continue
+            # After the hash check, not before it, so the count means "stale and
+            # out of scope" — the work actually saved. Before it, the same skip
+            # would also count every past event already extracted: ~470 against
+            # a real saving of 124, a number describing nothing. Hashing a short
+            # string is free; a count that can be trusted is not.
+            if self._scope_fn is not None and not self._scope_fn(event):
+                self.out_of_scope += 1
                 continue
             # After the skips, so an event that never reaches the model costs
             # nothing against a budget denominated in model time. Before the
@@ -187,6 +215,13 @@ class ExtractionStage:
             self._logger.info(
                 f"extraction budget spent after {extracted} events; "
                 f"{self.deferred} deferred to the next run",
+                component="extraction_stage",
+                duration_ms=0,
+            )
+
+        if self.out_of_scope:
+            self._logger.info(
+                f"skipped {self.out_of_scope} event(s) ranking cannot use",
                 component="extraction_stage",
                 duration_ms=0,
             )

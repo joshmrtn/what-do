@@ -1406,3 +1406,56 @@ def test_the_run_reports_events_the_budget_deferred(db):
     assert result.outcome == "success"
     assert result.stage_counts["extraction_deferred"] == stage.deferred
     assert stage.deferred > 0
+
+
+# ----------------------------------------------------------------------
+# Extraction scope
+# ----------------------------------------------------------------------
+
+
+def test_an_event_ranking_will_discard_never_reaches_the_model(db):
+    """Fed as a fresh candidate, which is how this happens in production.
+
+    `_carry_forward` scopes the stored side only, and `for_window` reloads every
+    candidate discovered inside the lookback whether or not its event is over —
+    so a past event re-enters through the fresh door each night and the ranking
+    scope never sees it. Measured 2026-08-14: an entire 480-minute budget spent
+    on events that were already over.
+    """
+    over = _candidate("c1", title="Over", start_time=NOW - timedelta(days=2))
+
+    _, fakes, _, _ = _run(db, candidates=[over])
+
+    assert fakes["extraction_model"].calls == []
+
+
+def test_an_event_still_to_come_reaches_the_model(db):
+    """The other half: scoping extraction must not stop it doing its job."""
+    _, fakes, _, _ = _run(db, candidates=[_candidate("c1", title="Tonight")])
+
+    assert len(fakes["extraction_model"].calls) == 1
+
+
+def test_a_fresh_undated_event_still_reaches_the_model(db):
+    """The case that makes the ranking predicate the right one to reuse: an
+    event whose date is not knowable until extraction runs is undated, and the
+    predicate keeps undated events on discovery age. A cruder date test would
+    skip exactly the events extraction exists to date."""
+    undated = _candidate("c1", title="Undated", start_time=None)
+
+    _, fakes, _, _ = _run(db, candidates=[undated])
+
+    assert len(fakes["extraction_model"].calls) == 1
+
+
+def test_the_run_reports_what_extraction_skipped_as_out_of_scope(db):
+    """Without it the fix is invisible: a run that silently skips 124 events
+    looks exactly like one with a smaller backlog. It is also the pair that
+    separates "the budget is too small" from "the budget is being spent on the
+    past" — the confusion that hid two wasted nights."""
+    over = _candidate("c1", title="Over", start_time=NOW - timedelta(days=2))
+    soon = _candidate("c2", title="Soon")
+
+    result, _, _, _ = _run(db, candidates=[over, soon])
+
+    assert result.stage_counts["extraction_out_of_scope"] == 1

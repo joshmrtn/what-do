@@ -291,12 +291,24 @@ def run_batch(
     # loses every model call it made. A dry run gets None: it persists nothing,
     # checkpoints included.
     extraction_stage.set_save_fn(None if dry_run else _save_one)
+    # The same predicate ranking uses, for the reason the budget exists: model
+    # time spent on an event ranking will discard buys nothing. It matters here
+    # rather than in `_carry_forward` because a past event arrives on the
+    # *fresh* side — `for_window` reloads every candidate discovered inside the
+    # lookback whether or not its event is over — and the fresh side is
+    # deliberately unscoped. Measured 2026-08-14: a whole 480-minute budget
+    # went on events that had already happened.
+    extraction_stage.set_scope_fn(in_scope)
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
     # Read off the stage rather than counted here: an event with no hash may
     # have been deferred by the budget or refused by an unavailable provider,
     # and only the stage knows which. Not an error — the run ranks what it has —
     # but a count that stays high means the budget is set too low.
     result.stage_counts["extraction_deferred"] = extraction_stage.deferred
+    # Read together: what the budget could not buy, and what it should never
+    # have been asked to. Deferred alone cannot tell a backlog that is too big
+    # from one that is full of events nothing can use.
+    result.stage_counts["extraction_out_of_scope"] = extraction_stage.out_of_scope
     if not dry_run and events:
         # Wrapped like every other stage. Unwrapped, this line could end a batch
         # holding hours of extraction: it re-validates every event, so one bad

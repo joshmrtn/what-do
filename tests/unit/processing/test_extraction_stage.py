@@ -1327,3 +1327,136 @@ class TestTheCategoryFallback:
         stage.process([event])
 
         assert [t.text for t in event.tags] == ["comedy"]
+
+
+class TestOnlyEventsRankingCanUseAreExtracted:
+    """The queue is soonest-first, so an event that has already happened sorts
+    to the *front* of it.
+
+    Harmless until 3d made model time scarce. Measured on 2026-08-14: the whole
+    480-minute budget went on 273 events that were already over, and the run
+    reached nothing rankable at all. The night before did the same. These are
+    not stale listings — they were future when ingested and aged into the past
+    while waiting in the queue behind a 1,200-event backlog.
+
+    Skipping is safe because extraction only ever *fills* a null `start_time`
+    and never corrects one, so a past event's date is the same whether the
+    model runs or not; and an event whose date is genuinely not knowable yet is
+    undated, which the ranking predicate keeps on discovery age.
+    """
+
+    @staticmethod
+    def _rankable(event):
+        """Stands in for the scheduler's ranking scope.
+
+        The real predicate is `_scope_filter`, which has its own tests and is
+        wired in `tests/unit/test_scheduler.py`. This stage's contract is only
+        that it asks and obeys.
+        """
+        return event.start_time is None or event.start_time >= _now()
+
+    def _past(self, **kwargs):
+        return _make_event(start_time=_now() - timedelta(days=2), **kwargs)
+
+    def _future(self, **kwargs):
+        return _make_event(start_time=_now() + timedelta(days=2), **kwargs)
+
+    def test_an_event_ranking_would_discard_is_never_sent_to_the_model(self):
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+
+        stage.process([self._past()])
+
+        provider.extract.assert_not_called()
+
+    def test_an_out_of_scope_event_is_skipped_not_dropped(self):
+        """This stage returns the list it was given. The orchestrator hands the
+        same list to embedding and to `events_repo.replace(stale_ids, events)`,
+        so dropping an event here would stop it being persisted at all."""
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+        past, future = self._past(event_id="past"), self._future(event_id="future")
+
+        returned = stage.process([past, future])
+
+        assert [e.event_id for e in returned] == ["past", "future"]
+
+    def test_an_event_still_to_come_is_extracted(self):
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+
+        stage.process([self._future()])
+
+        assert provider.extract.call_count == 1
+
+    def test_an_out_of_scope_event_costs_no_budget_and_is_not_deferred(self):
+        """The whole point. A queue full of expired events must not report
+        itself as deferred work, or the count that says "the budget is too
+        small" says it for events no budget should ever buy."""
+        get_now, tick = TestTheExtractionBudget._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=10
+        )
+        # The clock this budget runs on, not the module-level one.
+        stage.set_scope_fn(lambda e: e.start_time is None or e.start_time >= get_now())
+        start = get_now()
+        events = [
+            _make_event(event_id=f"past-{i}", start_time=start - timedelta(days=2))
+            for i in range(5)
+        ] + [
+            _make_event(event_id=f"soon-{i}", start_time=start + timedelta(days=1))
+            for i in range(3)
+        ]
+
+        stage.process(events)
+
+        assert provider.extract.call_count == 3, "the budget bought only rankable events"
+        assert stage.deferred == 0
+
+    def test_with_no_scope_fn_every_event_is_extracted(self):
+        """The default is permissive, and covered rather than assumed."""
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+
+        stage.process([self._past(), self._future()])
+
+        assert provider.extract.call_count == 2
+
+    def test_the_stage_reports_how_many_it_skipped_as_out_of_scope(self):
+        """Without this the fix is invisible: a run that silently skips 124
+        events looks exactly like one with a smaller backlog."""
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+
+        stage.process([self._past(event_id="a"), self._past(event_id="b"), self._future()])
+
+        assert stage.out_of_scope == 2
+
+    def test_an_already_extracted_past_event_is_not_counted_out_of_scope(self):
+        """The scope check sits *after* the hash check, so the count means
+        "stale and out of scope" — the work actually saved. Before it, the same
+        skip would count every past event ever extracted: ~470 against a real
+        saving of 124, a number describing nothing."""
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+        done = self._past(event_id="done", tags=[Tag(text="jazz")])
+        done.extraction_input_hash = extraction_input_hash(done)
+
+        stage.process([done, self._past(event_id="stale")])
+
+        assert stage.out_of_scope == 1
+
+    def test_the_out_of_scope_count_resets_between_runs(self):
+        """It describes the run just finished, as `deferred` does."""
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+        stage.process([self._past()])
+        assert stage.out_of_scope == 1
+
+        stage.process([self._future()])
+
+        assert stage.out_of_scope == 0
