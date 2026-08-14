@@ -26,6 +26,7 @@ from src.storage.protocols import (
     HttpCache,
     RankingRepository,
     RunRepository,
+    DedupDecisionRepository,
     ScoreRepository,
     WeatherCache,
 )
@@ -35,6 +36,7 @@ from src.storage.sqlite.events import SqliteEventRepository
 from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.runs import SqliteRunRepository
+from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 from src.storage.sqlite.weather_cache import SqliteWeatherCache
 
@@ -58,6 +60,7 @@ class BatchStorage:
     candidates: CandidateRepository
     runs: RunRepository
     entities: EntityRepository
+    dedup_decisions: DedupDecisionRepository
     weather_cache: WeatherCache
     http_cache: HttpCache
 
@@ -93,6 +96,7 @@ def build_batch_storage(db_path: Path | str, embedding_model: str) -> BatchStora
         candidates=SqliteCandidateRepository(db_path),
         runs=SqliteRunRepository(db_path),
         entities=SqliteEntityRepository(db_path),
+        dedup_decisions=SqliteDedupDecisionRepository(db_path),
         weather_cache=SqliteWeatherCache(db_path),
         http_cache=SqliteHttpCache(db_path),
     )

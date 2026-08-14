@@ -38,8 +38,11 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.schema_check import Finding, check_database, format_findings
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, init_db
+from src.normalization.decision_sampling import select_for_storage
+from src.normalization.deduplicator import MergeDecision
 from src.storage.protocols import (
     CandidateRepository,
+    DedupDecisionRepository,
     EventRepository,
     RankingRepository,
     RunRepository,
@@ -110,6 +113,7 @@ def run_batch(
     run_repository: RunRepository,
     score_repository: ScoreRepository,
     ranking_repository: RankingRepository,
+    dedup_decision_repository: DedupDecisionRepository,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -151,6 +155,8 @@ def run_batch(
         score_repository: Where each event's verdict is written, same terms.
         ranking_repository: Where each in-scope event's placement is written,
             same terms.
+        dedup_decision_repository: Where each dedup comparison is written —
+            the merges and, more importantly, the rejections.
 
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
@@ -160,6 +166,7 @@ def run_batch(
     scores_repo = score_repository
     candidates_repo = candidate_repository
     rankings_repo = ranking_repository
+    dedup_decisions_repo = dedup_decision_repository
     result = BatchResult(outcome="success", skipped_sources=list(skipped_sources or []))
     now = get_now()
 
@@ -171,8 +178,31 @@ def run_batch(
     run_id = (
         None
         if dry_run or ingest_only
-        else runs_repo.start(now, scoring_config=_scoring_provenance(config))
+        else runs_repo.start(
+            now,
+            scoring_config=_scoring_provenance(config),
+            dedup_config=_dedup_provenance(config),
+        )
     )
+
+    def _record_decisions(decisions: list[MergeDecision]) -> None:
+        """Store what a dedup pass concluded, sampled down to what is worth keeping.
+
+        Skipped entirely without a run id: a dry run persists nothing, and
+        there is no `run_history` row for these to reference — the thresholds
+        behind a verdict are recoverable only through it.
+        """
+        if run_id is None or not decisions:
+            return
+        dedup_decisions_repo.save(
+            select_for_storage(
+                decisions,
+                floor=config.deduplication.decision_floor,
+                denominator=config.deduplication.decision_sample_denominator,
+            ),
+            run_id=run_id,
+            now=now,
+        )
 
     def _finish() -> BatchResult:
         """Complete the history row and hand back the result.
@@ -265,11 +295,13 @@ def run_batch(
     candidates = _merge_candidates(candidates, fetched)
     result.stage_counts["candidates"] = len(candidates)
 
-    normalized = _stage(
+    norm_result = _stage(
         "normalization",
-        lambda: normalization_service.run(candidates, get_now=get_now).events,
-        default=[],
+        lambda: normalization_service.run(candidates, get_now=get_now),
+        default=None,
     )
+    normalized = norm_result.events if norm_result else []
+    _record_decisions(norm_result.decisions if norm_result else [])
 
     # The superseded ids are carried, not acted on. Reconcile knows which
     # duplicates lose hours before the run has anything to store in their place,
@@ -333,10 +365,14 @@ def run_batch(
     events = embedded
     _save(events)
 
+    def _semantic_dedup() -> list[Event]:
+        deduped = semantic_deduplicator.deduplicate(events, config.deduplication)
+        _record_decisions(deduped.decisions)
+        return deduped.events
+
     events = _stage(
         "semantic_dedup",
-        # `.decisions` is not read yet — storing them is the next commit.
-        lambda: semantic_deduplicator.deduplicate(events, config.deduplication).events,
+        _semantic_dedup,
         default=events,
     )
     _save(events)
@@ -404,6 +440,17 @@ def _carry_forward(
     return reconciled + [
         e for e in stored if e.event_id not in claimed and in_scope(e)
     ]
+
+
+def _dedup_provenance(config: AppConfig) -> str:
+    """The dedup constants in force, as JSON, for `run_history`.
+
+    `scoring_config`'s argument applied to the other set of numbers that
+    decides what a stored row means: a merge verdict is a function of
+    thresholds that will be tuned, and a retuned threshold would otherwise
+    reinterpret every decision already recorded.
+    """
+    return json.dumps(asdict(config.deduplication), sort_keys=True, default=str)
 
 
 def _scoring_provenance(config: AppConfig) -> str:
@@ -658,6 +705,7 @@ def run(
             run_repository=dependencies.run_repository,
             score_repository=dependencies.score_repository,
             ranking_repository=dependencies.ranking_repository,
+            dedup_decision_repository=dependencies.dedup_decision_repository,
             logger=logger,
             run_date=run_date,
             get_now=get_now,

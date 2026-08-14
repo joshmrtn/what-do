@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
 from src.config import AppConfig
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
-from src.normalization.deduplicator import DeduplicationEngine
+from src.normalization.deduplicator import DeduplicationEngine, MergeDecision
 from src.normalization.normalizer import NormalizationEngine
 from src.utils.logging import StructuredLogger
 
@@ -21,6 +21,10 @@ class NormalizationResult:
     normalized: int
     discarded: int
     events: list[Event]
+    #: Every comparison dedup Pass 1 made. Carried rather than written here:
+    #: this service does not persist, and the orchestrator owns the run id
+    #: these rows reference.
+    decisions: list[MergeDecision] = field(default_factory=list)
 
 
 class NormalizationService:
@@ -75,13 +79,13 @@ class NormalizationService:
                 duration_ms=0,
             )
 
-        # `.decisions` is not read yet — storing them is the next commit. The
-        # merge behaviour is unchanged either way.
-        events = self._deduplicator.deduplicate(
+        deduped = self._deduplicator.deduplicate(
             norm_result.events, self._config.deduplication
-        ).events
+        )
+        events = deduped.events
 
         return NormalizationResult(
+            decisions=deduped.decisions,
             normalized=len(events),
             discarded=len(norm_result.discards),
             events=events,

@@ -73,6 +73,13 @@ class DeduplicationConfig:
     fuzzy_title_threshold: float = 0.85
     time_window_hours: float = 2.0
     semantic_threshold: float = 0.92
+    #: Score at or above which a *rejection* is kept in full. Above the
+    #: embedding noise floor — measured, the mode sits at 0.51 and 0.60-0.70
+    #: holds 197 pairs — so the tail is captured without drowning in it.
+    decision_floor: float = 0.70
+    #: Keep one in this many of the rest. They are the class a dedup model will
+    #: mostly meet, so they are downsampled rather than dropped; 1 keeps all.
+    decision_sample_denominator: int = 10
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,8 @@ from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.models.run import RunRecord
+from src.normalization.decision_sampling import SampledDecision
+from src.storage.dedup_decisions import StoredDecision
 from src.storage.http_cache import CachedResponse
 
 
@@ -88,7 +90,10 @@ class RunRepository(Protocol):
     """Persistence for `run_history`, the only durable record of a batch run."""
 
     def start(
-        self, started_at: datetime, scoring_config: str | None = None
+        self,
+        started_at: datetime,
+        scoring_config: str | None = None,
+        dedup_config: str | None = None,
     ) -> str:
         """Record that a batch has begun, returning its run id.
 
@@ -359,4 +364,23 @@ class HttpCache(Protocol):
         fetched_at: datetime,
     ) -> None:
         """Store a response, replacing any earlier entry for the same URL."""
+        ...
+
+
+class DedupDecisionRepository(Protocol):
+    """Persistence for `dedup_decisions` — what the dedup passes concluded.
+
+    Kept apart from the events themselves because a decision is about a *pair*,
+    and a surviving row can only ever record the merges it won. The rejections
+    live here, and they are most of what a future dedup model learns from.
+    """
+
+    def save(
+        self, decisions: list[SampledDecision], *, run_id: str, now: datetime
+    ) -> None:
+        """Store decisions, replacing any previous verdict on the same pair."""
+        ...
+
+    def load_all(self) -> list[StoredDecision]:
+        """Every stored decision, for inspection and for training."""
         ...

@@ -45,15 +45,19 @@ class SqliteRunRepository:
         self._db_path = db_path
 
     def start(
-        self, started_at: datetime, scoring_config: str | None = None
+        self,
+        started_at: datetime,
+        scoring_config: str | None = None,
+        dedup_config: str | None = None,
     ) -> str:
         """Record that a batch has begun, returning its run id."""
         run_id = str(uuid.uuid4())
         conn = connect(self._db_path)
         try:
             conn.execute(
-                "INSERT INTO run_history (id, started_at, scoring_config) VALUES (?, ?, ?)",
-                (run_id, started_at.isoformat(), scoring_config),
+                "INSERT INTO run_history (id, started_at, scoring_config, dedup_config) "
+                "VALUES (?, ?, ?, ?)",
+                (run_id, started_at.isoformat(), scoring_config, dedup_config),
             )
             conn.commit()
         finally:

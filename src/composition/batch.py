@@ -58,6 +58,7 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.composition.storage import build_batch_storage
 from src.storage.protocols import (
+    DedupDecisionRepository,
     CandidateRepository,
     EntityRepository,
     EventRepository,
@@ -93,6 +94,7 @@ class BatchDependencies:
     run_repository: RunRepository
     score_repository: ScoreRepository
     ranking_repository: RankingRepository
+    dedup_decision_repository: DedupDecisionRepository
 
 
 def build_dependencies(
@@ -361,6 +363,7 @@ def build_dependencies(
         run_repository=storage.runs,
         score_repository=storage.scores,
         ranking_repository=storage.rankings,
+        dedup_decision_repository=storage.dedup_decisions,
     )
 
 

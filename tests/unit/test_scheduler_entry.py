@@ -62,6 +62,7 @@ _REPOSITORIES = (
     "run_repository",
     "score_repository",
     "ranking_repository",
+    "dedup_decision_repository",
 )
 
 

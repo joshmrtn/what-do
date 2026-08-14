@@ -63,11 +63,13 @@ from src.scoring.similarity_stage import SimilarityStage
 from src.storage.sqlite.connection import init_db
 from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 from src.storage.memory.http_cache import InMemoryHttpCache
 from src.storage.events import load_events, save_events
+from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 from src.utils.logging import get_logger
@@ -1164,6 +1166,7 @@ def test_batch_smoke(tmp_path: Path) -> None:
         run_repository=SqliteRunRepository(db_path),
         score_repository=SqliteScoreRepository(db_path),
         ranking_repository=SqliteRankingRepository(db_path),
+        dedup_decision_repository=SqliteDedupDecisionRepository(db_path),
         config=config,
         db_path=db_path,
         logger=logger,
@@ -1202,6 +1205,7 @@ def test_batch_smoke(tmp_path: Path) -> None:
         run_repository=SqliteRunRepository(db_path),
         score_repository=SqliteScoreRepository(db_path),
         ranking_repository=SqliteRankingRepository(db_path),
+        dedup_decision_repository=SqliteDedupDecisionRepository(db_path),
         config=config,
         db_path=db_path,
         logger=logger,

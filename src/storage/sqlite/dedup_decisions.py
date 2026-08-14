@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from src.normalization.decision_sampling import SampledDecision
+from src.storage.dedup_decisions import StoredDecision
 from src.storage.sqlite.connection import connect
 
 _COLUMNS = (
@@ -14,24 +14,6 @@ _COLUMNS = (
     "stratum, sample_denominator, content_hash_a, content_hash_b, "
     "run_id, updated_at"
 )
-
-
-@dataclass(frozen=True)
-class StoredDecision:
-    """A decision as it comes back out — what a person reads months later."""
-
-    pass_name: str
-    record_kind: str
-    record_a: str
-    record_b: str
-    score: float
-    verdict: str
-    stratum: str
-    sample_denominator: int
-    content_hash_a: str
-    content_hash_b: str
-    run_id: str
-    updated_at: str
 
 
 def _to_row(

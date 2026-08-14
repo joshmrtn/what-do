@@ -29,6 +29,8 @@ from src.normalization.service import NormalizationService
 from src.enrichment.service import EnrichmentService
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.processing.extraction import ExtractionResult
+from src.storage.sqlite.connection import connect
+from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.scheduler import run_batch
 from src.scoring.embedding_stage import EmbeddingStage
@@ -463,7 +465,12 @@ def _config(**scraping) -> AppConfig:
         location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
         scraping=ScrapingConfig(**scraping),
         venue_discovery=VenueDiscoveryConfig(),
-        deduplication=DeduplicationConfig(),
+        # Sampling off. These tests ask whether a decision reaches the table at
+        # all, and under the shipped 1-in-10 rule a single below-floor pair is
+        # dropped nine times out of ten — which would make a wiring test fail
+        # on a coin flip. What gets sampled is `test_decision_sampling.py`'s
+        # question, and it answers it deterministically.
+        deduplication=DeduplicationConfig(decision_sample_denominator=1),
     )
 
 
@@ -574,6 +581,7 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
         event_repository=save_spy,
         score_repository=InMemoryScoreRepository(),
         ranking_repository=recs_spy,
+        dedup_decision_repository=SqliteDedupDecisionRepository(db),
         **stages,
         **kwargs,
     )
@@ -1149,6 +1157,7 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             normalization_service=_normalization_service(),
             enrichment_service=_enrichment_service(db),
             extraction_stage=_extraction_stage(),
+            dedup_decision_repository=SqliteDedupDecisionRepository(db),
             embedding_stage=_embedding_stage(),
             semantic_deduplicator=_DedupSpy(SemanticDeduplicationEngine()),
             similarity_stage=_similarity_stage(),
@@ -1459,3 +1468,68 @@ def test_the_run_reports_what_extraction_skipped_as_out_of_scope(db):
     result, _, _, _ = _run(db, candidates=[over, soon])
 
     assert result.stage_counts["extraction_out_of_scope"] == 1
+
+
+# ----------------------------------------------------------------------
+# Dedup decisions
+# ----------------------------------------------------------------------
+
+
+def _stored_decisions(db):
+    return SqliteDedupDecisionRepository(db).load_all()
+
+
+def test_both_passes_record_their_decisions(db):
+    """Pass 1 keys on candidates, Pass 2 on events. Both must reach the table,
+    or half the corpus is missing and nothing says so."""
+    _run(db, candidates=[_candidate("c1", title="Karaoke Night"),
+                         _candidate("c2", title="Poetry Slam")])
+
+    kinds = {d.pass_name for d in _stored_decisions(db)}
+
+    assert kinds == {"fuzzy", "semantic"}
+
+
+def test_a_rejection_is_recorded_not_only_a_merge(db):
+    """The label a surviving row can never carry."""
+    _run(db, candidates=[_candidate("c1", title="Karaoke Night"),
+                         _candidate("c2", title="Poetry Slam")])
+
+    verdicts = {d.verdict for d in _stored_decisions(db)}
+
+    assert "distinct" in verdicts
+
+
+def test_a_decision_names_the_run_that_made_it(db):
+    """So the thresholds behind the verdict stay recoverable when they change."""
+    _run(db, candidates=[_candidate("c1"), _candidate("c2", title="Karaoke Nite")])
+
+    stored = _stored_decisions(db)
+
+    assert stored, "no decisions stored, so this asserted nothing"
+    assert all(d.run_id for d in stored)
+
+
+def test_the_run_records_the_dedup_config_it_used(db):
+    """`scoring_config`'s argument, applied to the other set of constants that
+    decides what a stored row means."""
+    _run(db, candidates=[_candidate("c1")])
+
+    conn = connect(db)
+    try:
+        stored = conn.execute(
+            "SELECT dedup_config FROM run_history ORDER BY started_at DESC"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert stored is not None and stored[0], "the run recorded no dedup config"
+    assert "semantic_threshold" in stored[0]
+
+
+def test_a_dry_run_records_no_decisions(db):
+    """A dry run persists nothing, and it has no run row to reference."""
+    _run(db, candidates=[_candidate("c1"), _candidate("c2", title="Karaoke Nite")],
+         dry_run=True)
+
+    assert _stored_decisions(db) == []

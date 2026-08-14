@@ -100,6 +100,26 @@ deduplication:
   time_window_hours: 2
   semantic_threshold: 0.92
 
+  # Every comparison the dedup passes make is recorded, not only the merges: a
+  # rejection is the label a surviving row can never carry, and it is most of
+  # what a future dedup model would learn from.
+  #
+  # Not all of them, though. Measured on a ~1,670-event corpus, the structural
+  # guards cut 1.39M possible pairs to 1,784 actually scored — of which two
+  # merged. Keeping every one of those nightly is affordable for a night and
+  # not for a year, and they are overwhelmingly the same easy negative again.
+  #
+  # So: every merge, every rejection at or above the floor, and one in N of the
+  # rest. The easy ones are downsampled rather than dropped, because they are
+  # the class a model will mostly meet in production.
+
+  # Above the embedding noise floor: the score distribution's mode sits at 0.51
+  # and 0.60-0.70 holds 197 pairs, so this catches the tail without the mode.
+  decision_floor: 0.70
+  # 1 keeps everything. The rate is written onto each row as well as read from
+  # here, so a row stays reweightable to true prevalence after this is tuned.
+  decision_sample_denominator: 10
+
 # Public ICS calendars to ingest. Many venues and local aggregators publish one,
 # and it is a far better source than scraping: structured, forward-looking, and
 # free. Adding a calendar is a config entry, not a code change.
