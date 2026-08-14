@@ -97,6 +97,47 @@ def _sqlite_importers() -> tuple[set[str], set[str]]:
     return implementations, connections
 
 
+#: Modules permitted to call `load_events`, the unfiltered reader.
+#: **Only the repository that wraps it.**
+_EVENT_READERS = {"storage/sqlite/events.py"}
+
+#: The reader that does not filter superseded rows. Narrow on purpose: the
+#: module also holds `validate_tag_vectors` (a shared validator) and
+#: `load_tag_embeddings` (read by a composition root), and neither can forget a
+#: filter it never had.
+_UNFILTERED_READER = "load_events"
+
+
+def _module_level_event_readers() -> set[str]:
+    """Modules importing the unfiltered `load_events` directly."""
+    found: set[str] = set()
+    for path in SRC.rglob("*.py"):
+        relative = path.relative_to(SRC).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module != "src.storage.events":
+                continue
+            if any(alias.name == _UNFILTERED_READER for alias in node.names):
+                found.add(relative)
+    return found
+
+
+def test_only_the_repository_reads_events_through_the_module_functions():
+    """`load_events` does not filter superseded rows; `load_all` does.
+
+    Two readers that disagree about which rows exist is one reader too many, and
+    the one that forgets is always the one production takes: `--raw` reached
+    past the repository to `load_events` as a **default argument**, so every
+    test injected its own loader while production ran the unfiltered path (#28).
+
+    The module functions are not going away — they are the row mapping the
+    repository wraps rather than restates. What must not come back is a caller
+    outside `storage/` reaching for them.
+    """
+    assert _module_level_event_readers() == _EVENT_READERS
+
+
 def test_only_the_roots_name_a_concrete_implementation():
     """A new import of a `storage.sqlite` repository outside a root fails here.
 

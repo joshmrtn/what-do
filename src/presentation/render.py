@@ -165,12 +165,173 @@ def render_raw(events: list[Event]) -> str:
         return _join(["No events in the database."])
 
     ordered = sorted(events, key=_start_sort_key)
-    lines = [f"{len(events)} event{'' if len(events) == 1 else 's'}", ""]
+    superseded = sum(1 for event in events if event.superseded_by is not None)
+    # Named in the count, because a total that silently includes merged-away
+    # rows misleads in exactly the way listing them unmarked would.
+    tally = f"{len(events)} event{'' if len(events) == 1 else 's'}"
+    if superseded:
+        tally += f" ({superseded} superseded)"
+    lines = [tally, ""]
     for event in ordered:
         when = _when_of(event)
         lines.append(f"  {when}  {_describe(event)}  [{event.source_type}]")
+        if (mark := _supersession_of(event)) is not None:
+            lines.append(f"         {mark}")
 
     return _join(lines)
+
+
+def render_explanation(
+    event: Event,
+    score: EventScore | None,
+    ranking: Ranking | None,
+    *,
+    color: bool = False,
+) -> str:
+    """Account for one event's placement, in full.
+
+    The default view is deliberately free of score labels and badges — that was
+    settled when tiers were removed and reaffirmed when the degradation field
+    landed. But the information kept accumulating with nowhere to look at it:
+    `score_reasons` alone is thousands of rows of exactly *why is this ranked
+    here*. This is the somewhere, reached on purpose rather than decorating the
+    list.
+
+    Everything here is read from storage. Nothing is recomputed, which is the
+    CLI's whole promise.
+
+    Args:
+        event: The event to account for.
+        score: Its stored verdict, or None when it has none — a superseded
+            event never got one, and that is worth saying rather than hiding.
+        ranking: Its placement, or None on the same terms.
+        color: Emit ANSI styling.
+    """
+    lines: list[str] = []
+    place = f"  {ranking.rank}. " if ranking is not None else "  "
+    when = _when_of(event)
+    lines.append(_style(f"{place}{when + '  ' if when else ''}{_describe(event)}", _BOLD, color))
+    if event.url:
+        lines.append(_style(f"      {event.url}", _DIM, color))
+    lines.append("")
+
+    if score is None or ranking is None:
+        # Not a failure to explain: an event dedup merged away never got a
+        # score, so there is no placement to account for. Saying which is the
+        # point — this is the "that merge looks wrong, why?" case.
+        lines.append("  not ranked — no score was stored for this event")
+    else:
+        lines.append(f"  score    {_score_arithmetic(score, ranking)}")
+
+    if (mark := _supersession_of(event)) is not None:
+        lines.append(f"  merge    {mark}")
+
+    if event.tags:
+        rendered_tags = " · ".join(
+            f"{tag.text} {_weight(tag.weight)}" for tag in event.tags
+        )
+        lines.append(f"  tags     {rendered_tags}")
+    if event.summary:
+        lines.append(f"  summary  \"{event.summary}\"")
+    lines.append(f"  model    {_provenance_of(event)}")
+
+    if score is not None and score.reasons:
+        lines.append("")
+        lines.append(
+            _style("           tag                weight   matched      sim   contribution", _DIM, color)
+        )
+        weights = {tag.text: tag.weight for tag in event.tags}
+        for reason in sorted(score.reasons, key=lambda r: abs(r.contribution), reverse=True):
+            lines.append(_explanation_row(reason, weights))
+
+    return _join(lines)
+
+
+def _score_arithmetic(score: EventScore, ranking: Ranking) -> str:
+    """The stored components, in the order they were applied.
+
+    The multiplier is shown as `÷` on a negative base and `×` on a positive one,
+    because that is what actually happened: it acts on magnitude with the sign
+    preserved, so dividing is what stops the clearest rejections being rewarded.
+    From outside it looks like a bug either way, which is the reason to say
+    which one ran.
+    """
+    operator = "×" if score.base_score >= 0 else "÷"
+    return (
+        f"{ranking.final_score:+.3f}  =  base {score.base_score:+.3f}"
+        f"  × confidence {score.tag_confidence:.2f}"
+        f"  {operator} match ({score.match})"
+        f"  + weather {ranking.weather_adjustment:+.3f}"
+    )
+
+
+def _provenance_of(event: Event) -> str:
+    """What produced this event's tags, and how far short the reply fell.
+
+    "not recorded" rather than a blank: most stored events predate provenance,
+    and an empty field reads as something the batch failed to write rather than
+    something it never had.
+    """
+    if event.extraction_model is None:
+        model = "not recorded"
+    else:
+        model = event.extraction_model
+        if event.extraction_prompt_version:
+            model += f", prompt {event.extraction_prompt_version}"
+    if event.extraction_degradation:
+        model += f"  (degraded: {event.extraction_degradation})"
+    return model
+
+
+def _explanation_row(reason: Reason, weights: dict[str, float]) -> str:
+    """One contribution, as a row.
+
+    The summary term carries no tag; it is labelled rather than left blank,
+    because an empty column reads as a missing value.
+    """
+    sign = "+" if reason.direction == "positive" else "−"
+    # A tagless row is the summary term *or* a non-semantic factor. Labelling
+    # both `(summary)` invents a second summary contribution: measured against
+    # the live database, the match classification rendered exactly that way.
+    if reason.tag:
+        tag = reason.tag
+    else:
+        tag = _FACTOR_LABELS.get(reason.factor, "(summary)")
+    weight = _weight(weights[reason.tag]) if reason.tag in weights else "—"
+    return (
+        f"    {sign}      {tag:<18} {weight:>4}   "
+        f"{reason.matched_preference:<12} {reason.similarity:.3f}     "
+        f"{reason.contribution:+.3f}"
+    )
+
+
+def _weight(weight: float) -> str:
+    """A tag weight, keeping one decimal but not inventing precision.
+
+    `1` in a column of `0.9` and `0.7` reads as a different quantity, and
+    `1.00` claims a precision the model never expressed.
+    """
+    text = f"{weight:.2f}".rstrip("0")
+    return f"{text}0" if text.endswith(".") else text
+
+
+def _supersession_of(event: Event) -> str | None:
+    """How this event was merged away, or None if it still stands.
+
+    A continuation line rather than a suffix: the row stays scannable, and the
+    mark reads as being *about* the row above it.
+    """
+    if event.superseded_by is None:
+        return None
+
+    mark = f"superseded by {event.superseded_by}"
+    if event.merged_by is None:
+        return mark
+    # Reconcile matches on shared candidate ids, not on a score, and stores no
+    # similarity for that reason. Printing one would misrepresent the merge.
+    if event.merge_similarity is None:
+        return f"{mark} ({event.merged_by})"
+    return f"{mark} ({event.merged_by}, {event.merge_similarity:.3f})"
 
 
 def _visible_reasons(reasons: list[Reason], *, verbose: bool) -> list[Reason]:

@@ -10,6 +10,7 @@ from src.models.event_score import EventScore
 from src.models.ranked_event import RankedEvent
 from src.models.ranking import Ranking
 from src.presentation.filters import (
+    matching,
     after_sunset,
     dated,
     during_night,
@@ -29,6 +30,8 @@ def _pair(
     start: datetime | None = None,
     end: datetime | None = None,
     sunset: datetime | None = None,
+    rank: int = 1,
+    title: str | None = "Karaoke Night",
 ) -> RankedEvent:
     astro = {"sunset": sunset.isoformat()} if sunset is not None else None
     event = Event(
@@ -40,6 +43,7 @@ def _pair(
         start_time=start,
         end_time=end,
         astronomical_data=astro,
+        title=title,
     )
     return RankedEvent(
         event=event,
@@ -47,7 +51,7 @@ def _pair(
             event_id=event_id, run_date=TODAY, base_score=0.4, match="yes"
         ),
         ranking=Ranking(
-            event_id=event_id, run_date=TODAY, final_score=0.4, rank=1
+            event_id=event_id, run_date=TODAY, final_score=0.4, rank=rank
         ),
     )
 
@@ -326,3 +330,49 @@ class TestMultiNightEvents:
         pair = _pair("run", start=_when(2026, 8, 1, 10), end=_when(2026, 8, 30, 18))
 
         assert during_night([pair], date(2026, 8, 15), time(4, 0), ZONE) == [pair]
+
+
+class TestMatching:
+    """How `--explain` names an event.
+
+    A rank is what is actually on screen, so it is the obvious selector — but
+    `--raw` has no ranks and a superseded event has no ranking row at all, so a
+    rank alone cannot reach the events supersession marking just made visible.
+    Hence both: an integer is a rank, anything else is a title substring.
+    """
+
+    def test_an_integer_selects_by_rank(self):
+        pairs = [_pair("a", rank=1, title="First"), _pair("b", rank=2, title="Second")]
+
+        assert [p.event.title for p in matching(pairs, "2")] == ["Second"]
+
+    def test_a_rank_that_does_not_exist_matches_nothing(self):
+        assert matching([_pair("a", rank=1)], "9") == []
+
+    def test_text_selects_by_title_substring(self):
+        pairs = [_pair("a", title="Karaoke Night"), _pair("b", title="Open Mic")]
+
+        assert [p.event.title for p in matching(pairs, "karaoke")] == ["Karaoke Night"]
+
+    def test_the_substring_ignores_case(self):
+        assert len(matching([_pair("a", title="Karaoke Night")], "KARAOKE")) == 1
+
+    def test_an_ambiguous_substring_returns_every_match(self):
+        """The caller lists them rather than guessing. Picking one silently is
+        how a person ends up reading the wrong event's explanation."""
+        pairs = [
+            _pair("a", title="Karaoke Night"),
+            _pair("b", title="Karaoke Brunch"),
+        ]
+
+        assert len(matching(pairs, "karaoke")) == 2
+
+    def test_a_number_is_never_treated_as_text(self):
+        """A title containing the digit must not be reachable by rank, or the
+        two selector kinds quietly overlap and the result depends on data."""
+        pairs = [_pair("a", rank=7, title="Room 101"), _pair("b", rank=101, title="Quiz")]
+
+        assert [p.event.title for p in matching(pairs, "101")] == ["Quiz"]
+
+    def test_an_untitled_event_is_not_matched_by_text(self):
+        assert matching([_pair("a", title=None)], "anything") == []

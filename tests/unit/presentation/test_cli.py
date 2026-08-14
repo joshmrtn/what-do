@@ -146,7 +146,10 @@ class _Harness:
         self.requested_embedding_model = embedding_model
         return self.pairs
 
-    def _load_events(self, db_path):
+    def _load_events(self, db_path, **kwargs):
+        """`**kwargs` deliberately: a double exists to record and forward, and
+        the instant it declares the shape of what it forwards it has started
+        reimplementing. This broke when the loader gained `embedding_model`."""
         self.load_events_calls += 1
         return self.events
 

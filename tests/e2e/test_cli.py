@@ -234,6 +234,30 @@ def test_raw_shows_every_event_across_every_day(db_path):
     assert "Open Studio Weekend" in out
 
 
+def test_raw_shows_a_superseded_event_and_says_what_absorbed_it(db_path):
+    """The real path, against a real database, because that is where it broke.
+
+    `--raw` reached past the repository to the one reader that ignores
+    supersession, as a *default argument* — so every test injected its own
+    loader and production ran the unfiltered path. Filtering here instead would
+    make `--raw` the one view that cannot show what the batch actually did;
+    including silently makes a reader take a merged-away duplicate for real.
+    """
+    loser = _event("dead", "Wood & Bone", _at(19))
+    loser.superseded_by = "t1"
+    loser.merged_by = "semantic"
+    loser.merge_similarity = 0.926
+    save_events([loser], db_path)
+
+    _, out, _ = _invoke(db_path, "--raw")
+
+    assert "Wood & Bone" in out
+    assert "superseded by t1" in out
+    assert "semantic" in out
+    assert "0.926" in out
+    assert "1 superseded" in out
+
+
 def test_raw_bypasses_ranking(db_path):
     _, out, _ = _invoke(db_path, "--raw")
 
@@ -340,3 +364,61 @@ def test_after_midnight_still_shows_the_evening_in_progress(db_path):
     assert "Karaoke Night" in out
     assert "Tomorrow Gig" not in out
     assert "Saturday 21 June" in out
+
+
+class TestExplain:
+    """One event, accounted for, through the real parser and real reads."""
+
+    def test_a_rank_from_the_list_explains_that_event(self, db_path):
+        code, out, _ = _invoke(db_path, "--explain", "1")
+
+        assert code == 0
+        assert "Karaoke Night" in out
+        assert "karaoke night" in out  # the matched preference line
+
+    def test_part_of_a_title_explains_that_event(self, db_path):
+        code, out, _ = _invoke(db_path, "--explain", "open mic")
+
+        assert code == 0
+        assert "Open Mic" in out
+
+    def test_an_ambiguous_title_lists_the_matches_and_fails(self, db_path):
+        """Rather than guessing. Reading the wrong event's explanation and
+        believing it is worse than being asked to be specific."""
+        code, out, err = _invoke(db_path, "--explain", "tomorrow")
+
+        assert code == 1
+        assert "matches" in err
+        assert "Tomorrow Gig" in err
+        assert out == ""
+
+    def test_an_unknown_selector_fails_with_a_usable_message(self, db_path):
+        code, _, err = _invoke(db_path, "--explain", "no such event")
+
+        assert code == 1
+        assert "no event matches" in err.lower()
+
+    def test_a_superseded_event_explains_what_it_can(self, db_path):
+        """It has no score and no ranking, so there is no placement to account
+        for — but "why was this merged away" is exactly the question `--raw`
+        marking raises, and this is where it gets answered."""
+        loser = _event("dead", "Wood & Bone", _at(19))
+        loser.superseded_by = "t1"
+        loser.merged_by = "semantic"
+        loser.merge_similarity = 0.926
+        save_events([loser], db_path)
+
+        code, out, _ = _invoke(db_path, "--explain", "wood")
+
+        assert code == 0
+        assert "not ranked" in out.lower()
+        assert "superseded by t1" in out
+        assert "0.926" in out
+
+    def test_explain_does_not_disturb_the_default_view(self, db_path):
+        """The list stays clean. That was settled twice and this must not be the
+        change that walks it back."""
+        _, out, _ = _invoke(db_path)
+
+        assert "score " not in out
+        assert "not recorded" not in out

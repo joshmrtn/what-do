@@ -22,12 +22,44 @@ __all__ = [
     "after_sunset",
     "dated",
     "during_night",
+    "matching",
     "night_of",
     "on_date",
     "overlapping",
     "parse_time_window",
     "undated",
 ]
+
+
+def matching(pairs: list[RankedEvent], selector: str) -> list[RankedEvent]:
+    """Pairs a `--explain` selector names, in the order given.
+
+    Two kinds, told apart by whether the selector parses as an integer:
+
+    - **a rank**, which is what is actually printed beside each event, so it is
+      what a reader has in front of them;
+    - **a title substring**, case-insensitive, because `--raw` prints no ranks
+      and a superseded event has no ranking row at all.
+
+    The integer test comes first and is exclusive, so a title containing a
+    number is never reachable by rank. Letting the two overlap would make the
+    result depend on the data rather than on what was asked.
+
+    Returns:
+        Every match. One is the answer, several is a question for the caller to
+        put back to the reader, none is a miss — picking one silently is how
+        somebody ends up reading the wrong event's explanation.
+    """
+    if selector.strip().lstrip("+-").isdigit():
+        wanted = int(selector)
+        return [pair for pair in pairs if pair.ranking.rank == wanted]
+
+    needle = selector.casefold()
+    return [
+        pair
+        for pair in pairs
+        if pair.event.title and needle in pair.event.title.casefold()
+    ]
 
 #: One ranked event as the CLI reads it: the run's decision, plus what it decided about.
 

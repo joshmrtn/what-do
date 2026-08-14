@@ -30,18 +30,19 @@ from src.presentation.filters import (
     RankedEvent,
     after_sunset,
     during_night,
+    matching,
     night_of,
     overlapping,
     parse_time_window,
 )
 from src.presentation.render import (
     DEFAULT_LIMIT,
+    render_explanation,
     render_raw,
     render_recommendations,
     staleness_notice,
 )
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, has_schema
-from src.storage.events import load_events
 from src.composition.storage import build_view_storage
 from src.storage.queries import load_ranked_events
 
@@ -69,6 +70,29 @@ def _default_pairs(
     return load_ranked_events(
         storage.events, storage.scores, storage.rankings, run_date=run_date
     )
+def _default_events(
+    db_path: Path,
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+) -> list[Event]:
+    """Every stored event, superseded ones included, for `--raw`.
+
+    Through the repository like every other read. `--raw` used to call
+    `storage.events.load_events` directly — the one path that does not filter
+    supersession — and it was a *default argument*, so production took the
+    unfiltered path while every test injected its own. That is the shape the
+    footgun table names: a default only production reaches is untested by
+    construction.
+
+    `include_superseded=True` is deliberate rather than incidental. `--raw`
+    means every stored event, and a merge worth disagreeing with is exactly
+    what this view is for; the renderer marks them so nobody reads a
+    merged-away duplicate as real.
+    """
+    return build_view_storage(db_path, embedding_model).events.load_all(
+        include_superseded=True
+    )
+
+
 EventLoader = Callable[..., list[Event]]
 ReadinessCheck = Callable[[Path], bool]
 
@@ -196,7 +220,11 @@ def _cmd_recommend(
         return 0
 
     if args.raw:
-        print(render_raw(load_all_events(db_path)), file=stdout, end="")
+        print(
+            render_raw(load_all_events(db_path, embedding_model=view.embedding_model)),
+            file=stdout,
+            end="",
+        )
         return 0
 
     try:
@@ -204,6 +232,18 @@ def _cmd_recommend(
     except ValueError:
         print(f"Error: --run-date must be YYYY-MM-DD, got {args.run_date!r}", file=stderr)
         return 1
+
+    if args.explain:
+        return _cmd_explain(
+            args.explain,
+            db_path=db_path,
+            run_date=run_date,
+            load_pairs=load_pairs,
+            load_all_events=load_all_events,
+            stdout=stdout,
+            stderr=stderr,
+            view=view,
+        )
 
     try:
         window = parse_time_window(args.time) if args.time else None
@@ -268,6 +308,71 @@ def _supports_color(stream: TextIO) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
 
 
+def _cmd_explain(
+    selector: str,
+    *,
+    db_path: Path,
+    run_date: date | None,
+    load_pairs: PairLoader,
+    load_all_events: EventLoader,
+    stdout: TextIO,
+    stderr: TextIO,
+    view: ViewSettings,
+) -> int:
+    """Account for one event, named by rank or by part of its title.
+
+    Ranked events are searched first, because a rank only means anything there
+    and it is what the list actually printed. Falling back to every stored event
+    is what lets `--explain` reach the ones `--raw` just made visible: a
+    superseded event has no score and no ranking, so it can be named but never
+    ranked.
+    """
+    pairs = load_pairs(
+        db_path, run_date=run_date, embedding_model=view.embedding_model
+    )
+    found = matching(pairs, selector)
+
+    if len(found) == 1:
+        print(
+            render_explanation(found[0].event, found[0].score, found[0].ranking),
+            file=stdout,
+            end="",
+        )
+        return 0
+
+    if len(found) > 1:
+        # Listed rather than guessed. Picking one silently is how somebody ends
+        # up reading the wrong event's explanation and believing it.
+        print(f"Error: {selector!r} matches {len(found)} events:", file=stderr)
+        for pair in found:
+            print(f"  {pair.ranking.rank}. {pair.event.title}", file=stderr)
+        return 1
+
+    unranked = _unranked_match(
+        selector, load_all_events(db_path, embedding_model=view.embedding_model)
+    )
+    if unranked is not None:
+        print(render_explanation(unranked, None, None), file=stdout, end="")
+        return 0
+
+    print(f"Error: no event matches {selector!r}", file=stderr)
+    return 1
+
+
+def _unranked_match(selector: str, events: list[Event]) -> Event | None:
+    """An event with no ranking row, named by part of its title.
+
+    Deliberately title-only: an unranked event has no rank to be named by, so a
+    numeric selector that reached here found nothing and should say so rather
+    than matching a title that happens to contain the digits.
+    """
+    if selector.strip().lstrip("+-").isdigit():
+        return None
+    needle = selector.casefold()
+    matches = [e for e in events if e.title and needle in e.title.casefold()]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="what-do", description="What should we do tonight?"
@@ -281,6 +386,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--all", action="store_true", help="Show every ranked event, not just the top ones"
+    )
+    parser.add_argument(
+        "--explain",
+        metavar="EVENT",
+        help="Account for one event: a rank from the list, or part of its title",
     )
     parser.add_argument(
         "--limit",
@@ -311,7 +421,7 @@ def run(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     load_pairs: PairLoader = _default_pairs,
-    load_all_events: EventLoader = load_events,
+    load_all_events: EventLoader = _default_events,
     db_ready: ReadinessCheck = has_schema,
     load_view_settings: ViewSettingsLoader = default_view_settings,
 ) -> int:
