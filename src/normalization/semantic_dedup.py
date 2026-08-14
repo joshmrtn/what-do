@@ -79,6 +79,9 @@ class SemanticDeduplicationEngine:
             events,
             lambda a, b: _compare(a, b, config),
             lambda event: event.event_id,
+            # The summary is what Pass 2 compares, so it is what a stale
+            # fingerprint should betray. Re-extraction rewrites it.
+            lambda event: event.summary or "",
             pass_name="semantic",
             record_kind="event",
         )

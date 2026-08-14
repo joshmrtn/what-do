@@ -28,6 +28,8 @@ def _decision(score: float, verdict: str = "distinct", a: str = "a", b: str = "b
         record_b=b,
         score=score,
         verdict=verdict,
+        content_hash_a=f"hash-of-{a}",
+        content_hash_b=f"hash-of-{b}",
     )
 
 

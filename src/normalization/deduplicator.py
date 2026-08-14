@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable
@@ -44,6 +45,13 @@ class MergeDecision:
     record_b: str
     score: float
     verdict: str
+    #: Digests of the text each side was compared on, in `record_a`/`record_b`
+    #: order. `event_candidates` is written with INSERT OR REPLACE (#27), so a
+    #: re-fetched listing overwrites the row a reader would later check this
+    #: decision against. These do not recover the original text; they make the
+    #: substitution detectable instead of silent.
+    content_hash_a: str
+    content_hash_b: str
 
 
 @dataclass(frozen=True)
@@ -52,6 +60,11 @@ class DedupResult:
 
     events: list[Event]
     decisions: list[MergeDecision]
+
+
+def content_fingerprint(text: str) -> str:
+    """Stable digest of the text a comparison rested on."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _title_similarity(a: str | None, b: str | None) -> float | None:
@@ -92,6 +105,11 @@ def times_match(
     if a_time is None or b_time is None:
         return False
     return abs((a_time - b_time).total_seconds()) <= window_hours * 3600
+
+
+def _listing_text(event: Event) -> str:
+    """The listing as normalization received it — what a person would read."""
+    return f"{event.title or ''}\n{event.description or ''}"
 
 
 def _compare(a: Event, b: Event, cfg: DeduplicationConfig) -> Comparison | None:
@@ -210,6 +228,7 @@ def cluster_and_merge(
     events: list[Event],
     compare: Callable[[Event, Event], Comparison | None],
     identify: Callable[[Event], str | None],
+    content_of: Callable[[Event], str],
     pass_name: str,
     record_kind: str,
 ) -> DedupResult:
@@ -229,6 +248,9 @@ def cluster_and_merge(
         compare: Pairwise comparison, or None when the pair was never compared —
             a failed structural guard or a missing vector. None is *unknown*,
             not "different", so it records nothing.
+        content_of: The text the comparison rested on, fingerprinted onto the
+            decision so a later reader can tell whether the record has since
+            been edited underneath it.
         identify: The stable id of the record a decision should name, or None
             when it has none. A decision keyed on an id that will not exist
             tomorrow would never match again, so it is not recorded at all.
@@ -270,6 +292,10 @@ def cluster_and_merge(
                 continue
             # Sorted, so a pair has one identity however it is iterated and one
             # row wherever it is stored.
+            fingerprints = {
+                left: content_fingerprint(content_of(events[i])),
+                right: content_fingerprint(content_of(events[j])),
+            }
             record_a, record_b = sorted((left, right))
             decisions.append(
                 MergeDecision(
@@ -279,6 +305,8 @@ def cluster_and_merge(
                     record_b=record_b,
                     score=comparison.score,
                     verdict=VERDICT_MERGED if comparison.duplicate else VERDICT_DISTINCT,
+                    content_hash_a=fingerprints[record_a],
+                    content_hash_b=fingerprints[record_b],
                 )
             )
 
@@ -314,6 +342,7 @@ class DeduplicationEngine:
             events,
             lambda a, b: _compare(a, b, config),
             _candidate_identity,
+            _listing_text,
             pass_name="fuzzy",
             record_kind="candidate",
         )

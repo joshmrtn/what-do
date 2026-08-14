@@ -292,7 +292,43 @@ CREATE TABLE IF NOT EXISTS run_history (
     skipped_sources        TEXT,
     outcome                TEXT,
     preference_revision_id TEXT REFERENCES preference_revisions(id),
-    scoring_config         TEXT
+    scoring_config         TEXT,
+    -- The dedup thresholds in force, for the same reason `scoring_config`
+    -- records the scoring ones: a verdict is a function of numbers that will
+    -- be tuned, and a retuned threshold otherwise reinterprets every label
+    -- already stored. Wired by the dedup provenance work.
+    dedup_config           TEXT
+);
+
+-- Every comparison the dedup passes made, not only the ones that merged.
+--
+-- A surviving row can say "I was merged into X"; it cannot say "I was compared
+-- against X and judged different", and that is most of what a dedup model
+-- learns from. Measured on the live corpus: two merges against 1,629
+-- considered-and-rejected pairs.
+--
+-- Derived, in the raw/derived split: regenerable by recomputing the guards and
+-- the scores over retained records. What is *not* regenerable is the verdict
+-- under the thresholds in force at the time, which is why `run_id` is here.
+--
+-- No foreign key on `record_a`/`record_b`: they are polymorphic across
+-- `record_kind` (a candidate id for Pass 1, an event id for Pass 2) and SQLite
+-- cannot express that. So `check_references` cannot see this table — the one
+-- place in the schema where a dangling reference would not be reported.
+CREATE TABLE IF NOT EXISTS dedup_decisions (
+    pass_name          TEXT    NOT NULL,   -- fuzzy | semantic | reconcile
+    record_kind        TEXT    NOT NULL,   -- candidate | event
+    record_a           TEXT    NOT NULL,   -- the lexicographically smaller id
+    record_b           TEXT    NOT NULL,
+    score              REAL    NOT NULL,
+    verdict            TEXT    NOT NULL,   -- merged | distinct
+    stratum            TEXT    NOT NULL,   -- merged | near_miss | sampled
+    sample_denominator INTEGER NOT NULL,   -- 1 where the stratum was kept whole
+    content_hash_a     TEXT    NOT NULL,   -- of the text actually compared
+    content_hash_b     TEXT    NOT NULL,
+    run_id             TEXT    NOT NULL REFERENCES run_history(id),
+    updated_at         TEXT    NOT NULL,
+    PRIMARY KEY (pass_name, record_a, record_b)
 );
 
 CREATE TABLE IF NOT EXISTS feedback (

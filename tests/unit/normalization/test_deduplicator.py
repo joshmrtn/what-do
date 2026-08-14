@@ -362,3 +362,48 @@ class TestDecisionsAreReported:
 
         assert len(result.events) == 1
         assert set(result.events[0].source_event_candidates) == {"cand-a", "cand-b"}
+
+
+class TestTheComparedTextIsFingerprinted:
+    """`event_candidates` is written with INSERT OR REPLACE, so a re-fetched
+    listing overwrites the stored row in place (#27).
+
+    A person cleaning this data months from now would then be reading text that
+    is not what dedup compared, with nothing saying so. The hash does not
+    recover the original — it makes the substitution *detectable*.
+    """
+
+    @staticmethod
+    def _decisions(events, cfg=_DEFAULT_CFG):
+        return DeduplicationEngine().deduplicate(events, cfg).decisions
+
+    def test_each_side_records_a_hash_of_what_was_compared(self):
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Night", source_event_candidates=["cand-b"])
+
+        decision = self._decisions([a, b])[0]
+
+        assert decision.content_hash_a
+        assert decision.content_hash_a == decision.content_hash_b, "same text, same hash"
+
+    def test_different_text_fingerprints_differently(self):
+        a = _event(title="Jazz Night", source_event_candidates=["cand-a"])
+        b = _event(title="Jazz Nite", source_event_candidates=["cand-b"])
+
+        decision = self._decisions([a, b])[0]
+
+        assert decision.content_hash_a != decision.content_hash_b
+
+    def test_an_edited_listing_changes_the_fingerprint(self):
+        """The whole point: re-running after a source edits its listing must
+        produce a hash that no longer matches the stored decision."""
+        before = self._decisions([
+            _event(title="Jazz Night", description="Trio.", source_event_candidates=["cand-a"]),
+            _event(title="Jazz Night", source_event_candidates=["cand-b"]),
+        ])[0]
+        after = self._decisions([
+            _event(title="Jazz Night", description="Quartet.", source_event_candidates=["cand-a"]),
+            _event(title="Jazz Night", source_event_candidates=["cand-b"]),
+        ])[0]
+
+        assert before.content_hash_a != after.content_hash_a
