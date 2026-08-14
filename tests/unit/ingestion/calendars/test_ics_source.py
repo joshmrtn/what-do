@@ -416,11 +416,16 @@ class TestRecurringEvents:
         assert len(results) == 4
 
     def test_each_occurrence_lands_on_its_own_date(self, cache):
+        """Localised before the date is taken, and that is not a formality: a
+        candidate holds its instant in UTC, so an 8pm Eastern occurrence is
+        already the next day in UTC and `.date()` alone reports it a day late.
+        The same trap `_scope_filter` avoids, and the reason no production code
+        derives a date from a candidate."""
         starts = sorted(c.start_time for c in _weekly_source(cache).fetch())
 
         # The horizon runs from the start of tonight, so 30 days is 30 whole
         # nights: the 3 September occurrence is night 31.
-        assert [s.date().isoformat() for s in starts] == [
+        assert [s.astimezone(EASTERN).date().isoformat() for s in starts] == [
             "2026-08-06", "2026-08-13", "2026-08-20", "2026-08-27"
         ]
 
@@ -483,7 +488,10 @@ class TestRecurringEvents:
             "EXDATE;TZID=America/New_York:20260813T200000"
         )
 
-        dates = {c.start_time.date().isoformat() for c in _weekly_source(cache, body=with_exclusion).fetch()}
+        dates = {
+            c.start_time.astimezone(EASTERN).date().isoformat()
+            for c in _weekly_source(cache, body=with_exclusion).fetch()
+        }
 
         assert "2026-08-13" not in dates
         assert "2026-08-20" in dates

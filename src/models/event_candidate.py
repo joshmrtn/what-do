@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from src.models.tag import Tag
@@ -59,3 +59,32 @@ class EventCandidate:
         """A candidate nobody has stored yet was first seen when it was seen."""
         if self.last_seen_at is None:
             self.last_seen_at = self.discovered_at
+        self._canonicalise_instants()
+
+    def _canonicalise_instants(self) -> None:
+        """Hold every timestamp in UTC, whatever offset the publisher used.
+
+        A feed's choice of wire format is its own convention and stops at the
+        boundary, like every other source quirk. Google Calendar emits
+        `DTSTART:…Z` for some events and `DTSTART;TZID=…` for others in one
+        file, so the raw layer carried three offsets and `for_window` compared
+        them as text — and text order only matches chronological order when the
+        offset is fixed. UTC is the only representation where the two agree.
+
+        `Event` goes the other way, to the *local* zone, because that is where
+        local reasoning lives and `.date()` reads the zone rather than the text.
+
+        **A naive value is left exactly as it is, deliberately.** It carries no
+        instant to convert, and only the adapter knows which zone it meant, so
+        guessing here would misplace an event silently. Naivety is tolerated at
+        the raw layer by design — ingestion must not crash on it, which is the
+        failure that killed the first live fetch — and resolved one layer on by
+        `_normalize_timestamp`, which attaches the configured zone. See #30 for
+        the gap that leaves in `for_window`; no stored row has ever hit it.
+        """
+        for name in ("discovered_at", "last_seen_at", "start_time",
+                     "end_time", "raw_published_at"):
+            value: datetime | None = getattr(self, name)
+            if value is None or value.utcoffset() is None:
+                continue
+            setattr(self, name, value.astimezone(timezone.utc))

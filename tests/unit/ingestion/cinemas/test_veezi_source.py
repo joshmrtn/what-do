@@ -116,13 +116,19 @@ class TestMapping:
 
         assert candidate.url.endswith(f"purchase/38750?siteToken={TOKEN}")
 
-    def test_the_start_is_aware_in_the_cinemas_zone(self, cache):
-        """A naive wall clock would shift by hours the moment it was localised."""
+    def test_the_start_is_the_instant_of_7pm_in_the_cinemas_zone(self, cache):
+        """A naive wall clock would shift by hours the moment it was localised.
+
+        The offset it is *stored* under is a different question — the candidate
+        canonicalises to UTC, so equality is asserted against the instant the
+        cinema meant rather than against a representation.
+        """
         candidate = _make_source(cache).fetch()[0]
 
         assert candidate.start_time.tzinfo is not None
-        assert candidate.start_time.hour == 19
-        assert candidate.start_time.utcoffset() == timedelta(hours=-4)
+        assert candidate.start_time == datetime(
+            2026, 8, 7, 19, 0, tzinfo=timezone(timedelta(hours=-4))
+        )
 
     def test_source_and_source_type_come_from_config(self, cache):
         candidate = _make_source(cache, source_type="movies_veezi").fetch()[0]

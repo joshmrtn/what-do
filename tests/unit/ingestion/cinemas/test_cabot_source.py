@@ -148,13 +148,19 @@ class TestMapping:
 
         assert source.fetch()[0].description == "Music"
 
-    def test_the_start_is_aware_in_the_venues_zone(self, db):
+    def test_the_start_is_the_instant_of_8pm_in_the_venues_zone(self, db):
+        """The listing publishes a wall clock, so the adapter must place it in
+        the venue's zone — a naive value would shift by hours when localised
+        later. What it is *stored* as is a separate question: the candidate
+        canonicalises to UTC so stored timestamps compare as text."""
         source, _ = _make_source(db, {URL: _page(_item("1", 7), total=1)})
 
         candidate = source.fetch()[0]
 
-        assert candidate.start_time.hour == 20
-        assert candidate.start_time.utcoffset() == timedelta(hours=-4)
+        assert candidate.start_time.tzinfo is not None
+        assert candidate.start_time == datetime(
+            2026, 8, 7, 20, 0, tzinfo=timezone(timedelta(hours=-4))
+        )
 
     def test_no_candidate_claims_a_published_date(self, db):
         source, _ = _make_source(db, {URL: _page(_item("1", 7), total=1)})

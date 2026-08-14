@@ -122,12 +122,17 @@ class TestMapping:
 
         assert source.fetch()[0].id == "do617_gulu_gulu:/events/2026/8/7/eva-james"
 
-    def test_the_start_keeps_the_offset_the_source_stated(self, db):
+    def test_the_start_is_the_instant_the_source_stated(self, db):
+        """Do617 states an offset, so the instant is unambiguous. The candidate
+        holds it in UTC — one representation, because `for_window` compares
+        stored timestamps as text and text only sorts like time at a fixed
+        offset. Equality is instant equality, so the source's own form is the
+        honest way to write the expectation."""
         source, _ = _make_source(db, {URL: _page(_card("/events/2026/8/7/a", "2026-08-07T20:00-0400"))})
 
         start = source.fetch()[0].start_time
-        assert start.utcoffset() == timedelta(hours=-4)
         assert start == datetime(2026, 8, 7, 20, 0, tzinfo=timezone(timedelta(hours=-4)))
+        assert start.utcoffset() == timedelta(0)
 
     def test_timing_is_always_exact(self, db):
         """Unlike every other listing, Do617 states the hour and the offset."""
