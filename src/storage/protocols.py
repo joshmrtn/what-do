@@ -215,20 +215,42 @@ class CandidateRepository(Protocol):
         ...
 
     def for_window(
-        self, *, discovered_since: datetime, starting_after: datetime
+        self, *, seen_since: datetime, starting_after: datetime
     ) -> list[EventCandidate]:
         """Candidates still in scope for a run.
 
-        The window is a **union**, because either filter alone starves a source
-        type: social candidates carry no `start_time` at ingestion, so a
-        forward-only filter drops all of them, while a `discovered_at`-only
-        filter eventually drops calendar events that are still upcoming.
+        The window splits on what is **known** about a candidate rather than
+        combining two filters, because each arm answers the question the other
+        cannot:
+
+        - **Dated** — in scope while the event is still to come, however long
+          ago we found it. A sighting-only filter would drop calendar events
+          that are still upcoming.
+        - **Undated** — in scope while a source is still publishing it, because
+          that is the only evidence there is. A forward-only filter would drop
+          every social candidate, none of which carry a `start_time`.
+
+        A missing start is a gap in what we know, not evidence about when — the
+        same reading `_scope_filter` gives an undated event.
+
+        These used to be a *union*, which let recent discovery alone reload a
+        candidate whose event had finished: 649 of 2124 on 2026-08-14, each
+        costing normalization, dedup, enrichment and embedding every night (#26).
+
+        This asks *"is this record still live?"* — a currency question. It is
+        not `_scope_filter`, which asks *"is this worth ranking?"*. They share a
+        floor, because a finished event is both stale and unrankable, and
+        nothing else: a horizon is a product judgement about how far ahead we
+        care to look and says nothing about whether a record is current.
 
         Args:
-            discovered_since: Earliest `discovered_at` to accept, normally the
-                lookback cutoff.
-            starting_after: Earliest `start_time` to accept regardless of age,
-                normally the run's now.
+            seen_since: Earliest `last_seen_at` to accept for an **undated**
+                candidate, normally the lookback cutoff.
+            starting_after: Earliest `start_time` to accept for a **dated**
+                one, normally local midnight of the run date. Inclusive.
+
+        Both bounds may be given in any zone; an implementation compares them
+        against stored UTC instants, so the caller keeps working in local time.
 
         Returns:
             Matching candidates, ordered by discovery then id. The order is

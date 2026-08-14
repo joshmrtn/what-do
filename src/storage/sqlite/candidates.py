@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.models.event_candidate import EventCandidate
@@ -64,17 +64,27 @@ class SqliteCandidateRepository:
             conn.close()
 
     def for_window(
-        self, *, discovered_since: datetime, starting_after: datetime
+        self, *, seen_since: datetime, starting_after: datetime
     ) -> list[EventCandidate]:
-        """Candidates still in scope for a run, newest discovery last."""
+        """Candidates still in scope for a run, newest discovery last.
+
+        Both bounds are canonicalised to UTC before the comparison. Stored
+        timestamps are UTC and SQLite compares them as **text**, so a bound in
+        any other zone compares a wall clock against an instant: measured on
+        the live data, a local-form floor disagreed with the truth on 15
+        candidates and a UTC-form floor on none.
+        """
         conn = connect(self._db_path)
         try:
             rows = conn.execute(
                 f"""SELECT {CANDIDATE_COLUMNS} FROM event_candidates
-                    WHERE discovered_at >= ?
-                       OR (start_time IS NOT NULL AND start_time >= ?)
+                    WHERE (start_time IS NOT NULL AND start_time >= ?)
+                       OR (start_time IS NULL AND last_seen_at >= ?)
                     ORDER BY discovered_at, id""",
-                (discovered_since.isoformat(), starting_after.isoformat()),
+                (
+                    starting_after.astimezone(timezone.utc).isoformat(),
+                    seen_since.astimezone(timezone.utc).isoformat(),
+                ),
             ).fetchall()
         finally:
             conn.close()

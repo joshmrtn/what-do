@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.models.event_candidate import EventCandidate
 
@@ -28,13 +28,24 @@ class InMemoryCandidateRepository:
             self._by_id[candidate.id] = candidate
 
     def for_window(
-        self, *, discovered_since: datetime, starting_after: datetime
+        self, *, seen_since: datetime, starting_after: datetime
     ) -> list[EventCandidate]:
-        """Candidates still in scope for a run, ordered by discovery then id."""
+        """Candidates still in scope for a run, ordered by discovery then id.
+
+        Split on what is known: a dated candidate while its event is still to
+        come, an undated one while a source is still publishing it. Comparing
+        aware datetimes, so the bounds' own zones do not matter here — they are
+        canonicalised anyway, to keep this answering exactly what SQLite does.
+        """
+        after = starting_after.astimezone(timezone.utc)
+        seen = seen_since.astimezone(timezone.utc)
         matching = [
             candidate
             for candidate in self._by_id.values()
-            if candidate.discovered_at >= discovered_since
-            or (candidate.start_time is not None and candidate.start_time >= starting_after)
+            if (candidate.start_time is not None and candidate.start_time >= after)
+            or (
+                candidate.start_time is None
+                and (candidate.last_seen_at or candidate.discovered_at) >= seen
+            )
         ]
         return sorted(matching, key=lambda c: (c.discovered_at, c.id))

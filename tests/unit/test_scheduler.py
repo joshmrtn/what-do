@@ -177,10 +177,15 @@ class _StageSpy:
         self.error = error
         self.runs = 0
         self.save_fn = None
+        self.scope_fn = None
 
     def set_save_fn(self, save_fn):
         self.save_fn = save_fn
         self._inner.set_save_fn(save_fn)
+
+    def set_scope_fn(self, scope_fn):
+        self.scope_fn = scope_fn
+        self._inner.set_scope_fn(scope_fn)
 
     def process(self, events):
         self.runs += 1
@@ -1037,6 +1042,54 @@ def test_a_stored_event_that_has_already_happened_is_not_deleted(db):
     assert "past" in {e.event_id for e in load_events(db)}
 
 
+def test_an_event_whose_last_candidate_aged_out_keeps_its_row(db):
+    """The persistence consequence of #26, and the reason it was not folded into
+    the extraction-scope fix.
+
+    Narrowing the window changes *what reconcile sees*: a stored event whose only
+    candidate stops being reloaded is claimed by no fresh event, so it falls to
+    `_carry_forward`, which keeps it only if it is still rankable. This one is
+    not — so it leaves the working set. It must not leave the database with it.
+    `replace` is given an empty stale list and `write_events` is INSERT OR
+    REPLACE, so a row simply absent from the batch is left untouched on disk.
+    """
+    aged_out = _candidate("c1", title="Long over", start_time=NOW - timedelta(days=9))
+    save_events([_event("e1", ["c1"], start_time=NOW - timedelta(days=9))], db)
+
+    result, _, _, _ = _run(db, candidates=[], stored_candidates=[aged_out])
+
+    assert result.stage_counts["candidates"] == 0
+    assert "e1" in {e.event_id for e in load_events(db)}
+
+
+def test_an_event_whose_last_candidate_aged_out_leaves_the_working_set(db):
+    """The saving the whole change exists for: 649 candidates on 2026-08-14, each
+    costing normalization, dedup, enrichment and embedding every night."""
+    aged_out = _candidate("c1", title="Long over", start_time=NOW - timedelta(days=9))
+    save_events([_event("e1", ["c1"], start_time=NOW - timedelta(days=9))], db)
+
+    result, fakes, _, _ = _run(db, candidates=[], stored_candidates=[aged_out])
+
+    assert result.stage_counts["events"] == 0
+    assert fakes["enrichment_service"].titles[0] == []
+
+
+def test_an_upcoming_event_whose_candidate_is_reloaded_is_still_claimed(db):
+    """The other half. Narrowing the window must not stop a live event adopting
+    the identity and enrichment its stored row already carries — that would mint
+    a new event nightly for the same listing."""
+    live = _candidate("c1", title="Still to come", start_time=NOW + timedelta(days=2))
+    save_events(
+        [_event("e1", ["c1"], title="Still to come", start_time=NOW + timedelta(days=2))],
+        db,
+    )
+
+    result, _, _, _ = _run(db, candidates=[], stored_candidates=[live])
+
+    assert result.stage_counts["events"] == 1
+    assert {e.event_id for e in load_events(db)} == {"e1"}
+
+
 def test_a_stored_event_beyond_the_horizon_is_not_carried(db):
     """The carry-forward scope matches the ranking scope, so nothing is enriched in vain."""
     save_events([_event("far", ["c99"], title="Far", start_time=NOW + timedelta(days=400))], db)
@@ -1434,16 +1487,76 @@ def test_the_run_reports_events_the_budget_deferred(db):
 # ----------------------------------------------------------------------
 
 
-def test_an_event_ranking_will_discard_never_reaches_the_model(db):
-    """Fed as a fresh candidate, which is how this happens in production.
+def test_the_scope_the_batch_hands_extraction_is_the_ranking_scope(db):
+    """The wiring, asserted directly, because #26 removed the live path that
+    used to demonstrate it end to end.
 
-    `_carry_forward` scopes the stored side only, and `for_window` reloads every
-    candidate discovered inside the lookback whether or not its event is over —
-    so a past event re-enters through the fresh door each night and the ranking
-    scope never sees it. Measured 2026-08-14: an entire 480-minute budget spent
-    on events that were already over.
+    Handing the stage *some* predicate is not the claim — handing it the one
+    ranking uses is. A predicate that disagreed with ranking would either buy
+    extractions ranking discards or skip events ranking wanted.
     """
-    over = _candidate("c1", title="Over", start_time=NOW - timedelta(days=2))
+    stage = _StageSpy(
+        ExtractionStage(_ExtractionModel(), None, get_logger("s", stream=io.StringIO()),
+                        get_now=lambda: NOW)
+    )
+
+    _run(db, deps={"extraction_stage": stage})
+
+    over = _event("e1", [], title="Over", start_time=NOW - timedelta(days=2))
+    soon = _event("e2", [], title="Soon", start_time=NOW + timedelta(hours=3))
+    beyond = _event("e3", [], title="Beyond", start_time=NOW + timedelta(days=3650))
+
+    assert stage.scope_fn is not None
+    assert stage.scope_fn(over) is False
+    assert stage.scope_fn(soon) is True
+    assert stage.scope_fn(beyond) is False
+
+
+def test_the_window_floor_is_the_run_date_not_the_moment_the_batch_runs(db):
+    """The batch runs at 02:00, and events that started at 00:30 that same night
+    are still what the run is for.
+
+    `_scope_filter` keeps an event whose *local date* is the run date, so a
+    window bounded by the batch's own clock would drop candidates ranking still
+    wants — a disagreement of up to a day between two filters over one field.
+    Sharing `_scope_floor` is what stops that, and this is the case that tells
+    the two bounds apart: 02:00 local on the run date is behind `now` and ahead
+    of the floor.
+    """
+    early = _candidate(
+        "c1",
+        title="Small hours",
+        # 06:00 UTC = 02:00 in America/New_York on the run date, six hours
+        # before the harness clock and two hours after local midnight.
+        start_time=NOW - timedelta(hours=6),
+    )
+
+    result, fakes, _, _ = _run(db, candidates=[early])
+
+    assert result.stage_counts["candidates"] == 1
+    assert fakes["extraction_model"].calls == ["Small hours"]
+
+
+def test_an_event_ranking_will_discard_never_reaches_the_model(db):
+    """A run already under way: began before tonight, ends after it.
+
+    This is the live path, and picking it is the whole point. Ingestion keeps
+    such a candidate deliberately — `_within_event_window` tests `end_time`, so
+    "a run still under way is not discarded for having begun before tonight" —
+    and it therefore arrives on the *fresh* side, which `_carry_forward` never
+    scopes. Ranking then discards it on `start_time`.
+
+    A plainly-past candidate would no longer prove anything here: since #26 the
+    window drops it on reload, so the assertion would hold with the scope check
+    deleted. Measured 2026-08-14, before either fix: an entire 480-minute budget
+    spent on events that were already over.
+    """
+    over = _candidate(
+        "c1",
+        title="Under way",
+        start_time=NOW - timedelta(days=2),
+        end_time=NOW + timedelta(days=1),
+    )
 
     _, fakes, _, _ = _run(db, candidates=[over])
 
@@ -1473,11 +1586,25 @@ def test_the_run_reports_what_extraction_skipped_as_out_of_scope(db):
     """Without it the fix is invisible: a run that silently skips 124 events
     looks exactly like one with a smaller backlog. It is also the pair that
     separates "the budget is too small" from "the budget is being spent on the
-    past" — the confusion that hid two wasted nights."""
-    over = _candidate("c1", title="Over", start_time=NOW - timedelta(days=2))
+    past" — the confusion that hid two wasted nights.
+
+    Driven as a **dry run**, which is now the only ordinary way an out-of-scope
+    event reaches the stage: `fetched` is carried in memory only when nothing
+    was persisted, so it is the one path that bypasses `for_window`. On a
+    normal run #26 gets there first and this count is structurally zero — the
+    check is defence in depth at the seam that sees every event whichever door
+    it came in by, not a live filter. Its behaviour is pinned in
+    `tests/unit/processing/test_extraction_stage.py`.
+    """
+    over = _candidate(
+        "c1",
+        title="Under way",
+        start_time=NOW - timedelta(days=2),
+        end_time=NOW + timedelta(days=1),
+    )
     soon = _candidate("c2", title="Soon")
 
-    result, _, _, _ = _run(db, candidates=[over, soon])
+    result, _, _, _ = _run(db, candidates=[over, soon], dry_run=True)
 
     assert result.stage_counts["extraction_out_of_scope"] == 1
 

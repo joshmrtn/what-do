@@ -65,7 +65,7 @@ def _candidate(candidate_id: str, **overrides) -> EventCandidate:
 
 def _load(db_path):
     return SqliteCandidateRepository(db_path).for_window(
-        discovered_since=LOOKBACK, starting_after=NOW
+        seen_since=LOOKBACK, starting_after=NOW
     )
 
 

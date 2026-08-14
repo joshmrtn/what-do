@@ -17,7 +17,7 @@ import json
 import sys
 import zoneinfo
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
@@ -287,8 +287,12 @@ def run_batch(
     candidates = _stage(
         "load_candidates",
         lambda: candidates_repo.for_window(
-            discovered_since=now - timedelta(days=config.scraping.lookback_days),
-            starting_after=now,
+            seen_since=now - timedelta(days=config.scraping.lookback_days),
+            # The same floor ranking uses, so a candidate cannot be reloaded
+            # into a batch that will discard the event it becomes. Not `now`:
+            # ranking keeps an event that started at 00:30 on the run date, and
+            # a 02:00 batch comparing against its own clock would drop it.
+            starting_after=_scope_floor(config, run_date),
         ),
         default=[],
     )
@@ -488,6 +492,26 @@ def _scoring_provenance(config: AppConfig) -> str:
     return json.dumps(asdict(config.scoring), sort_keys=True, default=str)
 
 
+def _scope_floor(config: AppConfig, run_date: date) -> datetime:
+    """The instant before which an event is over: local midnight of the run date.
+
+    Shared by `_scope_filter` and the candidate window, and shared **only** here.
+    The two ask different questions — one *"is this worth ranking?"*, the other
+    *"is this record still live?"* — but a finished event is both unrankable and
+    stale, so this one fact answers both, and writing it twice is how the two
+    drift apart.
+
+    Their *ceilings* are deliberately not shared: a horizon expresses how far
+    ahead we care to look, which says nothing about whether a record is current,
+    and `for_window` is the only path a stored candidate has back into a batch.
+
+    Local, not UTC: an event at 11pm local is tomorrow in UTC, and a floor
+    derived from that would drop exactly the evening events we rank.
+    """
+    tz = zoneinfo.ZoneInfo(config.location.timezone)
+    return datetime.combine(run_date, time.min, tzinfo=tz)
+
+
 def _scope_filter(
     config: AppConfig, run_date: date, now: datetime
 ) -> Callable[[Event], bool]:
@@ -501,14 +525,16 @@ def _scope_filter(
     horizon = run_date + timedelta(days=config.scraping.horizon_days)
     lookback_cutoff = now - timedelta(days=config.scraping.lookback_days)
     tz = zoneinfo.ZoneInfo(config.location.timezone)
+    floor = _scope_floor(config, run_date)
 
     def in_scope(event: Event) -> bool:
         if event.start_time is None:
             return event.created_at >= lookback_cutoff
+        if event.start_time < floor:
+            return False
         # Local date, not UTC: an event at 11pm local is tomorrow in UTC, and
         # filtering on that would misfile exactly the evening events we rank.
-        start = event.start_time.astimezone(tz).date()
-        return run_date <= start <= horizon
+        return event.start_time.astimezone(tz).date() <= horizon
 
     return in_scope
 

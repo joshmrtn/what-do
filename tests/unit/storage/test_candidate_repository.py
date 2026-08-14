@@ -48,7 +48,7 @@ def _candidate(candidate_id: str = "c1", **kwargs) -> EventCandidate:
 
 
 def _in_window(repo) -> list[EventCandidate]:
-    return repo.for_window(discovered_since=_LOOKBACK, starting_after=_NOW)
+    return repo.for_window(seen_since=_LOOKBACK, starting_after=_NOW)
 
 
 class TestRoundTrip:
@@ -94,7 +94,7 @@ class TestRoundTrip:
         """
         repo.save([_candidate(start_time=_NOW + timedelta(days=1))])
 
-        loaded = repo.for_window(discovered_since=_LOOKBACK, starting_after=_NOW)[0]
+        loaded = repo.for_window(seen_since=_LOOKBACK, starting_after=_NOW)[0]
         assert loaded.discovered_at.tzinfo is not None
         assert loaded.start_time is not None and loaded.start_time.tzinfo is not None
 
@@ -176,53 +176,97 @@ class TestReplacement:
 
 
 class TestWindow:
-    """The window is a union, because either filter alone starves a source."""
+    """The window splits on what is *known* about a candidate.
 
-    def test_a_recently_discovered_candidate_with_no_start_is_kept(self, repo):
-        """Social candidates carry no start_time, so a forward-only filter drops them."""
-        repo.save([_candidate(start_time=None)])
+    A dated candidate is in scope while its event is still to come, however long
+    ago we found it. An undated one is in scope while we are still seeing it
+    published, because that is the only evidence there is. A missing start is a
+    gap in what we know, not evidence about when — the same reading
+    `_scope_filter` gives an undated event.
+
+    The arms were previously a union, which let recent *discovery* alone reload a
+    candidate whose event finished a week ago: 649 of 2124 on 2026-08-14, each
+    one costing normalization, dedup, enrichment and embedding every night (#26).
+    """
+
+    def test_an_upcoming_candidate_is_kept(self, repo):
+        repo.save([_candidate(start_time=_NOW + timedelta(days=2))])
 
         assert len(_in_window(repo)) == 1
 
-    def test_an_upcoming_candidate_discovered_long_ago_is_kept(self, repo):
-        """A discovery-only filter eventually drops events that are still upcoming."""
+    def test_a_candidate_whose_event_is_over_is_dropped_however_recently_seen(self, repo):
+        """The whole of #26. Recent sighting says the listing is current; it says
+        nothing about whether the event has already happened."""
+        repo.save(
+            [_candidate(discovered_at=_NOW, last_seen_at=_NOW,
+                        start_time=_NOW - timedelta(hours=6))]
+        )
+
+        assert _in_window(repo) == []
+
+    def test_an_upcoming_candidate_first_seen_before_the_lookback_is_kept(self, repo):
+        """Guards against making recent sighting a *requirement*, which is the
+        obvious fix and the wrong one: it drops calendar events that are still
+        to come simply because we found them a while back."""
         repo.save(
             [_candidate(discovered_at=_NOW - timedelta(days=90),
+                        last_seen_at=_NOW - timedelta(days=90),
                         start_time=_NOW + timedelta(days=5))]
         )
 
         assert len(_in_window(repo)) == 1
 
-    def test_an_old_candidate_with_no_start_is_dropped(self, repo):
+    def test_a_candidate_starting_exactly_at_the_bound_is_kept(self, repo):
+        """Inclusive: an event beginning this instant has not happened yet."""
+        repo.save([_candidate(discovered_at=_NOW - timedelta(days=45), start_time=_NOW)])
+
+        assert len(_in_window(repo)) == 1
+
+    def test_an_undated_candidate_seen_recently_is_kept(self, repo):
+        """Social candidates carry no start_time, so a forward-only filter would
+        drop every one of them."""
+        repo.save([_candidate(start_time=None)])
+
+        assert len(_in_window(repo)) == 1
+
+    def test_an_undated_candidate_not_seen_lately_is_dropped(self, repo):
         """The undated arm expires; otherwise every social post lives forever."""
-        repo.save([_candidate(discovered_at=_NOW - timedelta(days=45), start_time=None)])
+        repo.save(
+            [_candidate(discovered_at=_NOW - timedelta(days=45),
+                        last_seen_at=_NOW - timedelta(days=45), start_time=None)]
+        )
 
         assert _in_window(repo) == []
 
-    def test_a_recently_discovered_candidate_that_has_passed_is_kept(self, repo):
-        """Either arm alone qualifies it — the window is a union, not a pair."""
-        repo.save(
-            [_candidate(discovered_at=_NOW - timedelta(days=1),
-                        start_time=_NOW - timedelta(hours=6))]
-        )
-
-        assert len(_in_window(repo)) == 1
-
-    def test_a_candidate_starting_exactly_now_is_kept(self, repo):
-        """The boundary is inclusive: an event beginning this instant is on."""
-        repo.save(
-            [_candidate(discovered_at=_NOW - timedelta(days=45), start_time=_NOW)]
-        )
-
-        assert len(_in_window(repo)) == 1
-
-    def test_an_old_candidate_that_has_already_happened_is_dropped(self, repo):
+    def test_an_undated_candidate_still_being_published_is_kept(self, repo):
+        """Reads `last_seen_at`, not `discovered_at` — a distinction that did not
+        exist until the raw layer stopped restamping one field for both (#27).
+        A listing a source is still publishing is current however long ago we
+        first met it, and first-seen would have expired this one."""
         repo.save(
             [_candidate(discovered_at=_NOW - timedelta(days=90),
-                        start_time=_NOW - timedelta(days=60))]
+                        last_seen_at=_NOW - timedelta(days=1), start_time=None)]
         )
 
-        assert _in_window(repo) == []
+        assert len(_in_window(repo)) == 1
+
+    def test_the_bound_may_be_given_in_any_zone(self, repo):
+        """Both sides of the comparison must share an offset, and only one of
+        them lives in the database. Measured on the live data: the same instant
+        passed as a local-zone bound disagreed with the truth on 15 candidates,
+        and as a UTC bound on none. The caller works in local time — the floor is
+        local midnight — so canonicalising the bound is the repository's job.
+        """
+        eastern = timezone(timedelta(hours=-4))
+        repo.save([_candidate(start_time=_NOW + timedelta(hours=1))])
+
+        as_utc = repo.for_window(seen_since=_LOOKBACK, starting_after=_NOW)
+        as_local = repo.for_window(
+            seen_since=_LOOKBACK.astimezone(eastern),
+            starting_after=_NOW.astimezone(eastern),
+        )
+
+        assert [c.id for c in as_local] == [c.id for c in as_utc] == ["c1"]
 
     def test_results_are_ordered_by_discovery_then_id(self, repo):
         """Dedup picks a merge base partly on the order it sees, so it is fixed."""
