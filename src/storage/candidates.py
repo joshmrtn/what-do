@@ -10,6 +10,7 @@ Reading and writing themselves live in `storage/sqlite/candidates.py`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from datetime import datetime
@@ -26,6 +27,57 @@ CANDIDATE_COLUMNS = (
     "description, venue, location, start_time, end_time, discovered_at, "
     "timing, summary, tags, metadata, last_seen_at"
 )
+
+
+#: What a *source* published, as against what we recorded about seeing it.
+#: `discovered_at` and `last_seen_at` are deliberately absent: they move on every
+#: fetch, so including them would make each re-fetch look like an edit and the
+#: version history would grow by the whole corpus nightly instead of by the
+#: measured 2.26% that actually changes.
+PUBLISHED_FIELDS = (
+    "url",
+    "image_url",
+    "raw_published_at",
+    "title",
+    "description",
+    "venue",
+    "location",
+    "start_time",
+    "end_time",
+    "timing",
+    "summary",
+    "tags",
+)
+
+
+def published_payload(candidate: EventCandidate) -> dict[str, Any]:
+    """The candidate's published content, JSON-ready.
+
+    One list feeds both this and `content_fingerprint`, so a field added to
+    `EventCandidate` cannot end up hashed but unrecorded, or recorded but
+    unhashed — either of which makes an edit invisible.
+    """
+    payload: dict[str, Any] = {}
+    for name in PUBLISHED_FIELDS:
+        value = getattr(candidate, name)
+        if isinstance(value, datetime):
+            payload[name] = value.isoformat()
+        elif name == "tags":
+            payload[name] = [{"tag": t.text, "weight": t.weight} for t in value]
+        else:
+            payload[name] = value
+    return payload
+
+
+def content_fingerprint(payload: dict[str, Any]) -> str:
+    """Stable digest of a published payload.
+
+    `sort_keys` so the digest does not depend on dict ordering, which would make
+    an identical listing look edited on a Python upgrade.
+    """
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def row_to_candidate(row: tuple[Any, ...]) -> EventCandidate:

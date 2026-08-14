@@ -125,7 +125,6 @@ CREATE TABLE IF NOT EXISTS event_candidates (
     start_time       TEXT,
     end_time         TEXT,
     discovered_at    TEXT NOT NULL,
-    raw_data         TEXT,
     -- How much is known about *when*. Missing until 2026-08-11, which is why
     -- every ICS `all_day` was reloaded as `exact`: the candidate round trip
     -- dropped it, and the batch prefers the loaded copy.
@@ -144,6 +143,32 @@ CREATE TABLE IF NOT EXISTS event_candidates (
     -- default the live one lacks is exactly the drift the schema check exists to
     -- catch. The writer always supplies it and the reader raises on NULL.
     last_seen_at     TEXT
+);
+
+-- What a source published, retained when it publishes something else.
+--
+-- `event_candidates` holds one row per listing and is overwritten by each
+-- re-fetch; without this, an edited listing silently destroys the text we
+-- ingested, deduped and extracted against, and a stored dedup decision can no
+-- longer be checked against what was really published (#27).
+--
+-- The content hash is half the primary key, which is what makes an unchanged
+-- re-fetch an INSERT OR IGNORE no-op: no read, no comparison, and no way for a
+-- caller to forget to do one. Rows therefore accrue only for real edits —
+-- measured at 2.26% of candidates per re-fetch.
+--
+-- `payload` is JSON rather than columns so that adding a field to
+-- `EventCandidate` cannot leave the history behind: `PUBLISHED_FIELDS` builds
+-- the payload and the fingerprint together.
+CREATE TABLE IF NOT EXISTS candidate_versions (
+    candidate_id TEXT NOT NULL REFERENCES event_candidates(id),
+    content_hash TEXT NOT NULL,
+    -- When this content was FIRST seen. `event_candidates.last_seen_at` already
+    -- answers "are we still seeing it"; a version that moved its own stamp
+    -- could not say when the text actually changed.
+    observed_at  TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    PRIMARY KEY (candidate_id, content_hash)
 );
 
 CREATE TABLE IF NOT EXISTS weather_cache (

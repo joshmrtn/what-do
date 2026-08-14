@@ -175,6 +175,103 @@ class TestReplacement:
         assert by_id == {"keep": "Karaoke", "change": "changed"}
 
 
+class TestVersions:
+    """What a source published, retained when it publishes something else.
+
+    The raw layer is on the raw side of the schema split because it "cannot be
+    regenerated" — but it could be *overwritten*, which is the same loss by
+    another route. A merge decision keys back to candidates so a person can read
+    the listings and confirm it was right; if the listing has since changed,
+    that verification is silently against different text (#27).
+
+    Appending is a no-op when nothing changed, so the cost tracks real edits:
+    measured 2.26% of candidates per re-fetch, of which the genuine content
+    churn was 15 titles and one description in 2124.
+    """
+
+    def test_saving_a_candidate_records_what_it_published(self, repo):
+        repo.save([_candidate(title="Trivia", description="Doors at seven.")])
+
+        versions = repo.versions_for("c1")
+
+        assert len(versions) == 1
+        assert versions[0].payload["title"] == "Trivia"
+        assert versions[0].payload["description"] == "Doors at seven."
+
+    def test_republishing_the_same_content_records_nothing_new(self, repo):
+        """The common case by far, and it must stay free — otherwise the table
+        grows by the whole corpus every night rather than by what changed."""
+        repo.save([_candidate(title="Trivia")])
+        repo.save([_candidate(title="Trivia")])
+
+        assert len(repo.versions_for("c1")) == 1
+
+    def test_an_edited_listing_keeps_both_versions(self, repo):
+        """The whole point: what it said when we ingested, deduped and extracted
+        against it survives the edit."""
+        repo.save([_candidate(title="Trivia")])
+        repo.save([_candidate(title="Trivia w/ Lee Wolf")])
+
+        titles = {v.payload["title"] for v in repo.versions_for("c1")}
+
+        assert titles == {"Trivia", "Trivia w/ Lee Wolf"}
+
+    def test_the_current_row_still_holds_only_the_latest(self, repo):
+        """Versions are history, not a second source of truth. Everything
+        downstream keeps reading one row per candidate."""
+        repo.save([_candidate(title="Trivia")])
+        repo.save([_candidate(title="Trivia w/ Lee Wolf")])
+
+        current = _in_window(repo)
+
+        assert len(current) == 1
+        assert current[0].title == "Trivia w/ Lee Wolf"
+
+    def test_a_version_records_when_that_content_was_first_seen(self, repo):
+        """First seen, not last: `last_seen_at` on the candidate already answers
+        "are we still seeing this", and a version that moved its own timestamp
+        could not say when the text actually changed."""
+        later = _NOW + timedelta(days=3)
+        repo.save([_candidate(title="Trivia", discovered_at=_NOW)])
+        repo.save([_candidate(title="Trivia", discovered_at=later)])
+
+        assert repo.versions_for("c1")[0].observed_at == _NOW
+
+    def test_an_edit_is_stamped_when_it_appeared(self, repo):
+        later = _NOW + timedelta(days=3)
+        repo.save([_candidate(title="Trivia", discovered_at=_NOW)])
+        repo.save([_candidate(title="Changed", discovered_at=later)])
+
+        by_title = {v.payload["title"]: v.observed_at for v in repo.versions_for("c1")}
+
+        assert by_title == {"Trivia": _NOW, "Changed": later}
+
+    def test_versions_do_not_leak_between_candidates(self, repo):
+        repo.save([_candidate("a", title="One"), _candidate("b", title="Two")])
+
+        assert [v.payload["title"] for v in repo.versions_for("a")] == ["One"]
+
+    def test_a_candidate_with_no_versions_reads_back_empty(self, repo):
+        assert repo.versions_for("never-seen") == []
+
+    def test_a_change_to_any_published_field_is_a_new_version(self, repo):
+        """Anchored on a field that is neither the title nor the description, so
+        the fingerprint cannot quietly cover only the obvious two."""
+        repo.save([_candidate(venue="The James")])
+        repo.save([_candidate(venue="The Rhumb Line")])
+
+        assert len(repo.versions_for("c1")) == 2
+
+    def test_being_seen_again_is_not_a_change(self, repo):
+        """`last_seen_at` moves on every sighting, so including it in the
+        fingerprint would make every re-fetch look like an edit — the table
+        would then grow by the entire corpus nightly."""
+        repo.save([_candidate(discovered_at=_NOW)])
+        repo.save([_candidate(discovered_at=_NOW + timedelta(days=1))])
+
+        assert len(repo.versions_for("c1")) == 1
+
+
 class TestWindow:
     """The window splits on what is *known* about a candidate.
 

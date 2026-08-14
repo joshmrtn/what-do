@@ -571,6 +571,10 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
     fakes["embedding_model"] = embedding_model
     stages = {k: v for k, v in fakes.items() if not k.endswith("_model")}
 
+    # A test that needs to inspect the store afterwards supplies its own, so it
+    # holds the same object the batch reads through.
+    candidates_repo = kwargs.pop("candidate_repository", None) or _seeded_candidates(stored)
+
     save_spy = _SpyRepository(
         SqliteEventRepository(db),
         on_save=kwargs.pop("on_save", None),
@@ -584,7 +588,7 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
         logger=get_logger("batch_test", stream=io.StringIO()),
         get_now=lambda: NOW,
         run_date=RUN_DATE,
-        candidate_repository=_seeded_candidates(stored),
+        candidate_repository=candidates_repo,
         run_repository=SqliteRunRepository(db),
         event_repository=save_spy,
         score_repository=InMemoryScoreRepository(),
@@ -1040,6 +1044,37 @@ def test_a_stored_event_that_has_already_happened_is_not_deleted(db):
     _run(db)
 
     assert "past" in {e.event_id for e in load_events(db)}
+
+
+def test_an_edited_listing_keeps_its_history_and_still_makes_one_event(db):
+    """The two halves of #27 that only meet in a whole run.
+
+    Retaining what a source published must not fork the pipeline: the candidate
+    id is unchanged by an edit, so reconcile still matches the listing onto the
+    event it already produced, and the event count does not move. History
+    accumulates beside the row, not in place of it.
+    """
+    first = _candidate("c1", title="Trivia", start_time=NOW + timedelta(days=2))
+    # Seen a day later, which is when an edit is actually noticed — and what
+    # orders the history. Two contents observed at the same instant would be a
+    # tie the store has no honest way to break.
+    edited = _candidate(
+        "c1",
+        title="Trivia w/ Lee Wolf",
+        start_time=NOW + timedelta(days=2),
+        discovered_at=NOW + timedelta(days=1),
+    )
+
+    repo = _seeded_candidates([first])
+    repo.save([edited])
+
+    result, _, _, _ = _run(db, candidates=[edited], deps={}, candidate_repository=repo)
+
+    assert result.stage_counts["events"] == 1
+    assert [v.payload["title"] for v in repo.versions_for("c1")] == [
+        "Trivia",
+        "Trivia w/ Lee Wolf",
+    ]
 
 
 def test_an_event_whose_last_candidate_aged_out_keeps_its_row(db):

@@ -58,6 +58,19 @@ matching `source_type`. Lines before the first header are `[general]`.
 **Set operations vs per-event.** Dedup passes need all events in memory. Everything else
 (normalization, enrichment, LLM, embedding, similarity, scoring) is per-event and can stream.
 
+**Two timestamp conventions, one boundary.** The **raw layer stores instants**:
+`EventCandidate` canonicalises every timestamp to UTC in `__post_init__`, because stored
+candidates are compared as *text* by `for_window` and text order only matches chronological
+order at a fixed offset. The **domain layer stores local time**: `_normalize_timestamp` puts
+`Event` in the configured zone, because that is where `.date()` and `strftime` are called and
+they read the zone rather than the text. `_normalize_timestamp` is the boundary. Neither
+convention is optional — an `Event` in UTC misfiles every evening event by a day, and a
+candidate in local time reintroduces the mixed-offset comparison.
+
+**A naive timestamp is tolerated at the raw layer and resolved at normalization.** Ingestion
+must never crash on one — that is what killed the first live fetch — and only the adapter
+knows which zone it meant, so `EventCandidate` leaves it exactly as it is. See #30.
+
 ---
 
 ## Scoring formula
@@ -304,6 +317,10 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | A recording double that pins a signature | `_DedupSpy.deduplicate(self, events, config)` broke the moment the real method grew a `now`. A spy exists to record and forward; the instant it declares the shape of what it forwards, it has started reimplementing. Use `**kwargs`, or `__getattr__`, as `_StageSpy` does |
 | Reasoning from the shapes the code already has | "Losers are destroyed, so provenance goes on the survivor, so Pass 1 can never be explained" — every step true, conclusion wrong, because the premise was the thing to change. Ask what this would look like with no existing code, then decide what to keep. It turned a lossy row-shaped design into `dedup_decisions`, which can record the label a row *cannot*: "compared, and judged different" |
 | Assuming O(n²) means unaffordable | The dedup guards cut 1.39M possible pairs to **1,784 actually scored**. The expensive-looking thing was already cheap and nobody had measured it. Measure the population before designing around its size |
+| Comparing ISO timestamp strings across mixed offsets | Meaningless, and it looks fine. Google Calendar's `basic.ics` emits `DTSTART:…Z` for some events and `DTSTART;TZID=…` for others **in one file**, so `event_candidates` held three offsets and `for_window`'s text comparison wrongly kept events that were already over. **Both sides must share the offset** — canonicalise the *bound* too, or a local-form floor disagrees with the truth (measured: 15 candidates) against a table that is entirely UTC |
+| Assuming a row absent from a query's result is gone | A retrieval filter is not a delete. There is no `DELETE` against `event_candidates` anywhere in `src/`, so a narrower bound is reversible: widen it and the row is reloaded, re-derived, and rematched onto its event by candidate id. Reasoning about "eviction" from a layer that is never destroyed nearly justified the right decision for an invented reason |
+| Making two filters over one field "agree" | Name the question each asks first. `_scope_filter` asks *is this worth ranking* (product); `for_window` asks *is this record still live* (currency). They share a **floor**, because a finished event is both — and must not share a **ceiling**, because a horizon says nothing about staleness. Sharing the whole predicate bakes the confusion in |
+| A shared bound that no test distinguishes from the obvious alternative | `_scope_floor` versus `now` differ only for events between local midnight and the batch's 02:00 start — so every test passed with the floor reverted. The one decision deliberately made was the one nothing checked. Write the case that separates them, then mutate to prove it |
 | Attributing an LLM transcript prompt to one event | A recurring series produces **byte-identical `extraction_input` across dates** — the same title, venue and category on every occurrence. Two events matched one prompt and a whole diagnosis was built on the wrong one. Key on the stored hash, never on prompt text |
 
 ---

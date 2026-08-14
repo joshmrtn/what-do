@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from src.models.candidate_entity import CandidateEntity
 from src.models.event import Event
+from src.models.candidate_version import CandidateVersion
 from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
@@ -211,6 +212,23 @@ class CandidateRepository(Protocol):
         Args:
             candidates: Candidates to store. Empty is a no-op — "nothing to
                 save" is never "clear the store".
+        """
+        ...
+
+    def versions_for(self, candidate_id: str) -> list[CandidateVersion]:
+        """Every distinct content this candidate has published, oldest first.
+
+        `save` appends automatically, and an unchanged republication appends
+        nothing. It is not a separate call, because a retention step a caller
+        can omit is how the raw layer came to overwrite itself in the first
+        place (#27).
+
+        Args:
+            candidate_id: The candidate whose history is wanted.
+
+        Returns:
+            One entry per distinct published content, each stamped with when
+            that content was **first** seen. Empty for an unknown candidate.
         """
         ...
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from src.models.candidate_version import CandidateVersion
 from src.models.event_candidate import EventCandidate
+from src.storage.candidates import content_fingerprint, published_payload
 
 
 class InMemoryCandidateRepository:
@@ -13,6 +15,10 @@ class InMemoryCandidateRepository:
 
     def __init__(self) -> None:
         self._by_id: dict[str, EventCandidate] = {}
+        #: candidate id -> content hash -> version. The inner dict is what makes
+        #: an unchanged republication a no-op, mirroring SQLite's composite
+        #: primary key rather than restating the rule.
+        self._versions: dict[str, dict[str, CandidateVersion]] = {}
 
     def save(self, candidates: list[EventCandidate]) -> None:
         """Insert candidates, replacing any stored under the same id.
@@ -26,6 +32,21 @@ class InMemoryCandidateRepository:
             if existing is not None:
                 candidate = replace(candidate, discovered_at=existing.discovered_at)
             self._by_id[candidate.id] = candidate
+
+            payload = published_payload(candidate)
+            digest = content_fingerprint(payload)
+            versions = self._versions.setdefault(candidate.id, {})
+            # setdefault, not assignment: a version keeps the stamp of when its
+            # content was *first* seen, so re-seeing it must not move it.
+            versions.setdefault(
+                digest,
+                CandidateVersion(
+                    candidate_id=candidate.id,
+                    content_hash=digest,
+                    observed_at=candidate.last_seen_at or candidate.discovered_at,
+                    payload=payload,
+                ),
+            )
 
     def for_window(
         self, *, seen_since: datetime, starting_after: datetime
@@ -49,3 +70,8 @@ class InMemoryCandidateRepository:
             )
         ]
         return sorted(matching, key=lambda c: (c.discovered_at, c.id))
+
+    def versions_for(self, candidate_id: str) -> list[CandidateVersion]:
+        """Every distinct content this candidate has published, oldest first."""
+        versions = self._versions.get(candidate_id, {})
+        return sorted(versions.values(), key=lambda v: (v.observed_at, v.content_hash))

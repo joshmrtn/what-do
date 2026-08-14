@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.models.candidate_version import CandidateVersion
 from src.models.event_candidate import EventCandidate
 from src.storage.candidates import (
     CANDIDATE_COLUMNS,
     candidate_to_row,
+    content_fingerprint,
+    published_payload,
     row_to_candidate,
 )
 from src.storage.sqlite.connection import connect
@@ -42,6 +46,31 @@ def write_candidates(
         f"VALUES ({placeholders}) "
         f"ON CONFLICT(id) DO UPDATE SET {refreshed}",
         [candidate_to_row(c) for c in candidates],
+    )
+    # In the same statement batch as the row it describes, and after it, since
+    # the version references it. Retaining what a source published is not a
+    # separate call a caller could omit — that is what made overwriting the raw
+    # layer possible in the first place.
+    #
+    # INSERT OR IGNORE against a (candidate_id, content_hash) key: an unchanged
+    # republication collides with the version already stored and does nothing,
+    # so the common case costs one no-op insert and the table grows only when
+    # the text really moved.
+    conn.executemany(
+        "INSERT OR IGNORE INTO candidate_versions "
+        "(candidate_id, content_hash, observed_at, payload) VALUES (?, ?, ?, ?)",
+        [_version_row(c) for c in candidates],
+    )
+
+
+def _version_row(candidate: EventCandidate) -> tuple[str, str, str, str]:
+    """A candidate's published content, keyed by its digest."""
+    payload = published_payload(candidate)
+    return (
+        candidate.id,
+        content_fingerprint(payload),
+        (candidate.last_seen_at or candidate.discovered_at).isoformat(),
+        json.dumps(payload, sort_keys=True, default=str),
     )
 
 
@@ -90,3 +119,26 @@ class SqliteCandidateRepository:
             conn.close()
 
         return [row_to_candidate(row) for row in rows]
+
+    def versions_for(self, candidate_id: str) -> list[CandidateVersion]:
+        """Every distinct content this candidate has published, oldest first."""
+        conn = connect(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT candidate_id, content_hash, observed_at, payload "
+                "FROM candidate_versions WHERE candidate_id = ? "
+                "ORDER BY observed_at, content_hash",
+                (candidate_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return [
+            CandidateVersion(
+                candidate_id=row[0],
+                content_hash=row[1],
+                observed_at=datetime.fromisoformat(row[2]),
+                payload=json.loads(row[3]),
+            )
+            for row in rows
+        ]
