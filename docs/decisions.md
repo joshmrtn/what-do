@@ -2,6 +2,10 @@
 
 Rationale for non-obvious choices made during implementation. In rough chronological order.
 
+**Append-only.** A decision that turns out wrong is superseded by a new entry naming what it
+replaces and why — never edited in place. What we believed, and when we stopped believing it,
+is the point of keeping the log at all.
+
 ---
 
 ## Fuzzy matching library: rapidfuzz over thefuzz
@@ -246,29 +250,10 @@ to compare a known title against an absent one.
 venue name, not a fuzzy match.
 
 **Rationale:** Title already carries the fuzzy comparison; adding fuzziness to venue too
-increases false-positive merge risk. Canonicalization handles the common surface variations
-before the comparison, so exact equality is sufficient in practice.
-
-**The first half of that still holds and is now better argued.** Exactness is what protects
-Pass 2, whose summary vectors cannot separate two events at one venue from one event described
-twice — measured, different events at a shared venue score *higher* than genuine duplicates
-(#13). A fuzzy venue match would feed that weakness more pairs.
-
-**The last sentence was wrong and cost real merges — corrected 2026-08-14.** It read:
-
-> *If the same physical venue appears under genuinely different spellings from two sources, the
-> title + time criteria alone should still be enough signal.*
-
-They are not, and cannot be. `venues_match` is a **gate**: when it fails the pair is not
-compared at all, so a failed venue match is not a low score that title and time can outvote —
-it removes the pair from dedup entirely. Measured over 154 distinct venues, three collided,
-costing four pairs and **two genuine duplicates that had never merged**.
-
-Two causes, neither of them the matcher: extraction wrote `event.venue` straight from the model,
-arriving *after* normalization and so never canonicalized at all; and canonicalization handled
-only a *trailing* article, while `northshorenightout_listing` publishes both "The Rhumb Line"
-and "Rhumb Line". Both are fixed, and the comparison is now on a canonical key (below) rather
-than on the stored string — still exact.
+increases false-positive merge risk. Canonicalization (see below) handles the common surface
+variations (casing, article position) before the comparison, so exact equality is sufficient
+in practice. If the same physical venue appears under genuinely different spellings from two
+sources, the title + time criteria alone should still be enough signal.
 
 ---
 
@@ -287,21 +272,6 @@ normalization is deterministic, reversible, and covers the two most common varia
 article vs suffix article). We apply it before dedup so "The Vault" and "vault, the" from
 two different sources merge correctly.
 
-**Amended 2026-08-14 — the stored form and the comparison key are different things.**
-
-The rules above still describe what is **stored and displayed**, and they are unchanged. What
-they cannot do is make `"The Rhumb Line"` and `"Rhumb Line"` identical, because stripping the
-article from the stored value would put `"House Of The Seven Gables"` on screen. So comparison
-now happens on a separate key — `canonical_venue`: casefolded, leading article stripped once and
-anchored, whitespace collapsed.
-
-Only a *leading* article, and only one: an internal article carries meaning, and
-`"Theatre in the Round"` is not `"Theatre in Round"`.
-
-`normalize_venue` is also applied where extraction fills `event.venue`. That value arrives after
-normalization has run, so without it the model's own casing reached storage while every venue
-from a listing was title-cased — one venue, two spellings, and the gate above then failed.
-
 ---
 
 ## Naive datetime treatment at normalization
@@ -314,22 +284,6 @@ convert.
 posting "Saturday 8pm" means local 8pm. Treating naive datetimes as UTC would shift times
 by several hours for US timezones. The only times we'd want UTC treatment are from standardized
 APIs that explicitly return UTC, but those would already be timezone-aware.
-
-**Moved earlier, and now recorded — 2026-08-14.** The reading is unchanged; where it happens is
-not. Naivety is resolved at **ingestion** (`_resolve_naivety`), the single funnel every fetched
-candidate passes through, so no adapter can bypass it and none has to remember. Normalization
-still applies the same rule for anything that reaches it unresolved.
-
-It had to move because `event_candidates` is compared as *text* by `for_window` — stored
-timestamps are canonical UTC, and a naive value has no offset to compare against one, giving a
-*wrong* answer rather than an absent one. Two adapters can still emit naive values:
-`jsonld_listing` passes `fromisoformat` on `startDate` through unchanged and schema.org permits
-no offset, and `rss` returns naive for `-0000`.
-
-Ingestion records `metadata["assumed_zone"]` when it supplies an offset, by zone name rather
-than a flag, because `config.location.timezone` can change and a row should say what was assumed
-at the time. Without it the raw layer holds a resolved instant with no trace that anything was
-resolved, and "did this feed stop publishing offsets?" stops being answerable from the data.
 
 ---
 
@@ -2280,3 +2234,92 @@ the only path a stored candidate has back into a batch.
 Not selecting a row is not destroying it. Nothing deletes from `event_candidates`, so a narrower
 bound is reversible: widen it and the row is reloaded, re-derived and rematched onto its event by
 candidate id, tags and embeddings intact.
+
+---
+
+## Superseded: "title + time alone should still be enough signal"
+
+**Supersedes:** *Dedup Pass 1: venue matching is exact on canonical form* — its final sentence
+only. The decision itself stands; the rationale for it was wrong.
+
+**What it said:**
+
+> If the same physical venue appears under genuinely different spellings from two sources, the
+> title + time criteria alone should still be enough signal.
+
+**Why it is wrong:** `venues_match` is a **gate**, not a term. When it fails the pair is never
+compared, so a failed venue match is not a low score that title and time can outvote — it
+removes the pair from dedup entirely. The belief that the other criteria provide a safety net is
+what made exact string equality look harmless for months.
+
+**Measured 2026-08-14:** over 154 distinct venues, three collide, costing four event pairs and
+**two genuine duplicates that had never merged** — a Bluegrass night listed by two sources, and
+an identical "Hands-on History" at the same museum on the same day.
+
+**Kept from the original decision:** venue matching stays *exact*, and the reason is stronger
+than first written. Exactness is what protects Pass 2, whose summary vectors cannot separate two
+events at one venue from one event described twice — measured, different events at a shared
+venue score *higher* than genuine duplicates (#13). A fuzzy venue match would feed that weakness
+more pairs, not fewer.
+
+**What changed instead:** the two spellings are made identical before the gate, by canonical key
+and by closing a canonicalization bypass. See the two entries below.
+
+---
+
+## Venue canonicalization: the stored form and the comparison key are different
+
+**Supersedes:** *Venue name canonicalization*, which described one canonical form doing both
+jobs.
+
+**Decision:** The rules in that entry — collapse whitespace, move a trailing article to the
+front, title-case — still describe what is **stored and displayed**, unchanged. Comparison now
+uses a separate key: `canonical_venue`, which casefolds, strips a leading article once and
+anchored, and collapses whitespace.
+
+**Rationale:** One form cannot do both. Making `"The Rhumb Line"` and `"Rhumb Line"` identical
+in storage means stripping the article, which would put `"House Of The Seven Gables"` on screen.
+So the display keeps what the source wrote and only the comparison is normalised.
+
+Only a *leading* article, and only one, because an internal article carries meaning:
+`"Theatre in the Round"` is not `"Theatre in Round"`. Asserted on the key directly — at
+`venues_match` level an anchored rule and a global one agree on almost every pair, so the
+obvious test passed with the anchor removed.
+
+**A second cause, and it was not canonicalization at all:** extraction fills `event.venue` from
+the model, and that value arrives *after* normalization has run. It reached storage in the
+model's own casing while every venue from a listing was title-cased — one venue, two spellings,
+gate failed. `normalize_venue` is now applied there too. This was the whole of the Seven Gables
+split: the candidates table held a single spelling.
+
+---
+
+## Naive datetimes are resolved at ingestion, and the assumption is recorded
+
+**Supersedes:** *Naive datetime treatment at normalization* — as to *where*, not *what*.
+
+**Decision:** The reading is unchanged: a naive datetime is local time, and the configured zone
+is attached rather than converted. It now happens at **ingestion** (`_resolve_naivety`), and
+ingestion writes `metadata["assumed_zone"]` with the zone's name. Normalization still applies
+the same rule to anything reaching it unresolved.
+
+**Rationale for moving it:** `event_candidates` is compared as *text* by `for_window`. Stored
+timestamps are canonical UTC, and a naive value has no offset to compare against one — the
+comparison returns a *wrong* answer rather than an absent one, silently in SQLite. Normalization
+runs too late to prevent that.
+
+Ingestion is the seam because it is the single funnel every fetched candidate passes through, so
+no adapter can bypass it and none has to remember. `_localise` already lived there for the two
+window filters; its reading is now kept rather than discarded.
+
+**Why it is not vestigial:** two adapters can still emit naive values. `jsonld_listing` passes
+`fromisoformat` on `startDate` through unchanged and schema.org permits no offset; `rss` returns
+naive for `-0000`. Measured, 0 of 2231 stored candidates are naive — but only because one feed
+currently states an offset, which is a property of that CMS's output and not of our code.
+
+**Rationale for the flag:** localising is a judgement, since the feed did not say. Without a
+record the raw layer holds a resolved instant with no trace that anything was resolved, and "did
+this feed stop publishing offsets?" stops being answerable from the data. The zone *name* rather
+than a boolean, because `config.location.timezone` can change and a row should say what was
+assumed at the time. Written only when something was assumed, so its presence is a fact about a
+feed rather than a field on every row.
