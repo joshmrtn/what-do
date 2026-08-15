@@ -125,3 +125,62 @@ def test_gemini_client_satisfies_chat_client_protocol():
 
     gc = GeminiClient(api_key="x", client=MagicMock())
     assert isinstance(gc, ChatClient)
+
+
+class TestImageMimeType:
+    """Every image was labelled `image/jpeg` regardless of what it actually was.
+
+    `HttpImageFetcher` fetches whatever the listing links to, so a PNG or WebP
+    was being handed to the model under a JPEG label — which Gemini may reject
+    or misread. The path is live: `ExtractionStage` fetches `image_url` bytes and
+    forwards them here (#7).
+    """
+
+    def _parts(self, client, image: bytes):
+        contents = client._build_contents([{"role": "user", "content": "hi"}], [image])
+        return [p for c in contents for p in c["parts"] if "inline_data" in p]
+
+    def test_a_png_is_labelled_png(self):
+        client = GeminiClient(api_key="k", client=object())
+
+        parts = self._parts(client, b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        assert parts[0]["inline_data"]["mime_type"] == "image/png"
+
+    def test_a_jpeg_is_still_labelled_jpeg(self):
+        client = GeminiClient(api_key="k", client=object())
+
+        parts = self._parts(client, b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+
+        assert parts[0]["inline_data"]["mime_type"] == "image/jpeg"
+
+    def test_a_webp_is_labelled_webp(self):
+        client = GeminiClient(api_key="k", client=object())
+
+        parts = self._parts(client, b"RIFF\x24\x00\x00\x00WEBP" + b"\x00" * 8)
+
+        assert parts[0]["inline_data"]["mime_type"] == "image/webp"
+
+    def test_each_image_is_labelled_for_itself(self):
+        """A mixed batch is the case a single hardcoded label cannot serve."""
+        client = GeminiClient(api_key="k", client=object())
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 8
+
+        contents = client._build_contents([{"role": "user", "content": "hi"}], [png, jpeg])
+        mimes = [
+            p["inline_data"]["mime_type"]
+            for c in contents
+            for p in c["parts"]
+            if "inline_data" in p
+        ]
+
+        assert mimes == ["image/png", "image/jpeg"]
+
+    def test_the_bytes_are_forwarded_unchanged(self):
+        client = GeminiClient(api_key="k", client=object())
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+
+        parts = self._parts(client, png)
+
+        assert parts[0]["inline_data"]["data"] == png

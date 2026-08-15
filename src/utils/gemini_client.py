@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.utils.images import sniff_mime_type
 from src.utils.chat_client import LLMError
 
 
@@ -90,7 +91,15 @@ class GeminiClient:
                 contents.append({"role": "user", "parts": []})
             for image in images:
                 contents[-1]["parts"].append(
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image}}
+                    # Sniffed per image, not hardcoded: the fetcher takes
+                    # whatever a listing links to, so a PNG sent as JPEG is a
+                    # label the model may reject or misread.
+                    {
+                        "inline_data": {
+                            "mime_type": sniff_mime_type(image),
+                            "data": image,
+                        }
+                    }
                 )
 
         return contents
