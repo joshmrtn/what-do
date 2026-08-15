@@ -505,12 +505,22 @@ class TestUpcoming:
     honestly, and it is what makes this a filter rather than a re-ranking.
     """
 
-    def test_it_spans_days_rather_than_one_night(self, db_path):
+    def test_it_starts_after_tonight(self, db_path):
+        """`--upcoming` reads as "after tonight", and the default view already
+        answers tonight. Including it would make the busiest night crowd out
+        the far-out events this exists to surface — and tonight is the one night
+        that needs no planning at all."""
         code, out, _ = _invoke(db_path, "--upcoming")
 
         assert code == 0
-        assert "Karaoke Night" in out
         assert "Tomorrow Gig" in out
+        assert "Karaoke Night" not in out
+
+    def test_it_spans_several_nights(self, db_path):
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20")
+
+        assert "Tomorrow Gig" in out
+        assert "Tomorrow Market" in out
 
     def test_it_is_one_list_not_per_night_sections(self, db_path):
         _, out, _ = _invoke(db_path, "--upcoming")
@@ -519,18 +529,18 @@ class TestUpcoming:
         assert TOMORROW.strftime("%A %-d %B") not in out
 
     def test_it_orders_by_score_not_by_date(self, db_path):
-        """The whole point. A better event three days out belongs above a
-        mediocre one tonight, or this is just a longer listing."""
+        """The whole point. A better-scored event belongs above a worse one
+        whichever night it falls on, or this is just a longer listing."""
         _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20")
 
-        assert out.index("Karaoke Night") < out.index("Dull Mixer")
+        assert out.index("Tomorrow Gig") < out.index("Tomorrow Market")
 
     def test_the_window_is_configurable(self, db_path):
-        """A day count small enough to exclude tomorrow does exclude it."""
+        """`--upcoming 1` is the single night after tonight."""
         _, out, _ = _invoke(db_path, "--upcoming", "1")
 
-        assert "Karaoke Night" in out
-        assert "Tomorrow Gig" not in out
+        assert "Tomorrow Gig" in out
+        assert "Karaoke Night" not in out
 
     def test_each_row_says_which_day_it_is_on(self, db_path):
         """In a per-night view the heading answers that. Here there is no

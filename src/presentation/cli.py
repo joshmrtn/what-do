@@ -326,9 +326,9 @@ def _supports_color(stream: TextIO) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
 
 
-#: How far ahead `--upcoming` looks when no window is given. Two weeks is long
-#: enough to catch anything needing a booking or a ticket, and short enough that
-#: the list is still a list.
+#: How many nights after tonight `--upcoming` covers when no window is given.
+#: Two weeks is long enough to catch anything needing a booking or a ticket, and
+#: short enough that the list is still a list.
 DEFAULT_UPCOMING_DAYS = 14
 
 
@@ -341,7 +341,7 @@ def _cmd_upcoming(
     stderr: TextIO,
     view: ViewSettings,
 ) -> int:
-    """One ranked list across several nights, best first.
+    """One ranked list across the nights *after* tonight, best first.
 
     Not `--days`, which is per-night sections. The question here is "what is
     coming up that I should plan for" — anything needing a booking, a table, a
@@ -367,12 +367,17 @@ def _cmd_upcoming(
         )
         return 1
 
-    last = tonight + timedelta(days=args.upcoming - 1)
+    # Starts tomorrow. `--upcoming` reads as "after tonight", the default view
+    # already answers tonight, and tonight is the one night needing no planning
+    # — it is also the busiest, so including it crowds out the far-out events
+    # this exists to surface.
+    first = tonight + timedelta(days=1)
+    last = first + timedelta(days=args.upcoming - 1)
     selected = [
         pair
         for pair in pairs
         if pair.event.start_time is not None
-        and tonight <= pair.event.start_time.astimezone(view.zone).date() <= last
+        and first <= pair.event.start_time.astimezone(view.zone).date() <= last
     ]
     selected.sort(key=lambda ranked: ranked.rank)
 
@@ -510,7 +515,7 @@ def _build_parser() -> argparse.ArgumentParser:
         const=DEFAULT_UPCOMING_DAYS,
         metavar="DAYS",
         help=(
-            "One ranked list across the next DAYS nights "
+            "One ranked list across the DAYS nights after tonight "
             f"(default {DEFAULT_UPCOMING_DAYS}), best first, for planning ahead"
         ),
     )
