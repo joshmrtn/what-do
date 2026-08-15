@@ -324,7 +324,16 @@ class ExtractionStage:
         # next run re-extracts for a change we made ourselves. Still past the
         # unavailable path, so a run that never got an answer stays retryable —
         # and a degradation is an answer, so it writes the hash like any other.
-        event.extraction_input_hash = extraction_input_hash(event)
+        # The observation itself, beside its digest and on the same terms. The
+        # hash makes a re-run skippable; the text is what any later refit or
+        # model has to learn from, and it cannot be recovered afterwards —
+        # rebuilding it needs the builder and the fields as they were, and both
+        # move. Length stored rather than derived on read, so it stays true even
+        # if the text is ever trimmed.
+        recorded = extraction_input(event)
+        event.extraction_input = recorded
+        event.extraction_input_chars = len(recorded)
+        event.extraction_input_hash = input_hash(recorded)
 
     def _fetch_image(self, event: Event) -> bytes | None:
         """Fetch image bytes for the event if an image URL is present."""

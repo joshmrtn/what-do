@@ -242,7 +242,13 @@ CREATE TABLE IF NOT EXISTS events (
     -- the row kept older tags and no record that tonight's run had rejected
     -- anything. It is also what keeps the shortest inputs in the confidence
     -- curve's dataset instead of holing it exactly where it is most sensitive.
-    extraction_degradation    TEXT
+    extraction_degradation    TEXT,
+    -- What the model was actually asked, kept beside what it answered. Only the
+    -- hash was stored, so the corpus a refit learns from was current state
+    -- rather than an observation. Declared last because ALTER TABLE appends, so
+    -- a fresh build and the migrated live database agree on position too.
+    extraction_input          TEXT,
+    extraction_input_chars    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS event_tags (

@@ -494,3 +494,50 @@ def test_an_ordinary_event_carries_no_dedup_provenance(repo):
     assert stored.superseded_at is None
     assert stored.merged_by is None
     assert stored.merge_similarity is None
+
+
+class TestExtractionObservation:
+    """What the model was asked, kept beside what it answered.
+
+    `extraction_input` was never stored — only its hash — so the corpus a refit
+    learns from was *current state* rather than a record of the observation.
+    A row's `chars` could only be reconstructed by re-running today's builder
+    over the event's present fields, which is wrong the moment either moves, and
+    both have: the builder gained a venue line, and extraction itself fills
+    `venue` and `title`.
+
+    The string, not just its length, because a future model wants features the
+    text carries and a character count throws away.
+    """
+
+    def test_the_input_survives_a_round_trip(self, repo):
+        event = _full_event()
+        event.extraction_input = "Trivia Night\nVenue: The James, Essex\nDoors at seven."
+
+        repo.save([event])
+
+        assert repo.load_all()[0].extraction_input == (
+            "Trivia Night\nVenue: The James, Essex\nDoors at seven."
+        )
+
+    def test_its_length_survives_a_round_trip(self, repo):
+        """Stored rather than derived on read: a length computed from a string
+        that was never stored is the problem, not the fix."""
+        event = _full_event()
+        event.extraction_input = "abcde"
+        event.extraction_input_chars = 5
+
+        repo.save([event])
+
+        assert repo.load_all()[0].extraction_input_chars == 5
+
+    def test_an_event_never_extracted_carries_neither(self, repo):
+        event = _full_event()
+        event.extraction_input = None
+        event.extraction_input_chars = None
+
+        repo.save([event])
+
+        loaded = repo.load_all()[0]
+        assert loaded.extraction_input is None
+        assert loaded.extraction_input_chars is None

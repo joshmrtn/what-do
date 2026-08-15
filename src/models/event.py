@@ -61,6 +61,16 @@ class Event:
     #: conflated: set means done, absent means never ran, and a failure leaves
     #: it absent so the next run retries.
     extraction_input_hash: str | None = None
+    #: The text LLM Pass 1 actually ran over, kept beside what it answered.
+    #: Only the hash was stored, so the corpus a refit learns from was current
+    #: state rather than an observation — reconstructable only by re-running
+    #: today's builder over today's fields, which is wrong once either moves.
+    #: The string rather than only its length, because a future model wants
+    #: features the text carries.
+    extraction_input: str | None = None
+    #: Its character count, stored rather than derived on read. A length
+    #: computed from a string that was never stored is the problem, not the fix.
+    extraction_input_chars: int | None = None
     #: Hash of the tags and summary the vectors were last built from. Because
     #: those are extraction's output, a re-extraction that changes them changes
     #: this too, so embeddings follow automatically rather than leaving vectors

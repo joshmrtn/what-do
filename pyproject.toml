@@ -15,6 +15,10 @@ dependencies = [
     "astral>=3.0",
     "google-genai>=1.0",
     "python-dateutil>=2.9",
+    # Used by the scoring curve fit. Was installed transitively via
+    # timezonefinder and relied on undeclared, so a bump upstream could have
+    # removed it and nothing would have noticed until a batch died.
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

@@ -1480,3 +1480,38 @@ def test_a_venue_the_model_supplies_is_canonicalised():
     results = stage.process([event])
 
     assert results[0].venue == "The House Of The Seven Gables"
+
+
+def test_extraction_records_what_the_model_was_asked():
+    """The observation, not just its digest.
+
+    The hash alone made the corpus reconstructable-in-principle and wrong in
+    practice: rebuilding the input needs today's builder and today's fields, and
+    extraction itself changes the fields. Recorded after the fills, on the same
+    terms and for the same reason as the hash.
+    """
+    event = _make_event(venue=None)
+    provider = _make_provider()
+    stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
+
+    results = stage.process([event])
+
+    assert results[0].extraction_input is not None
+    assert results[0].extraction_input_chars == len(results[0].extraction_input)
+    # The venue the model supplied is part of what a later run would be asked,
+    # so it has to be inside the recorded text — the hash is taken here too.
+    assert "Extracted Venue" in results[0].extraction_input
+
+
+def test_a_skipped_extraction_does_not_blank_the_recorded_input():
+    """Almost every event skips on a normal night. Overwriting the observation
+    with None on the skip path would empty the corpus one quiet night."""
+    event = _make_event()
+    provider = _make_provider()
+    stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
+    stage.process([event])
+    recorded = event.extraction_input
+
+    stage.process([event])  # second run: hash unchanged, so extraction skips
+
+    assert event.extraction_input == recorded

@@ -31,7 +31,7 @@ EVENT_COLUMNS = (
     "created_at, updated_at, setting, timing, extraction_input_hash, "
     "embedding_input_hash, extraction_model, extraction_prompt_version, "
     "extraction_degradation, superseded_by, superseded_at, "
-    "merged_by, merge_similarity"
+    "merged_by, merge_similarity, extraction_input, extraction_input_chars"
 )
 
 
@@ -96,6 +96,8 @@ def event_to_row(event: Event) -> tuple[Any, ...]:
         event.superseded_at.isoformat() if event.superseded_at else None,
         event.merged_by,
         event.merge_similarity,
+        event.extraction_input,
+        event.extraction_input_chars,
     )
 
 
@@ -147,6 +149,8 @@ def row_to_event(
         superseded_at=_parse_dt(row[27]),
         merged_by=row[28],
         merge_similarity=row[29],
+        extraction_input=row[30],
+        extraction_input_chars=row[31],
     )
 
 
