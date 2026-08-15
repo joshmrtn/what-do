@@ -2323,3 +2323,75 @@ this feed stop publishing offsets?" stops being answerable from the data. The zo
 than a boolean, because `config.location.timezone` can change and a row should say what was
 assumed at the time. Written only when something was assumed, so its presence is a fact about a
 feed rather than a field on every row.
+
+---
+
+## `--time` asks whether an event is on, not whether it once was
+
+**Decision:** Three rules, measured against the live ranking where **312** events
+survived a `20:00–23:59` window despite starting before it.
+
+1. The window is anchored to the **night being asked about**, passed in by the caller,
+   not to each event's own start date.
+2. The **event's** end is exclusive (`end > window_from`); the window's end stays inclusive.
+3. A span longer than `LONG_SPAN_HOURS` (24) is read as a recurring programme whose daily
+   hours are the time-of-day of its own endpoints, compared on the night in question.
+
+**Rationale:** Anchoring to the event meant that for anything which began earlier the window
+was built on that earlier date, so a month-long exhibition that opened on the 1st cleared every
+window unconditionally. Rule 2 alone accounts for 82 of the 312 — "Open Mic Night 17:00–20:00"
+kept by a 20:00 window, repeatedly; you cannot attend something that finishes as you arrive.
+Rule 3 covers a workshop stored as Aug 10 09:00 → Aug 14 12:00, which is 96 unbroken hours and
+overlapped every window that could be typed.
+
+**Equal times-of-day mean genuine continuity.** A span of whole days is the one readable signal
+in data that records no recurrence: a mooring rental stored 12:00 → 12:00 next day is not a
+programme that runs at noon — you have the mooring at 8pm.
+
+**This inference is accepted as occasionally wrong.** A festival that genuinely runs overnight
+for a week reads as a daily programme. The alternative needs a field no source publishes, and
+the behaviour it replaces was "matches every window that can be typed".
+
+**An event with no `end_time` stays instantaneous** and is matched on its start alone, because
+the exclusive rule would otherwise drop one starting exactly as the window opens — a half-open
+interval of zero length is empty. Giving those events an assumed duration is deliberately a
+separate decision: it changes single-day events too, and `during_night` uses the same idiom, so
+the two filters must move together or disagree about one event.
+
+**Measured after:** 83 events changed across the ranked days, 427 kept down to 344, and **zero
+tonight**. The fix was real and unobservable, because until `--date` landed there was no way to
+look at another night.
+
+---
+
+## The CLI shows other nights, and `--upcoming` means after tonight
+
+**Decision:** `--date YYYY-MM-DD` for one night, `--days N` for the next N nights as separate
+headed sections, `--upcoming [DAYS]` for a single ranked list across the nights **after**
+tonight. No two can be combined.
+
+**Rationale:** The batch ranks every event in a run across the whole horizon, and the CLI could
+only show one of those days — `--run-date` selects which *batch* to read, not which night to
+display. Everything else was scored, ranked, persisted and unreachable except through `--raw`,
+which bypasses ranking entirely.
+
+`--days` and `--upcoming` differ in shape rather than subject: sections versus one ordered list.
+"What is on Saturday" is a per-night question; "what should I plan for" is not.
+
+**`--upcoming` starting tomorrow is the load-bearing part.** Measured, tonight held both the
+best-scored event (1.514 against 1.216–1.230 on the three nights after) and the most events, so
+it took 8 of the overall top 20 and filled every short list — the far-out candidates the feature
+exists for sat at ranks 15–20. Including tonight made the leaderboard a slower repeat of the
+default view, and tonight is the one night that needs no planning.
+
+**Ranks stay the run's own**, so a Sunday section may open at "9." That is deliberate: the rank
+is what the batch assigned across every event it ranked, so a 1 on Friday really is better-scored
+than a 9 on Sunday. Renumbering per night would discard that and break `--explain <rank>`, which
+resolves against the same numbering.
+
+**None of this is a re-ranking**, and it is only valid because scores are never normalised per
+batch. That rule is what lets a score from next Friday sort honestly against one from tonight.
+
+**Undated events join tonight's section only.** A missing start time is a gap in what we know
+rather than evidence about when, but an undated event belongs to the night you are standing in,
+not to every night listed.
