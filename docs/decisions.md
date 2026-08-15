@@ -2395,3 +2395,73 @@ batch. That rule is what lets a score from next Friday sort honestly against one
 **Undated events join tonight's section only.** A missing start time is a gap in what we know
 rather than evidence about when, but an undated event belongs to the night you are standing in,
 not to every night listed.
+
+---
+
+## Input the CLI cannot honour is refused, not reinterpreted
+
+**Decision:** A flag whose value cannot be applied is an error naming both the value
+and the reason. A flag that is merely *redundant* is served with a warning. Nothing is
+silently dropped. All validation runs **ahead of every dispatch**, not beside the code
+that consumes the value.
+
+**Rationale:** Every instance found in one audit produced a listing that looked like it
+obeyed. None crashed, which is why none had been noticed:
+
+| input | asked for | got |
+|---|---|---|
+| `--limit 0` | no events | 10 — `args.limit or default`, and `0` is falsy |
+| `--limit -5` | nonsense | 91 rows — `pairs[:-5]` drops the *last* five |
+| `--time ""` | a window | an unfiltered listing that looks filtered |
+| `--explain ""` | one event | the default listing |
+| `--raw --time …` | filtered raw | 1667 unfiltered events |
+| `add-source "   "` | nothing | `'@   '` written to `seeds.yaml`, reported as success |
+
+Three shapes underneath. **A falsy value read as absence** — empty strings and `0` skip
+the `if args.x:` meant to detect "not given". **A sentinel taken from inside the value
+domain** — a bare `--upcoming` needs a placeholder until config is read, and both `0`
+and `-1` were typeable, each silently meaning "use the default"; the `const` is an
+*object* now, since argparse applies `type=` only to strings. **A mode flag discarding
+another flag** — `--raw`, `--explain` and `--upcoming` each ignored filters aimed at
+them.
+
+**`--all --limit 3` is warned rather than refused**, and the line is worth stating: the
+request is coherent — show everything, and here is a number that cannot apply — so
+serving it and saying so beats rejecting it. Refusal is for contradictions, not for
+redundancy.
+
+**Guards ahead of every dispatch is not a style preference.** Placing them beside the
+consuming code let `--explain ""` through once and `--raw --time` through again, because
+both dispatch earlier than the code that reads their values. The same mistake twice in
+one evening.
+
+**Refusing is also how a missing feature stays visible.** `--upcoming --time` was
+refused for an hour before it was built, which is honest in a way that ignoring it is
+not: a filter silently not applied is indistinguishable from one that found nothing.
+
+---
+
+## `--upcoming` filters per night, and the view does the grouping
+
+**Decision:** `overlapping` keeps its single-night contract. The cross-day view groups
+its pairs by `night_of(start)` and calls the filter once per night, then re-sorts by
+rank.
+
+**Rationale:** A time-of-day window has to be anchored to a date, and this view spans
+many. The alternative — an optional `night` meaning "each event's own" — moves the
+decision inside a filter that has no way to know which night a caller means, and the
+grouping is three lines in the one place that does know.
+
+**`night_of(start)` is not `start.date()`, and the difference is the whole point.**
+Anchoring to the start *date* is the defect this replaced: a month-long exhibition built
+its window on the day it opened and cleared every window unconditionally. The night an
+event falls on is the right anchor, and for a single-day event it is exactly its own.
+
+**It is already correct for long spans.** Beyond `long_span_hours` both endpoints are
+replaced by the event's daily hours, so the comparison becomes time-of-day against
+time-of-day and the choice of night stops mattering — a week-long festival running
+20:00–23:00 nightly matches whichever of its nights is picked.
+
+**`--after-sunset` needed no anchoring at all**, because it reads each event's own
+recorded sunset rather than tonight's. That was deliberate when it was written and is
+what let it generalise for free.
