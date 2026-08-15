@@ -246,10 +246,29 @@ to compare a known title against an absent one.
 venue name, not a fuzzy match.
 
 **Rationale:** Title already carries the fuzzy comparison; adding fuzziness to venue too
-increases false-positive merge risk. Canonicalization (see below) handles the common surface
-variations (casing, article position) before the comparison, so exact equality is sufficient
-in practice. If the same physical venue appears under genuinely different spellings from two
-sources, the title + time criteria alone should still be enough signal.
+increases false-positive merge risk. Canonicalization handles the common surface variations
+before the comparison, so exact equality is sufficient in practice.
+
+**The first half of that still holds and is now better argued.** Exactness is what protects
+Pass 2, whose summary vectors cannot separate two events at one venue from one event described
+twice — measured, different events at a shared venue score *higher* than genuine duplicates
+(#13). A fuzzy venue match would feed that weakness more pairs.
+
+**The last sentence was wrong and cost real merges — corrected 2026-08-14.** It read:
+
+> *If the same physical venue appears under genuinely different spellings from two sources, the
+> title + time criteria alone should still be enough signal.*
+
+They are not, and cannot be. `venues_match` is a **gate**: when it fails the pair is not
+compared at all, so a failed venue match is not a low score that title and time can outvote —
+it removes the pair from dedup entirely. Measured over 154 distinct venues, three collided,
+costing four pairs and **two genuine duplicates that had never merged**.
+
+Two causes, neither of them the matcher: extraction wrote `event.venue` straight from the model,
+arriving *after* normalization and so never canonicalized at all; and canonicalization handled
+only a *trailing* article, while `northshorenightout_listing` publishes both "The Rhumb Line"
+and "Rhumb Line". Both are fixed, and the comparison is now on a canonical key (below) rather
+than on the stored string — still exact.
 
 ---
 
@@ -268,6 +287,21 @@ normalization is deterministic, reversible, and covers the two most common varia
 article vs suffix article). We apply it before dedup so "The Vault" and "vault, the" from
 two different sources merge correctly.
 
+**Amended 2026-08-14 — the stored form and the comparison key are different things.**
+
+The rules above still describe what is **stored and displayed**, and they are unchanged. What
+they cannot do is make `"The Rhumb Line"` and `"Rhumb Line"` identical, because stripping the
+article from the stored value would put `"House Of The Seven Gables"` on screen. So comparison
+now happens on a separate key — `canonical_venue`: casefolded, leading article stripped once and
+anchored, whitespace collapsed.
+
+Only a *leading* article, and only one: an internal article carries meaning, and
+`"Theatre in the Round"` is not `"Theatre in Round"`.
+
+`normalize_venue` is also applied where extraction fills `event.venue`. That value arrives after
+normalization has run, so without it the model's own casing reached storage while every venue
+from a listing was title-cased — one venue, two spellings, and the gate above then failed.
+
 ---
 
 ## Naive datetime treatment at normalization
@@ -280,6 +314,22 @@ convert.
 posting "Saturday 8pm" means local 8pm. Treating naive datetimes as UTC would shift times
 by several hours for US timezones. The only times we'd want UTC treatment are from standardized
 APIs that explicitly return UTC, but those would already be timezone-aware.
+
+**Moved earlier, and now recorded — 2026-08-14.** The reading is unchanged; where it happens is
+not. Naivety is resolved at **ingestion** (`_resolve_naivety`), the single funnel every fetched
+candidate passes through, so no adapter can bypass it and none has to remember. Normalization
+still applies the same rule for anything that reaches it unresolved.
+
+It had to move because `event_candidates` is compared as *text* by `for_window` — stored
+timestamps are canonical UTC, and a naive value has no offset to compare against one, giving a
+*wrong* answer rather than an absent one. Two adapters can still emit naive values:
+`jsonld_listing` passes `fromisoformat` on `startDate` through unchanged and schema.org permits
+no offset, and `rss` returns naive for `-0000`.
+
+Ingestion records `metadata["assumed_zone"]` when it supplies an offset, by zone name rather
+than a flag, because `config.location.timezone` can change and a row should say what was assumed
+at the time. Without it the raw layer holds a resolved instant with no trace that anything was
+resolved, and "did this feed stop publishing offsets?" stops being answerable from the data.
 
 ---
 
@@ -2112,3 +2162,121 @@ the original but makes the substitution **detectable** rather than silent.
 The rule that follows, and it is not obvious: **verify through the candidates,
 never through an event's current summary.** The summary is both what Pass 2
 compared and what re-extraction overwrites.
+
+---
+
+## Title comparison uses a canonical key, and rapidfuzz folds no case
+
+**Decision:** Dedup Pass 1 compares `canonical_title(a)` against `canonical_title(b)` —
+casefolded, with `w/o`→`without`, `w/`→`with` and `&`→`and`, whitespace collapsed. The stored
+title is untouched.
+
+**Rationale:** `fuzz.token_sort_ratio` applies **no default processor**, so it is
+case-sensitive and nothing at the call site says so. Measured: `HEADLANDS` against `Headlands`
+scores **0.111**, because as raw strings they share almost no characters. A venue that writes
+its listings in caps was invisible to Pass 1 entirely.
+
+Casefolding also makes the fuzzy half agree with the embedding half — `nomic-embed-text` is
+uncased, so summary comparison already read text this way while title comparison did not.
+
+Measured over the 1788 pairs that pass the structural guards, this newly merges **five**, every
+one a genuine duplicate and none spurious:
+
+```
+0.847 -> 0.918  Salem Jazz & Soul Festival / Salem Jazz and Soul Festival 2026
+0.742 -> 1.000  Bluegrass night with Joe Wilkins / Bluegrass Night w/ Joe Wilkins
+0.733 -> 1.000  Dennis Dulong Jr. (fka DELVIS) / Dennis Dulong Jr. (FKA Delvis)
+0.111 -> 1.000  HEADLANDS / Headlands   (twice)
+```
+
+Canonicalising can only raise a similarity, never lower one, so the entire risk is false
+positives — zero here. The `&` rule paid for itself immediately: that first pair sat three
+thousandths under the 0.85 threshold.
+
+**The expansion list is deliberately short, and two exclusions are load-bearing.** `ft.`
+genuinely means *feet* — "20 ft" is a real listing string — and `@` is a handle at least as
+often as it is a preposition. Expanding either would invent a word the source never used, and
+there are tests pinning the *exclusion* so the reasoning has to be confronted before anyone
+adds them. `w/o` is read before `w/`, or the shorter rule turns "without" into "witho".
+
+---
+
+## Compare on a canonical key; store what the source wrote
+
+**Decision:** Where two values must be compared for identity, put both into one canonical
+representation and compare **exactly**. Never store the key in place of what the source
+published.
+
+| what | key | why |
+|---|---|---|
+| candidate timestamps | UTC | text order matches chronological order only at a fixed offset |
+| venues | casefolded, leading article stripped | `The Rhumb Line` and `Rhumb Line` are one venue |
+| titles | casefolded, `w/`→`with`, `&`→`and` | `token_sort_ratio` is case-sensitive |
+
+**Rationale:** All three arrived independently in one day, which is what makes it a pattern
+worth naming rather than three fixes.
+
+**Exact-on-canonical is not a fuzzy match, and the distinction is load-bearing.** It reads like
+a loosening and is the opposite: the comparison stays exact, and only the representation moves.
+A genuinely fuzzy venue match would admit more pairs to dedup Pass 2, whose summary vectors
+cannot separate two events at one venue from one event described twice (#13). Keeping the guard
+exact is what protects the weaker pass.
+
+**The key is never the stored value.** Stripping the article from a stored venue would render
+"House Of The Seven Gables"; canonicalising `Event.start_time` to UTC would misfile every
+evening event by a day, since `.date()` and `strftime` read the zone rather than the text. The
+raw layer stores instants, the domain layer stores local time, and `_normalize_timestamp` is the
+boundary between them.
+
+---
+
+## The raw layer keeps what a source published
+
+**Decision:** `event_candidates` holds one row per listing and is upserted, with
+`discovered_at` excluded from the update so it stays *first* seen; `last_seen_at` carries
+recency. Every distinct published content is retained in `candidate_versions`, keyed
+`(candidate_id, content_hash)`.
+
+**Rationale:** The schema splits raw from derived on whether a thing can be regenerated, and
+`event_candidates` was on the raw side while overwriting itself — the same loss by another
+route. A dedup decision keys back to candidates precisely so a person can read the listings and
+judge the merge; against text that has since changed, that check silently proves nothing.
+
+`INSERT OR REPLACE` could not preserve anything, because REPLACE is a delete and re-insert. The
+upsert can, and omitting one column from the SET list is the whole mechanism.
+
+The content hash as half the primary key makes an unchanged republication an `INSERT OR IGNORE`
+no-op: no read, no comparison, and no rule a caller can forget. Measured, the cost tracks real
+edits — **2.26%** of candidates change per re-fetch, and the genuine content churn was 15 titles
+and one description in 2124.
+
+The payload is JSON built from `PUBLISHED_FIELDS`, which also builds the fingerprint, so a field
+added to `EventCandidate` cannot end up recorded but unhashed. `discovered_at` and
+`last_seen_at` are excluded from it: they move on every fetch, and including them would make
+every re-fetch look like an edit.
+
+---
+
+## The candidate window asks whether a record is live
+
+**Decision:** `for_window` keeps a **dated** candidate while its event is still to come, and an
+**undated** one while a source is still publishing it (`last_seen_at`). It shares a **floor**
+with the ranking scope — local midnight of the run date — and deliberately no ceiling.
+
+**Rationale:** The arms were a union, so recent discovery alone reloaded candidates whose events
+had finished: **649 of 2124**, each paying for normalization, dedup, enrichment and embedding
+every night.
+
+Requiring recent sighting *and* an upcoming start is the obvious fix and the wrong one — it
+drops calendar events still to come because we found them a while back, which is the failure the
+second arm exists to prevent.
+
+**The floor is shared and the ceiling is not, because they answer different questions.**
+`_scope_filter` asks *is this worth ranking* — a product judgement about how far ahead we care to
+look. `for_window` asks *is this record still live* — staleness. A finished event is the one fact
+that answers both; a horizon says nothing about whether a record is current, and `for_window` is
+the only path a stored candidate has back into a batch.
+
+Not selecting a row is not destroying it. Nothing deletes from `event_candidates`, so a narrower
+bound is reversible: widen it and the row is reloaded, re-derived and rematched onto its event by
+candidate id, tags and embeddings intact.
