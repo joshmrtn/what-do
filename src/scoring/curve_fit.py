@@ -43,6 +43,9 @@ class Observation:
     moment the builder or the event's fields move, and both do.
     """
 
+    #: The event this came from. Carried so held-out folds can be assigned by
+    #: hashing it — the same corpus must split the same way on every run.
+    event_id: str
     chars: int
     tags: float
     source_type: str
