@@ -260,6 +260,31 @@ CREATE TABLE IF NOT EXISTS events (
 -- run reads it, so a night is scored with constants that did not move under it.
 -- Absent or empty means the config defaults stand, which is the state of a
 -- fresh deployment and of any regime that has not armed.
+-- Every extraction, kept. `events` holds the latest one and re-extraction
+-- overwrites it, so a corpus read from there is current state rather than a
+-- record of what the model was asked and answered — and the two observations
+-- most worth having, either side of a prompt change, are exactly the ones
+-- overwriting destroys.
+--
+-- Append-only. `observed_at` is when the extraction ran, which is the only
+-- honest chronology: `events.created_at` is when the *event* was created, and
+-- sorting a series by it reads re-extracted rows in an order unrelated to when
+-- their tags were produced.
+CREATE TABLE IF NOT EXISTS extraction_observations (
+    event_id          TEXT NOT NULL REFERENCES events(id),
+    observed_at       TEXT NOT NULL,
+    chars             INTEGER NOT NULL,
+    tags              INTEGER NOT NULL,
+    model             TEXT,
+    prompt_version    TEXT,
+    degradation       TEXT,
+    source            TEXT,
+    -- True where the row was reconstructed from an event rather than recorded
+    -- as it happened, so a later reader can tell evidence from inference.
+    backfilled        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (event_id, observed_at)
+);
+
 CREATE TABLE IF NOT EXISTS curve_state (
     id                INTEGER PRIMARY KEY CHECK (id = 1),
     cap               REAL NOT NULL,

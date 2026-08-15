@@ -21,6 +21,7 @@ from pathlib import Path
 
 from src.storage.protocols import (
     CurveStateRepository,
+    ExtractionObservationRepository,
     CandidateRepository,
     EntityRepository,
     EventRepository,
@@ -37,6 +38,9 @@ from src.storage.sqlite.events import SqliteEventRepository
 from src.storage.sqlite.http_cache import SqliteHttpCache
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.curve_state import SqliteCurveStateRepository
+from src.storage.sqlite.extraction_observations import (
+    SqliteExtractionObservationRepository,
+)
 from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
@@ -66,6 +70,7 @@ class BatchStorage:
     weather_cache: WeatherCache
     http_cache: HttpCache
     curve_state: CurveStateRepository
+    extraction_observations: ExtractionObservationRepository
 
 
 def build_view_storage(db_path: Path | str, embedding_model: str) -> ViewStorage:
@@ -99,6 +104,7 @@ def build_batch_storage(db_path: Path | str, embedding_model: str) -> BatchStora
         candidates=SqliteCandidateRepository(db_path),
         runs=SqliteRunRepository(db_path),
         curve_state=SqliteCurveStateRepository(db_path),
+        extraction_observations=SqliteExtractionObservationRepository(db_path),
         entities=SqliteEntityRepository(db_path),
         dedup_decisions=SqliteDedupDecisionRepository(db_path),
         weather_cache=SqliteWeatherCache(db_path),

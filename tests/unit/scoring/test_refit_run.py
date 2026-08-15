@@ -4,32 +4,27 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from src.models.event import Event
-from src.models.tag import Tag
 from src.scoring.curve_fit import expected_tags
 from src.scoring.refit import observations, run_refit
+from src.storage.extraction_observations import ExtractionObservation
 
 NOW = datetime(2026, 8, 15, 2, 0, tzinfo=timezone.utc)
 STATIC = (5.0, 190.0)
 
 
-def _event(i: int, chars: int, tags: int, *, model: str = "m", prompt: str = "v1",
-           source: str | None = "feed-a", superseded: str | None = None) -> Event:
-    event = Event(
+def _event(i: int, chars: int, tags: int, *, model: str | None = "m", prompt: str = "v1",
+           source: str | None = "feed-a") -> ExtractionObservation:
+    """One recorded extraction. Named for what it stands in for."""
+    return ExtractionObservation(
         event_id=f"evt-{i}",
-        source_event_candidates=[],
-        source_type="category",
-        created_at=NOW - timedelta(days=100) + timedelta(minutes=i),
-        updated_at=NOW,
-        title="t",
+        observed_at=NOW - timedelta(days=100) + timedelta(minutes=i),
+        chars=chars,
+        tags=tags,
+        model=model,
+        prompt_version=prompt,
+        degradation=None,
+        source=source,
     )
-    event.extraction_model = model
-    event.extraction_prompt_version = prompt
-    event.extraction_input_chars = chars
-    event.source = source
-    event.superseded_by = superseded
-    event.tags = [Tag(text=f"t{n}", weight=1.0) for n in range(tags)]
-    return event
 
 
 def _corpus(n: int, cap: float = 3.7, saturation: float = 125.0) -> list[Event]:
@@ -42,19 +37,10 @@ def _corpus(n: int, cap: float = 3.7, saturation: float = 125.0) -> list[Event]:
 
 class TestObservations:
     def test_rows_without_provenance_are_excluded(self):
-        events = _corpus(5) + [_event(99, 100, 2, model=None)]  # type: ignore[arg-type]
-
-        assert len(observations(events)) == 5
+        assert len(observations(_corpus(5) + [_event(99, 100, 2, model=None)])) == 5
 
     def test_rows_without_a_stored_input_are_excluded(self):
-        stale = _event(99, 0, 2)
-        stale.extraction_input_chars = None
-
-        assert observations(_corpus(5) + [stale]) == observations(_corpus(5))
-
-    def test_superseded_rows_are_excluded(self):
-        """A merged-away event is kept for provenance, not for training."""
-        assert len(observations(_corpus(5) + [_event(99, 100, 2, superseded="other")])) == 5
+        assert observations(_corpus(5) + [_event(99, 0, 2)]) == observations(_corpus(5))
 
     def test_it_is_keyed_on_the_feed_not_the_category(self):
         """`source_type` conflates feeds with different characteristics (#34)."""
@@ -62,13 +48,14 @@ class TestObservations:
 
         assert rows[0].source_type == "feed-b"
 
-    def test_it_falls_back_to_the_category_when_no_feed_is_recorded(self):
+    def test_a_row_with_no_feed_recorded_is_still_usable(self):
         rows = observations([_event(1, 100, 2, source=None)])
 
-        assert rows[0].source_type == "category"
+        assert rows[0].source_type == "unknown"
 
-    def test_rows_are_chronological(self):
-        """The change detector reads them as a series."""
+    def test_rows_are_ordered_by_when_they_were_observed(self):
+        """The change detector reads them as a series, and this is the only
+        honest chronology — `events.created_at` answers a different question."""
         rows = observations(list(reversed(_corpus(20))))
 
         assert [r.event_id for r in rows] == [f"evt-{i}" for i in range(20)]

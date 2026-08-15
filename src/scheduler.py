@@ -41,8 +41,10 @@ from src.storage.schema_check import Finding, check_database, format_findings
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, init_db
 from src.normalization.decision_sampling import select_for_storage
 from src.normalization.deduplicator import MergeDecision
+from src.storage.extraction_observations import ExtractionObservation
 from src.storage.protocols import (
     CurveStateRepository,
+    ExtractionObservationRepository,
     CandidateRepository,
     DedupDecisionRepository,
     EventRepository,
@@ -117,6 +119,7 @@ def run_batch(
     ranking_repository: RankingRepository,
     dedup_decision_repository: DedupDecisionRepository,
     curve_state_repository: CurveStateRepository | None = None,
+    extraction_observation_repository: ExtractionObservationRepository | None = None,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -426,17 +429,62 @@ def run_batch(
         _stage("save_scores", lambda: scores_repo.save(scores))
         _stage("save_rankings", lambda: rankings_repo.save(rankings))
 
+    # Recorded before the refit reads them, so tonight's extractions are in
+    # tonight's corpus. Append-only and keyed on the instant, so a retried run
+    # cannot double-count itself.
+    if not dry_run and extraction_observation_repository is not None:
+        _stage(
+            "record_extractions",
+            lambda: extraction_observation_repository.append(
+                _extraction_observations(events, now)
+            ),
+        )
+
     # Last, and wrapped like every other stage. It reads rows this run has just
     # written and applies to the *next* one, so a failure here costs a night's
     # refit and nothing else — the ranking is already saved above.
-    if not dry_run and curve_state_repository is not None:
-        _stage("refit", lambda: _refit(events, config, curve_state_repository, now))
+    if (
+        not dry_run
+        and curve_state_repository is not None
+        and extraction_observation_repository is not None
+    ):
+        _stage(
+            "refit",
+            lambda: _refit(
+                extraction_observation_repository, config, curve_state_repository, now
+            ),
+        )
 
     return _finish()
 
 
+def _extraction_observations(
+    events: list[Event], now: datetime
+) -> list[ExtractionObservation]:
+    """Tonight's extractions, as rows for the log.
+
+    Stamped with the run's clock rather than the event's `updated_at`, because
+    what the corpus needs is when the observation was made — the whole reason
+    `created_at` could not be used is that it answers a different question.
+    """
+    return [
+        ExtractionObservation(
+            event_id=event.event_id,
+            observed_at=now,
+            chars=event.extraction_input_chars or 0,
+            tags=len(event.tags),
+            model=event.extraction_model,
+            prompt_version=event.extraction_prompt_version,
+            degradation=event.extraction_degradation,
+            source=event.source,
+        )
+        for event in events
+        if event.extraction_model is not None and event.extraction_input_chars
+    ]
+
+
 def _refit(
-    events: list[Event],
+    observations_repo: ExtractionObservationRepository,
     config: AppConfig,
     curve_state: CurveStateRepository,
     now: datetime,
@@ -452,7 +500,7 @@ def _refit(
     from one where the refit never ran.
     """
     state = run_refit(
-        events,
+        observations_repo.load_all(),
         incumbent=(
             config.scoring.tag_confidence_cap,
             config.scoring.tag_confidence_saturation_chars,

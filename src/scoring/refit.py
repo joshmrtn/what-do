@@ -11,50 +11,46 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from src.models.event import Event
 from src.scoring.change_detection import detect_change
 from src.scoring.curve_fit import Observation
 from src.scoring.refit_policy import RefitPolicy, plan_refit
+from src.storage.extraction_observations import ExtractionObservation
 from src.scoring.source_terms import source_multipliers
 from src.storage.curve_state import CurveState
 
 
-def observations(events: list[Event]) -> list[Observation]:
-    """The rows a refit may learn from, in creation order.
+def observations(recorded: list[ExtractionObservation]) -> list[Observation]:
+    """The rows a refit may learn from, in the order they were observed.
 
-    Only extractions with provenance and a stored input. Rows without
-    `extraction_model` predate provenance and cannot be told apart from a
-    different prompt's output; rows without `extraction_input_chars` predate the
-    observation being kept and their length would be a reconstruction.
+    Read from the extraction log rather than from `events`, and that is the
+    whole point: `events` keeps only the latest extraction, so a corpus read
+    there is current state, and its only usable timestamp is `created_at` —
+    when the *event* was created. Every row in the largest feed was
+    re-extracted days after creation, so a series ordered that way is not a
+    chronology of extractions at all, and the change detector was reading one.
 
-    Keyed on `source` rather than `source_type`: the category holds feeds with
-    genuinely different characteristics, so a term keyed on it averages
-    populations that describe neither (#34).
+    Only observations carrying provenance: without `model` a row cannot be told
+    apart from a different prompt's output.
 
-    Chronological, because the change detector reads them as a series.
+    Keyed on the feed rather than the category, which averages populations that
+    describe neither (#34).
     """
-    usable = [
-        event
-        for event in events
-        if event.extraction_model is not None
-        and event.extraction_input_chars
-        and event.superseded_by is None
-    ]
-    usable.sort(key=lambda event: event.created_at)
+    usable = [row for row in recorded if row.model is not None and row.chars > 0]
+    usable.sort(key=lambda row: (row.observed_at, row.event_id))
     return [
         Observation(
-            event_id=event.event_id,
-            chars=event.extraction_input_chars or 0,
-            tags=float(len(event.tags)),
-            source_type=event.source or event.source_type,
-            regime=f"{event.extraction_model}/{event.extraction_prompt_version}",
+            event_id=row.event_id,
+            chars=row.chars,
+            tags=float(row.tags),
+            source_type=row.source or "unknown",
+            regime=f"{row.model}/{row.prompt_version}",
         )
-        for event in usable
+        for row in usable
     ]
 
 
 def run_refit(
-    events: list[Event],
+    recorded: list[ExtractionObservation],
     *,
     incumbent: tuple[float, float],
     now: datetime,
@@ -66,7 +62,7 @@ def run_refit(
     scores is part of the record — the only case that records nothing is having
     no usable rows at all.
     """
-    rows = observations(events)
+    rows = observations(recorded)
     if not rows:
         return None
 

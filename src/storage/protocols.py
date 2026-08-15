@@ -21,6 +21,7 @@ from src.models.run import RunRecord
 from src.normalization.decision_sampling import SampledDecision
 from src.storage.curve_state import CurveState
 from src.storage.dedup_decisions import StoredDecision
+from src.storage.extraction_observations import ExtractionObservation
 from src.storage.http_cache import CachedResponse
 
 
@@ -291,6 +292,18 @@ class CurveStateRepository(Protocol):
 
     def save(self, state: CurveState) -> None:
         """Replace the curve in force, provenance included."""
+        ...
+
+
+class ExtractionObservationRepository(Protocol):
+    """Append-only storage for what each extraction was asked and answered."""
+
+    def append(self, observations: list[ExtractionObservation]) -> None:
+        """Record extractions. Re-recording the same instant is a no-op."""
+        ...
+
+    def load_all(self) -> list[ExtractionObservation]:
+        """Every observation, oldest first — the chronology a detector needs."""
         ...
 
 

@@ -61,6 +61,7 @@ import dataclasses
 from src.composition.storage import build_batch_storage
 from src.storage.protocols import (
     CurveStateRepository,
+    ExtractionObservationRepository,
     DedupDecisionRepository,
     CandidateRepository,
     EntityRepository,
@@ -99,6 +100,7 @@ class BatchDependencies:
     ranking_repository: RankingRepository
     dedup_decision_repository: DedupDecisionRepository
     curve_state_repository: CurveStateRepository
+    extraction_observation_repository: ExtractionObservationRepository
 
 
 def build_dependencies(
@@ -373,6 +375,7 @@ def build_dependencies(
         ranking_repository=storage.rankings,
         dedup_decision_repository=storage.dedup_decisions,
         curve_state_repository=storage.curve_state,
+        extraction_observation_repository=storage.extraction_observations,
     )
 
 
