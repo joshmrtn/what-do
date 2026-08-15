@@ -160,6 +160,21 @@ def db_path(tmp_path: Path) -> Path:
     return path
 
 
+def _invoke_add_source(seeds: Path, *argv: str) -> tuple[int, str, str]:
+    """Run `add-source` against a throwaway seeds file.
+
+    Never the real one: this command *writes*, and probing it by hand during the
+    flag audit put `'@   '` into `data/seeds.yaml`.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = run(
+        ["add-source", *argv, "--seeds-file", str(seeds)],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
 def _invoke(
     db_path: Path,
     *argv: str,
@@ -708,3 +723,61 @@ class TestInputThatCannotBeHonoured:
 
         quiet = RUN_DATE + timedelta(days=3)
         assert quiet.strftime("%A %-d %B") in out
+
+
+class TestBlankInputIsNotInput:
+    """An empty or whitespace-only value is not a value.
+
+    The same family as `--explain ''` — a falsy string skips the `if args.x:`
+    that was meant to detect absence, so a flag the user typed is treated as one
+    they did not. Found by probing the whole flag surface after the `--upcoming`
+    sentinel, rather than waiting for one to bite.
+    """
+
+    def test_a_blank_time_window_is_refused(self, db_path):
+        """It rendered an unfiltered listing — the filter silently not applied
+        is worse than no filter, because the output looks filtered."""
+        code, out, err = _invoke(db_path, "--time", "")
+
+        assert code == 1
+        assert "--time" in err
+        assert out == ""
+
+    def test_a_blank_date_is_refused(self, db_path):
+        code, out, err = _invoke(db_path, "--date", "   ")
+
+        assert code == 1
+        assert "--date" in err
+        assert out == ""
+
+    def test_a_blank_handle_is_not_added_to_seeds(self, tmp_path):
+        """The worst of them: `add-source '   '` wrote `'@   '` into seeds.yaml
+        and reported success. A whitespace handle is a real entry in a real file
+        that discovery would then try to fetch."""
+        seeds = tmp_path / "seeds.yaml"
+        seeds.write_text("handles: []\nvenues: []\n")
+
+        code, out, err = _invoke_add_source(seeds, "   ")
+
+        assert code == 1
+        assert "handle" in err.lower()
+        assert yaml.safe_load(seeds.read_text())["handles"] == []
+
+    def test_a_blank_venue_name_is_not_added_to_seeds(self, tmp_path):
+        seeds = tmp_path / "seeds.yaml"
+        seeds.write_text("handles: []\nvenues: []\n")
+
+        code, _, err = _invoke_add_source(seeds, "--venue", "  ", "--address", "1 High St")
+
+        assert code == 1
+        assert yaml.safe_load(seeds.read_text())["venues"] == []
+
+    def test_a_real_handle_is_still_added(self, tmp_path):
+        """The guard must not make the command useless."""
+        seeds = tmp_path / "seeds.yaml"
+        seeds.write_text("handles: []\nvenues: []\n")
+
+        code, out, _ = _invoke_add_source(seeds, "@jazzclub")
+
+        assert code == 0
+        assert yaml.safe_load(seeds.read_text())["handles"] == ["@jazzclub"]

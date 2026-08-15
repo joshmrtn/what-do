@@ -176,8 +176,15 @@ def _cmd_add_source(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
     seeds_path = Path(args.seeds_file) if args.seeds_file else _DEFAULT_SEEDS_PATH
     data = _load_seeds_raw(seeds_path)
 
-    if args.handle:
-        handle = args.handle if args.handle.startswith("@") else f"@{args.handle}"
+    # Stripped before the truthiness test: a whitespace-only handle is falsy
+    # to a person and truthy to Python, so `add-source '   '` wrote '@   ' into
+    # seeds.yaml and reported success — a real entry that discovery would fetch.
+    handle_arg = args.handle.strip() if args.handle else ""
+    venue_arg = args.venue.strip() if args.venue else ""
+    address_arg = args.address.strip() if args.address else ""
+
+    if handle_arg:
+        handle = handle_arg if handle_arg.startswith("@") else f"@{handle_arg}"
         if handle in data.get("handles", []):
             print(f"{handle} is already in seeds.yaml", file=stdout)
             return 0
@@ -186,16 +193,16 @@ def _cmd_add_source(args: argparse.Namespace, stdout: TextIO, stderr: TextIO) ->
         print(f"Added {handle} to seeds.yaml", file=stdout)
         return 0
 
-    if args.venue and args.address:
+    if venue_arg and address_arg:
         venues = data.get("venues", [])
         for v in venues:
-            if v.get("name") == args.venue:
-                print(f"Venue '{args.venue}' is already in seeds.yaml", file=stdout)
+            if v.get("name") == venue_arg:
+                print(f"Venue '{venue_arg}' is already in seeds.yaml", file=stdout)
                 return 0
-        venues.append({"name": args.venue, "address": args.address})
+        venues.append({"name": venue_arg, "address": address_arg})
         data["venues"] = venues
         _write_seeds(seeds_path, data)
-        print(f"Added venue '{args.venue}' to seeds.yaml", file=stdout)
+        print(f"Added venue '{venue_arg}' to seeds.yaml", file=stdout)
         return 0
 
     print("Error: provide --handle or both --venue and --address", file=stderr)
@@ -241,11 +248,19 @@ def _cmd_recommend(
         print(f"Error: --limit must be 1 or more, got {args.limit}", file=stderr)
         return 1
 
-    if args.explain is not None and not args.explain.strip():
-        # An empty string is falsy, so this fell through to the default view —
-        # the one command that must never quietly answer a different question.
-        print("Error: --explain needs an event: a rank, or part of a title", file=stderr)
-        return 1
+    # A blank value is not a value. Each of these is read with `if args.x:`
+    # somewhere, and an empty string is falsy — so a flag the user typed reads
+    # as one they did not, and the command answers a different question.
+    for flag, value, wants in (
+        ("--explain", args.explain, "an event: a rank, or part of a title"),
+        ("--time", args.time, "a window, e.g. 20:30-23:30"),
+        ("--date", args.date, "a date as YYYY-MM-DD"),
+        ("--run-date", args.run_date, "a date as YYYY-MM-DD"),
+        ("--db", args.db, "a path"),
+    ):
+        if value is not None and not value.strip():
+            print(f"Error: {flag} needs {wants}", file=stderr)
+            return 1
 
     try:
         run_date = date.fromisoformat(args.run_date) if args.run_date else None
