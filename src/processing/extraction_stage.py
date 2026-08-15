@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from src.models.event import Event
+from src.normalization.normalizer import normalize_venue
 from src.processing.extraction_input import (
     extraction_input,
     extraction_input_hash,
@@ -306,7 +307,12 @@ class ExtractionStage:
         if event.title is None:
             event.title = result.title
         if event.venue is None:
-            event.venue = result.venue
+            # Through the same canonicaliser normalization uses. A venue the
+            # model supplies is arriving after normalization has run, so
+            # without this it reaches storage in the model's own casing while
+            # every venue from a listing is title-cased — two spellings of one
+            # place, which then fail `venues_match` and never deduplicate.
+            event.venue = normalize_venue(result.venue)
         if event.start_time is None:
             event.start_time = result.start_time
         if event.end_time is None:

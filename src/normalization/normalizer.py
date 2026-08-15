@@ -26,8 +26,14 @@ def _normalize_text(text: str | None) -> str | None:
     return text
 
 
-def _normalize_venue(name: str | None) -> str | None:
-    """Canonicalize venue name: move trailing article to front, title-case."""
+def normalize_venue(name: str | None) -> str | None:
+    """Canonicalize venue name: move trailing article to front, title-case.
+
+    Public because extraction needs it too: a venue the model supplies arrives
+    *after* normalization has run, and without the same treatment it reaches
+    storage in the model's own casing while every venue from a listing is
+    title-cased. Two spellings of one place then fail `venues_match`.
+    """
     if name is None:
         return None
     name = re.sub(r"\s+", " ", name.replace("\xa0", " ")).strip()
@@ -129,7 +135,7 @@ class NormalizationEngine:
             url=candidate.url,
             image_url=candidate.image_url,
             title=title,
-            venue=_normalize_venue(candidate.venue),
+            venue=normalize_venue(candidate.venue),
             description=_normalize_text(candidate.description),
             location=_normalize_text(candidate.location),
             start_time=start_time,

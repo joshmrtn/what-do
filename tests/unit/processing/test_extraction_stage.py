@@ -1460,3 +1460,23 @@ class TestOnlyEventsRankingCanUseAreExtracted:
         stage.process([self._future()])
 
         assert stage.out_of_scope == 0
+
+
+def test_a_venue_the_model_supplies_is_canonicalised():
+    """Extraction fills `event.venue` when the listing had none, and that value
+    used to reach storage without passing through `_normalize_venue`.
+
+    Measured 2026-08-14: it is why one Seven Gables event was stored as "The
+    House of the Seven Gables" while the other fifty-one were "The House Of The
+    Seven Gables". The candidates table held a single spelling — the second was
+    written by the model, in its own casing, straight onto the event. Two forms
+    of one venue then failed `venues_match` and never deduplicated.
+    """
+    event = _make_event(venue=None)
+    provider = _make_provider()
+    provider.extract.return_value.venue = "the house of the seven gables"
+    stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
+
+    results = stage.process([event])
+
+    assert results[0].venue == "The House Of The Seven Gables"

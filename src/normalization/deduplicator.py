@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field, replace
 import copy
 from datetime import datetime, timedelta
@@ -89,7 +90,21 @@ def _title_similarity(a: str | None, b: str | None) -> float | None:
 
 
 def venues_match(a: str | None, b: str | None) -> bool:
-    """True when venues are considered the same (exact canonical match).
+    """True when two venues are the same place.
+
+    Exact equality, on a **canonical key** rather than on the raw string — the
+    same shape as putting two timestamps in UTC before comparing them, not a
+    loosening. A *fuzzy* venue match would be a real loosening, and this guard
+    is what protects Pass 2 from the weak discriminative power of summary
+    vectors: two different events at one venue share the venue name, the format
+    and the night, so they score *higher* on summary cosine than a genuine
+    duplicate reworded by another source (#13).
+
+    Raw equality missed real duplicates. Measured over 154 distinct venues,
+    three collide — `northshorenightout_listing` publishes both "The Rhumb Line"
+    and "Rhumb Line", and extraction writes a venue in the model's own casing
+    while normalization title-cases it. Four event pairs, two of them genuine
+    duplicates that never merged.
 
     Shared with Pass 2, which applies the same structural guard.
     """
@@ -97,7 +112,25 @@ def venues_match(a: str | None, b: str | None) -> bool:
         return True
     if a is None or b is None:
         return False
-    return a == b
+    return canonical_venue(a) == canonical_venue(b)
+
+
+#: A leading article, which sources disagree about. Only at the start and only
+#: as a whole word: stripping one mid-name would collapse "The Castle" into
+#: "Castle Rock".
+_LEADING_ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
+
+
+def canonical_venue(name: str) -> str:
+    """The comparison key for a venue name.
+
+    Deliberately *not* what gets stored or displayed. Stripping the article from
+    the stored value would put "House Of The Seven Gables" on screen, so the
+    display form stays as the source wrote it and only the comparison is
+    normalised.
+    """
+    key = _LEADING_ARTICLE_RE.sub("", name.strip(), count=1)
+    return " ".join(key.casefold().split())
 
 
 def times_match(

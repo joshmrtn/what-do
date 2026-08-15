@@ -10,7 +10,11 @@ import pytest
 
 from src.config import DeduplicationConfig
 from src.models.event import Event
-from src.normalization.deduplicator import DeduplicationEngine
+from src.normalization.deduplicator import (
+    DeduplicationEngine,
+    canonical_venue,
+    venues_match,
+)
 
 
 _TZ = ZoneInfo("America/New_York")
@@ -407,3 +411,47 @@ class TestTheComparedTextIsFingerprinted:
         ])[0]
 
         assert before.content_hash_a != after.content_hash_a
+
+
+class TestVenueMatching:
+    """Exact equality, on a canonical key rather than on the raw string.
+
+    Not a loosening: the guard stays exact, and what changes is the
+    representation both sides are put into first — the same shape as
+    canonicalising two timestamps to UTC before comparing them. A *fuzzy* venue
+    match would be a real loosening, and this guard is what protects Pass 2 from
+    the weak discriminative power of summary vectors (#13).
+
+    Measured 2026-08-14 on 154 distinct venues: three collide, producing four
+    event pairs. Two are genuine duplicates the exact rule was silently missing.
+    """
+
+    def test_a_leading_article_does_not_make_two_venues_different(self):
+        """`northshorenightout_listing` publishes both forms for one venue."""
+        assert venues_match("The Rhumb Line", "Rhumb Line")
+
+    def test_case_does_not_make_two_venues_different(self):
+        """The model writes natural casing, normalization title-cases."""
+        assert venues_match(
+            "The House Of The Seven Gables", "The House of the Seven Gables"
+        )
+
+    def test_two_genuinely_different_venues_still_do_not_match(self):
+        """The guard has to stay a guard: a shared prefix is not a shared venue."""
+        assert not venues_match("The Rhumb Line", "Rhumb Line Cafe")
+
+    def test_only_a_leading_article_is_stripped(self):
+        """Asserted on the key directly: at `venues_match` level a global rule
+        and an anchored one agree on almost every pair, so the weaker test
+        passed with the anchor removed. An internal article carries meaning —
+        "Theatre in the Round" is not "Theatre in Round"."""
+        assert canonical_venue("Theatre in the Round") == "theatre in the round"
+
+    def test_the_key_is_the_name_when_there_is_no_article(self):
+        assert canonical_venue("Gulu-Gulu Cafe") == "gulu-gulu cafe"
+
+    def test_two_absent_venues_still_match(self):
+        assert venues_match(None, None)
+
+    def test_one_absent_venue_still_does_not(self):
+        assert not venues_match("The Rhumb Line", None)
