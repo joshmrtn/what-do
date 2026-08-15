@@ -824,17 +824,59 @@ class TestFlagsThatCannotWorkTogether:
         assert code == 1
         assert "--explain" in err and "--after-sunset" in err
 
-    def test_upcoming_with_a_time_filter_is_refused_for_now(self, db_path):
-        """Wanted, and not yet built — `overlapping` needs a night to anchor to
-        and the upcoming view spans many. Refused rather than ignored, so the
-        gap is visible instead of looking like it worked."""
-        code, out, err = _invoke(db_path, "--upcoming", "--time", "20:00-23:59")
+    def test_upcoming_with_a_night_selector_is_refused(self, db_path):
+        """`--date` and `--days` also choose *which events* are shown, so a pair
+        would mean silently ignoring one.
+
+        `--time` and `--after-sunset` are not here: they narrow what is already
+        chosen rather than choosing it, and are honoured (#32). They were
+        refused for an hour, as a placeholder that kept the gap visible.
+        """
+        code, out, err = _invoke(db_path, "--upcoming", "--date", TOMORROW.isoformat())
 
         assert code == 1
-        assert "--upcoming" in err and "--time" in err
+        assert "--upcoming" in err and "--date" in err
 
     def test_a_lone_flag_is_unaffected(self, db_path):
         """The guards must not make any of them unusable on their own."""
         for argv in (["--all"], ["--raw"], ["--upcoming"], ["--time", "20:00-23:59"]):
             code, _, _ = _invoke(db_path, *argv)
             assert code == 0, argv
+
+
+class TestUpcomingFilters:
+    """`--upcoming` honours the filters (#32).
+
+    The use case it exists for: what is coming up that I could do in the
+    evening. Refusing them was a placeholder so the gap stayed visible.
+    """
+
+    def test_a_time_window_selects_within_each_night(self, db_path):
+        """The window is a time of day, so it has to be anchored to the night
+        each event falls on — the upcoming view spans many, and one shared
+        anchor would compare tomorrow's 20:00 against tonight's window."""
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20", "--time", "20:00-23:59")
+
+        assert "Tomorrow Gig" in out      # 20:00
+        assert "Tomorrow Film" in out     # 21:00
+        assert "Tomorrow Market" not in out  # 11:00
+
+    def test_without_the_window_the_daytime_event_is_still_there(self, db_path):
+        """The control: it is the filter doing the work, not the day range."""
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20")
+
+        assert "Tomorrow Market" in out
+
+    def test_after_sunset_is_accepted(self, db_path):
+        code, _, err = _invoke(db_path, "--upcoming", "--after-sunset")
+
+        assert code == 0
+        assert err == ""
+
+    def test_the_result_stays_in_rank_order(self, db_path):
+        """Grouping by night to anchor the window must not reorder the list —
+        the batch's rank is the product."""
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20", "--time", "20:00-23:59")
+
+        ranks = [int(n) for n in re.findall(r"^  (\d+)\. ", out, re.M)]
+        assert ranks == sorted(ranks)

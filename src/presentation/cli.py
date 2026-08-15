@@ -323,7 +323,13 @@ def _cmd_recommend(
 
     if args.upcoming is not None:
         return _cmd_upcoming(
-            args, pairs=pairs, tonight=tonight, stdout=stdout, stderr=stderr, view=view
+            args,
+            pairs=pairs,
+            tonight=tonight,
+            window=window,
+            stdout=stdout,
+            stderr=stderr,
+            view=view,
         )
 
     try:
@@ -394,6 +400,7 @@ def _cmd_upcoming(
     *,
     pairs: list[RankedEvent],
     tonight: date,
+    window: tuple[time, time] | None,
     stdout: TextIO,
     stderr: TextIO,
     view: ViewSettings,
@@ -427,6 +434,39 @@ def _cmd_upcoming(
         if pair.event.start_time is not None
         and first <= pair.event.start_time.astimezone(view.zone).date() <= last
     ]
+    if window is not None:
+        # Grouped by the night each event falls on, because a time-of-day
+        # window has to be anchored somewhere and this view spans many nights.
+        # One shared anchor would compare a Saturday 20:00 event against
+        # tonight's window — the bug this replaced, in a new place.
+        #
+        # `overlapping` keeps its single-night contract; the view that knows it
+        # has many does the grouping, rather than the filter learning to guess.
+        by_night: dict[date, list[RankedEvent]] = {}
+        for pair in selected:
+            assert pair.event.start_time is not None  # filtered above
+            night = night_of(
+                pair.event.start_time.astimezone(view.zone), view.day_starts_at
+            )
+            by_night.setdefault(night, []).append(pair)
+        selected = [
+            pair
+            for night, group in by_night.items()
+            for pair in overlapping(
+                group,
+                *window,
+                night=night,
+                long_span_hours=view.view.long_span_hours,
+            )
+        ]
+
+    if args.after_sunset:
+        # Needs no night at all: it reads each event's own recorded sunset
+        # rather than tonight's, which is what makes it correct on any date.
+        selected = after_sunset(selected)
+
+    # Re-sorted after grouping: the batch's rank order is the product, and
+    # bucketing by night would otherwise leave the list in night order.
     selected.sort(key=lambda ranked: ranked.rank)
 
     print(
@@ -459,10 +499,10 @@ _INCOMPATIBLE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("explain", "--explain", ("time", "after_sunset", "date", "days", "upcoming")),
     # `--upcoming` spans many nights, and `overlapping` anchors its window to
     # one. Wanted, and the reason it is refused rather than ignored.
-    # `--date` and `--days` also choose which events are shown, so a pair would
-    # mean silently ignoring one; `--time` and `--after-sunset` are the wanted
-    # ones, refused only until `overlapping` can anchor per event.
-    ("upcoming", "--upcoming", ("time", "after_sunset", "date", "days")),
+    # `--date` and `--days` also choose *which events* are shown, so a pair
+    # would mean silently ignoring one. `--time` and `--after-sunset` narrow
+    # what is already chosen, and are honoured (#32).
+    ("upcoming", "--upcoming", ("date", "days")),
 )
 
 #: Argument names to the flag a person typed, for the message.

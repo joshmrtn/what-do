@@ -663,3 +663,44 @@ class TestTheViewReadsUnderTheConfiguredModel:
         harness.invoke()
 
         assert harness.requested_embedding_model == DEFAULT_EMBEDDING_MODEL
+
+
+class TestUpcomingKeepsRankOrder:
+    """Grouping by night to anchor the window must not reorder the list.
+
+    The e2e fixture cannot show this: its upcoming events all fall on one night,
+    so there is only ever one group and the order survives by accident. Two
+    nights with interleaved ranks is what tells the difference.
+    """
+
+    def test_ranks_stay_ascending_across_nights(self):
+        harness = _Harness()
+        # Both after tonight, since that is what `--upcoming` covers. The
+        # worse-ranked one is listed first, so night-bucket order and rank order
+        # disagree — otherwise the assertion holds by accident.
+        harness.pairs = [
+            _pair("far", "Farther Night", datetime(2025, 6, 23, 21, 0, tzinfo=TZ), rank=9),
+            _pair("near", "Nearer Night", datetime(2025, 6, 22, 21, 0, tzinfo=TZ), rank=2),
+        ]
+
+        harness.invoke("--upcoming", "--time", "20:00-23:59")
+
+        assert harness.out.index("Nearer Night") < harness.out.index("Farther Night")
+
+
+class TestUpcomingAppliesAfterSunset:
+    """Discriminating where the e2e fixture cannot: it gives every event the
+    same sunset, so nothing is ever dropped by it there."""
+
+    def test_an_event_without_sunset_data_is_dropped(self):
+        harness = _Harness()
+        tomorrow = datetime(2025, 6, 22, 21, 0, tzinfo=TZ)
+        harness.pairs = [
+            _pair("has", "Has Sunset", tomorrow, sunset=datetime(2025, 6, 22, 20, 15, tzinfo=TZ)),
+            _pair("none", "No Sunset", tomorrow, rank=2, sunset=None),
+        ]
+
+        harness.invoke("--upcoming", "--after-sunset")
+
+        assert "Has Sunset" in harness.out
+        assert "No Sunset" not in harness.out
