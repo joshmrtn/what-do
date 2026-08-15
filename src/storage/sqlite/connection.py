@@ -248,7 +248,28 @@ CREATE TABLE IF NOT EXISTS events (
     -- rather than an observation. Declared last because ALTER TABLE appends, so
     -- a fresh build and the migrated live database agree on position too.
     extraction_input          TEXT,
-    extraction_input_chars    INTEGER
+    extraction_input_chars    INTEGER,
+    -- The feed, as against `source_type`'s category. Declared last because
+    -- ALTER TABLE appends.
+    source                    TEXT
+);
+
+-- The tag-confidence curve currently in force, and how it got there.
+--
+-- One row. The refit runs at the end of a batch and writes here; the *next*
+-- run reads it, so a night is scored with constants that did not move under it.
+-- Absent or empty means the config defaults stand, which is the state of a
+-- fresh deployment and of any regime that has not armed.
+CREATE TABLE IF NOT EXISTS curve_state (
+    id                INTEGER PRIMARY KEY CHECK (id = 1),
+    cap               REAL NOT NULL,
+    saturation        REAL NOT NULL,
+    regime            TEXT,
+    updated_at        TEXT NOT NULL,
+    -- The decision behind it, as JSON: row counts, both held-out scores, the
+    -- per-source multipliers, any change points. A stored score is only
+    -- interpretable against the fit that produced it.
+    provenance        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS event_tags (

@@ -263,3 +263,17 @@ class TestCandidateMetadataSurvives:
         event = _normalize(_candidate()).events[0]
 
         assert "listing_category" not in event.metadata
+
+
+def test_the_event_records_which_feed_produced_it():
+    """`source_type` is a category; `source` is the feed.
+
+    One category can hold feeds with genuinely different characteristics —
+    measured, `northshorenightout` holds an ICS feed averaging 290 chars and
+    2.06 tags and an HTML listing averaging 83 and 1.47. Anything keyed on the
+    category alone averages two populations that describe neither (#34).
+    """
+    result = _normalize(_candidate(source="northshorenightout_listing"))
+
+    assert result.events[0].source == "northshorenightout_listing"
+    assert result.events[0].source_type == "apify"

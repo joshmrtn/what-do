@@ -71,6 +71,13 @@ class Event:
     #: Its character count, stored rather than derived on read. A length
     #: computed from a string that was never stored is the problem, not the fix.
     extraction_input_chars: int | None = None
+    #: The feed that produced it, as against `source_type`, which is the
+    #: category. One category can hold feeds with genuinely different
+    #: characteristics — `northshorenightout` holds an ICS feed averaging 290
+    #: chars and 2.06 tags and an HTML listing averaging 83 and 1.47 — so
+    #: anything keyed on the category alone averages two populations and
+    #: describes neither (#34).
+    source: str | None = None
     #: Hash of the tags and summary the vectors were last built from. Because
     #: those are extraction's output, a re-extraction that changes them changes
     #: this too, so embeddings follow automatically rather than leaving vectors

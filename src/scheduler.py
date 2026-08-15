@@ -35,12 +35,14 @@ from src.normalization.service import NormalizationService
 from src.processing.extraction_stage import ExtractionStage
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.ranking import RankingEngine
+from src.scoring.refit import run_refit
 from src.scoring.similarity_stage import SimilarityStage
 from src.storage.schema_check import Finding, check_database, format_findings
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, init_db
 from src.normalization.decision_sampling import select_for_storage
 from src.normalization.deduplicator import MergeDecision
 from src.storage.protocols import (
+    CurveStateRepository,
     CandidateRepository,
     DedupDecisionRepository,
     EventRepository,
@@ -114,6 +116,7 @@ def run_batch(
     score_repository: ScoreRepository,
     ranking_repository: RankingRepository,
     dedup_decision_repository: DedupDecisionRepository,
+    curve_state_repository: CurveStateRepository | None = None,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -423,7 +426,41 @@ def run_batch(
         _stage("save_scores", lambda: scores_repo.save(scores))
         _stage("save_rankings", lambda: rankings_repo.save(rankings))
 
+    # Last, and wrapped like every other stage. It reads rows this run has just
+    # written and applies to the *next* one, so a failure here costs a night's
+    # refit and nothing else — the ranking is already saved above.
+    if not dry_run and curve_state_repository is not None:
+        _stage("refit", lambda: _refit(events, config, curve_state_repository, now))
+
     return _finish()
+
+
+def _refit(
+    events: list[Event],
+    config: AppConfig,
+    curve_state: CurveStateRepository,
+    now: datetime,
+) -> None:
+    """Re-derive the tag-confidence curve from what extraction actually did.
+
+    Reads the incumbent from config, which composition has already replaced with
+    whatever the last refit accepted — so the EWMA steps from where the run
+    scored rather than from the file's defaults.
+
+    Records the outcome whether or not it moved. "The gate said no" is part of
+    the record: without it a night where nothing changed is indistinguishable
+    from one where the refit never ran.
+    """
+    state = run_refit(
+        events,
+        incumbent=(
+            config.scoring.tag_confidence_cap,
+            config.scoring.tag_confidence_saturation_chars,
+        ),
+        now=now,
+    )
+    if state is not None:
+        curve_state.save(state)
 
 
 def _merge_candidates(

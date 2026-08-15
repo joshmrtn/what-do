@@ -541,3 +541,15 @@ class TestExtractionObservation:
         loaded = repo.load_all()[0]
         assert loaded.extraction_input is None
         assert loaded.extraction_input_chars is None
+
+
+class TestFeedProvenance:
+    """Which feed produced an event, not just which category it belongs to."""
+
+    def test_the_feed_survives_a_round_trip(self, repo):
+        event = _full_event()
+        event.source = "northshorenightout_listing"
+
+        repo.save([event])
+
+        assert repo.load_all()[0].source == "northshorenightout_listing"

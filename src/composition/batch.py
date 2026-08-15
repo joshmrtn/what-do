@@ -56,8 +56,11 @@ from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
+import dataclasses
+
 from src.composition.storage import build_batch_storage
 from src.storage.protocols import (
+    CurveStateRepository,
     DedupDecisionRepository,
     CandidateRepository,
     EntityRepository,
@@ -95,6 +98,7 @@ class BatchDependencies:
     score_repository: ScoreRepository
     ranking_repository: RankingRepository
     dedup_decision_repository: DedupDecisionRepository
+    curve_state_repository: CurveStateRepository
 
 
 def build_dependencies(
@@ -149,6 +153,10 @@ def build_dependencies(
         return None
 
     storage = build_batch_storage(db_path, config.models.embeddings)
+    # The curve the *last* refit accepted, applied before anything is scored.
+    # Reading it here rather than mid-run is the point: a night is scored with
+    # constants that did not move underneath it.
+    config = _with_accepted_curve(config, storage.curve_state, logger)
     handles = _handles(storage.entities, seeds_path)
     blocklist = _blocklist(blocklist_path)
 
@@ -364,6 +372,44 @@ def build_dependencies(
         score_repository=storage.scores,
         ranking_repository=storage.rankings,
         dedup_decision_repository=storage.dedup_decisions,
+        curve_state_repository=storage.curve_state,
+    )
+
+
+def _with_accepted_curve(
+    config: AppConfig, curve_state: CurveStateRepository, logger: Any
+) -> AppConfig:
+    """Apply the curve the last refit accepted, if there is one.
+
+    Absent means the config defaults stand — a fresh deployment, or a regime
+    that has never armed. That is the normal state and is not announced as a
+    problem; the values in force are logged either way so a run's scores can be
+    read against them.
+    """
+    state = curve_state.load()
+    if state is None:
+        logger.info(
+            f"tag-confidence curve: config defaults "
+            f"(cap {config.scoring.tag_confidence_cap}, "
+            f"saturation {config.scoring.tag_confidence_saturation_chars})",
+            component="scoring",
+            duration_ms=0,
+        )
+        return config
+
+    logger.info(
+        f"tag-confidence curve: cap {state.cap:.3f}, saturation "
+        f"{state.saturation:.1f} (regime {state.regime}, fitted {state.updated_at:%Y-%m-%d})",
+        component="scoring",
+        duration_ms=0,
+    )
+    return dataclasses.replace(
+        config,
+        scoring=dataclasses.replace(
+            config.scoring,
+            tag_confidence_cap=state.cap,
+            tag_confidence_saturation_chars=state.saturation,
+        ),
     )
 
 

@@ -19,6 +19,7 @@ from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.models.run import RunRecord
 from src.normalization.decision_sampling import SampledDecision
+from src.storage.curve_state import CurveState
 from src.storage.dedup_decisions import StoredDecision
 from src.storage.http_cache import CachedResponse
 
@@ -274,6 +275,22 @@ class CandidateRepository(Protocol):
             Matching candidates, ordered by discovery then id. The order is
             fixed because dedup picks a merge base partly on the order it sees.
         """
+        ...
+
+
+class CurveStateRepository(Protocol):
+    """Persistence for the tag-confidence curve currently in force.
+
+    Written at the end of a batch and read by the *next* one, so no night is
+    scored with constants that moved underneath it.
+    """
+
+    def load(self) -> CurveState | None:
+        """The curve in force, or None when the config defaults still stand."""
+        ...
+
+    def save(self, state: CurveState) -> None:
+        """Replace the curve in force, provenance included."""
         ...
 
 

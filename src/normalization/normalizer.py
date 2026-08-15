@@ -132,6 +132,7 @@ class NormalizationEngine:
             event_id=str(uuid.uuid4()),
             source_event_candidates=[candidate.id],
             source_type=candidate.source_type,
+            source=candidate.source,
             url=candidate.url,
             image_url=candidate.image_url,
             title=title,
