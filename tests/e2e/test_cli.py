@@ -422,3 +422,72 @@ class TestExplain:
 
         assert "score " not in out
         assert "not recorded" not in out
+
+
+class TestOtherNights:
+    """Days that were ranked and stored but unreachable (#19).
+
+    The batch ranks every event in a run, spanning the whole horizon. The CLI
+    could only ever show one of those days — `--run-date` selects which *batch*
+    to read, not which night to display — so tomorrow's events were scored,
+    ranked, persisted and invisible. `--raw` was the only way to see them, and
+    it bypasses ranking entirely.
+    """
+
+    def test_a_named_date_shows_that_night(self, db_path):
+        code, out, _ = _invoke(db_path, "--date", TOMORROW.isoformat())
+
+        assert code == 0
+        assert "Tomorrow Gig" in out
+        assert "Karaoke Night" not in out
+
+    def test_the_heading_names_the_night_being_shown(self, db_path):
+        _, out, _ = _invoke(db_path, "--date", TOMORROW.isoformat())
+
+        assert TOMORROW.strftime("%A %-d %B") in out
+
+    def test_a_malformed_date_is_a_usage_error(self, db_path):
+        code, _, err = _invoke(db_path, "--date", "next tuesday")
+
+        assert code == 1
+        assert "YYYY-MM-DD" in err
+
+    def test_a_night_with_nothing_ranked_says_so(self, db_path):
+        """Rather than rendering an empty list, which reads like a failure."""
+        code, out, _ = _invoke(db_path, "--date", "2025-12-25")
+
+        assert code == 0
+        assert "No events" in out
+
+    def test_several_nights_render_as_separate_sections(self, db_path):
+        """Each night gets its own heading and its own ranking, because the
+        question "what is on Saturday" is per-night."""
+        code, out, _ = _invoke(db_path, "--days", "2")
+
+        assert code == 0
+        assert RUN_DATE.strftime("%A %-d %B") in out
+        assert TOMORROW.strftime("%A %-d %B") in out
+        assert out.index(RUN_DATE.strftime("%A %-d %B")) < out.index(
+            TOMORROW.strftime("%A %-d %B")
+        )
+
+    def test_days_starts_from_tonight(self, db_path):
+        code, out, _ = _invoke(db_path, "--days", "1")
+
+        assert code == 0
+        assert "Karaoke Night" in out
+        assert "Tomorrow Gig" not in out
+
+    def test_days_must_be_positive(self, db_path):
+        code, _, err = _invoke(db_path, "--days", "0")
+
+        assert code == 1
+        assert "--days" in err
+
+    def test_date_and_days_together_is_a_usage_error(self, db_path):
+        """They answer the same question two ways, so accepting both would mean
+        silently ignoring one."""
+        code, _, err = _invoke(db_path, "--date", TOMORROW.isoformat(), "--days", "3")
+
+        assert code == 1
+        assert "--date" in err and "--days" in err

@@ -11,7 +11,7 @@ import argparse
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, tzinfo
+from datetime import date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Callable, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -275,28 +275,41 @@ def _cmd_recommend(
     notice = staleness_notice(pairs[0].ranking.run_date, tonight)
     if notice is not None:
         print(notice, file=stderr)
-    # `during_night` drops undated events, so they are re-added rather than
-    # filtered: a missing start time is a gap in what we know, not evidence
-    # about when.
-    selected = during_night(pairs, tonight, view.day_starts_at, view.zone) + [
-        p for p in pairs if p.event.start_time is None
-    ]
-    selected.sort(key=lambda ranked: ranked.rank)
 
-    if window is not None:
-        selected = overlapping(selected, *window, night=tonight)
-    if args.after_sunset:
-        selected = after_sunset(selected)
+    try:
+        nights = _nights_to_show(args, tonight)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=stderr)
+        return 1
+    sections = []
+    for night in nights:
+        # `during_night` drops undated events, so they are re-added rather than
+        # filtered: a missing start time is a gap in what we know, not evidence
+        # about when. Only on tonight's section — an undated event belongs to
+        # the night you are standing in, not to every night listed.
+        selected = during_night(pairs, night, view.day_starts_at, view.zone)
+        if night == tonight:
+            selected = selected + [p for p in pairs if p.event.start_time is None]
+        selected.sort(key=lambda ranked: ranked.rank)
+
+        if window is not None:
+            selected = overlapping(selected, *window, night=night)
+        if args.after_sunset:
+            selected = after_sunset(selected)
+
+        sections.append(
+            render_recommendations(
+                selected,
+                heading=night.strftime("%A %-d %B"),
+                verbose=args.verbose,
+                limit=None if args.all else (args.limit or DEFAULT_LIMIT),
+                color=_supports_color(stdout),
+                source_urls=view.source_urls,
+            )
+        )
 
     print(
-        render_recommendations(
-            selected,
-            heading=tonight.strftime("%A %-d %B"),
-            verbose=args.verbose,
-            limit=None if args.all else (args.limit or DEFAULT_LIMIT),
-            color=_supports_color(stdout),
-            source_urls=view.source_urls,
-        ),
+        "\n".join(sections),
         file=stdout,
         end="",
     )
@@ -306,6 +319,35 @@ def _cmd_recommend(
 def _supports_color(stream: TextIO) -> bool:
     """ANSI only when the destination is a terminal, so pipes stay clean."""
     return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def _nights_to_show(args: argparse.Namespace, tonight: date) -> list[date]:
+    """Which nights the view covers, in order.
+
+    Defaults to tonight, which is the question `what-do` exists to answer. The
+    ranking already spans the whole horizon, so every other night here was
+    scored and stored and simply had no way to be asked for (#19).
+
+    Raises:
+        ValueError: If the request is unanswerable as written. `--date` and
+            `--days` are two ways of naming the same thing, so accepting both
+            would mean silently ignoring one.
+    """
+    if args.date and args.days is not None:
+        raise ValueError("--date and --days cannot be combined; they both choose which nights")
+
+    if args.date:
+        try:
+            return [date.fromisoformat(args.date)]
+        except ValueError as exc:
+            raise ValueError(f"--date must be YYYY-MM-DD, got {args.date!r}") from exc
+
+    if args.days is not None:
+        if args.days < 1:
+            raise ValueError(f"--days must be 1 or more, got {args.days}")
+        return [tonight + timedelta(days=offset) for offset in range(args.days)]
+
+    return [tonight]
 
 
 def _cmd_explain(
@@ -386,6 +428,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--all", action="store_true", help="Show every ranked event, not just the top ones"
+    )
+    parser.add_argument(
+        "--date", metavar="YYYY-MM-DD", help="Show a night other than tonight"
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        metavar="N",
+        help="Show the next N nights, each as its own section",
     )
     parser.add_argument(
         "--explain",
