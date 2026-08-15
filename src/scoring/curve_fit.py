@@ -49,6 +49,11 @@ class Observation:
     chars: int
     tags: float
     source_type: str
+    #: Which extraction regime produced this row — model and prompt version.
+    #: Rows from two regimes are never fitted together: a prompt or model change
+    #: is a step, not drift, and a curve fitted across one describes a
+    #: population that never existed.
+    regime: str = "unknown"
 
 
 def expected_tags(chars: float, cap: float, saturation: float) -> float:
