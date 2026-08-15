@@ -276,6 +276,11 @@ def _cmd_recommend(
     if notice is not None:
         print(notice, file=stderr)
 
+    if args.upcoming is not None:
+        return _cmd_upcoming(
+            args, pairs=pairs, tonight=tonight, stdout=stdout, stderr=stderr, view=view
+        )
+
     try:
         nights = _nights_to_show(args, tonight)
     except ValueError as exc:
@@ -319,6 +324,72 @@ def _cmd_recommend(
 def _supports_color(stream: TextIO) -> bool:
     """ANSI only when the destination is a terminal, so pipes stay clean."""
     return bool(getattr(stream, "isatty", lambda: False)())
+
+
+#: How far ahead `--upcoming` looks when no window is given. Two weeks is long
+#: enough to catch anything needing a booking or a ticket, and short enough that
+#: the list is still a list.
+DEFAULT_UPCOMING_DAYS = 14
+
+
+def _cmd_upcoming(
+    args: argparse.Namespace,
+    *,
+    pairs: list[RankedEvent],
+    tonight: date,
+    stdout: TextIO,
+    stderr: TextIO,
+    view: ViewSettings,
+) -> int:
+    """One ranked list across several nights, best first.
+
+    Not `--days`, which is per-night sections. The question here is "what is
+    coming up that I should plan for" — anything needing a booking, a table, a
+    drive, or a ticket bought before it sells out. A great event three weeks out
+    is ranked and stored and, until now, invisible until the morning of.
+
+    This is a filter rather than a re-ranking, and only because scores are never
+    normalised per batch: a score from next Friday sorts against one from
+    tonight honestly. It is also what the 90-day horizon was raised for.
+    """
+    if args.upcoming < 1:
+        print(f"Error: --upcoming must be 1 or more, got {args.upcoming}", file=stderr)
+        return 1
+
+    # All three choose what is shown, so accepting a pair would mean silently
+    # ignoring one of them.
+    if args.date or args.days is not None:
+        other = "--date" if args.date else "--days"
+        print(
+            f"Error: --upcoming and {other} cannot be combined; "
+            "they both choose which events to show",
+            file=stderr,
+        )
+        return 1
+
+    last = tonight + timedelta(days=args.upcoming - 1)
+    selected = [
+        pair
+        for pair in pairs
+        if pair.event.start_time is not None
+        and tonight <= pair.event.start_time.astimezone(view.zone).date() <= last
+    ]
+    selected.sort(key=lambda ranked: ranked.rank)
+
+    print(
+        render_recommendations(
+            selected,
+            heading=None,
+            verbose=args.verbose,
+            limit=None if args.all else (args.limit or DEFAULT_LIMIT),
+            color=_supports_color(stdout),
+            source_urls=view.source_urls,
+            show_dates=True,
+        ),
+        file=stdout,
+        end="",
+    )
+    return 0
 
 
 def _nights_to_show(args: argparse.Namespace, tonight: date) -> list[date]:
@@ -431,6 +502,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--date", metavar="YYYY-MM-DD", help="Show a night other than tonight"
+    )
+    parser.add_argument(
+        "--upcoming",
+        nargs="?",
+        type=int,
+        const=DEFAULT_UPCOMING_DAYS,
+        metavar="DAYS",
+        help=(
+            "One ranked list across the next DAYS nights "
+            f"(default {DEFAULT_UPCOMING_DAYS}), best first, for planning ahead"
+        ),
     )
     parser.add_argument(
         "--days",

@@ -491,3 +491,71 @@ class TestOtherNights:
 
         assert code == 1
         assert "--date" in err and "--days" in err
+
+
+class TestUpcoming:
+    """One cross-day leaderboard: what is coming up that I should plan for (#23).
+
+    Distinct from `--days`, which is per-night sections. This is a single
+    ordered list across the whole window, because the question is "what is worth
+    putting in the calendar", not "what is on Saturday".
+
+    Valid only because scores are never normalised per batch — that CLAUDE.md
+    rule is what lets scores from different nights sort against each other
+    honestly, and it is what makes this a filter rather than a re-ranking.
+    """
+
+    def test_it_spans_days_rather_than_one_night(self, db_path):
+        code, out, _ = _invoke(db_path, "--upcoming")
+
+        assert code == 0
+        assert "Karaoke Night" in out
+        assert "Tomorrow Gig" in out
+
+    def test_it_is_one_list_not_per_night_sections(self, db_path):
+        _, out, _ = _invoke(db_path, "--upcoming")
+
+        assert RUN_DATE.strftime("%A %-d %B") not in out
+        assert TOMORROW.strftime("%A %-d %B") not in out
+
+    def test_it_orders_by_score_not_by_date(self, db_path):
+        """The whole point. A better event three days out belongs above a
+        mediocre one tonight, or this is just a longer listing."""
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20")
+
+        assert out.index("Karaoke Night") < out.index("Dull Mixer")
+
+    def test_the_window_is_configurable(self, db_path):
+        """A day count small enough to exclude tomorrow does exclude it."""
+        _, out, _ = _invoke(db_path, "--upcoming", "1")
+
+        assert "Karaoke Night" in out
+        assert "Tomorrow Gig" not in out
+
+    def test_each_row_says_which_day_it_is_on(self, db_path):
+        """In a per-night view the heading answers that. Here there is no
+        heading, so a row without its date is unplaceable."""
+        _, out, _ = _invoke(db_path, "--upcoming")
+
+        assert TOMORROW.strftime("%a") in out
+
+    def test_what_is_cut_is_still_counted(self, db_path):
+        """The standing rule: a hidden event is invisible, a counted one is a
+        flag away."""
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "2")
+
+        assert "more" in out
+
+    def test_it_cannot_be_combined_with_a_night_selector(self, db_path):
+        """`--upcoming`, `--date` and `--days` all choose what is shown, so a
+        pair would mean silently ignoring one."""
+        code, _, err = _invoke(db_path, "--upcoming", "--date", TOMORROW.isoformat())
+
+        assert code == 1
+        assert "--upcoming" in err and "--date" in err
+
+    def test_days_must_be_positive(self, db_path):
+        code, _, err = _invoke(db_path, "--upcoming", "0")
+
+        assert code == 1
+        assert "--upcoming" in err

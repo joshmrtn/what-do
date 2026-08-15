@@ -94,6 +94,7 @@ def render_recommendations(
     limit: int | None = DEFAULT_LIMIT,
     color: bool = False,
     source_urls: Mapping[str, str] | None = None,
+    show_dates: bool = False,
 ) -> str:
     """Render ranked events as one list, in the order given.
 
@@ -107,6 +108,9 @@ def render_recommendations(
         color: Emit ANSI styling. Off when stdout is not a terminal.
         source_urls: Human-facing page per `source_type`, used only for events
             carrying no URL of their own.
+        show_dates: Prefix the time column with the day. For a cross-day list,
+            where there is no heading to place a row against — in a per-night
+            view the heading already answers it and repeating it is noise.
 
     Returns:
         The rendered view, ending in a newline.
@@ -124,6 +128,8 @@ def render_recommendations(
     for ranked in shown:
         event, score, ranking = ranked.event, ranked.score, ranked.ranking
         when = _when_of(event)
+        if show_dates and event.start_time is not None:
+            when = f"{event.start_time.strftime('%a %-d')} {when}"
         prefix = f"  {ranking.rank}. "
         lines.append(f"{prefix}{when + '  ' if when else ''}{_describe(event)}")
         # Directly under the title, ahead of the reasons. The reasons are the
