@@ -176,11 +176,10 @@ def during_night(
     return kept
 
 
-#: Beyond this, a span is read as a recurring programme rather than one
-#: continuous occurrence. A source publishes "10–14 August, 09:00–12:00" as a
-#: single row with no recurrence, so the daily hours are not recoverable from
-#: the data — only inferrable from the endpoints.
-LONG_SPAN_HOURS = 24
+#: Fallback for `long_span_hours` when no caller supplies one — the view root's
+#: config load is deliberately tolerant, so an unreadable config must still
+#: produce a usable listing. `config.view.long_span_hours` is the real setting.
+DEFAULT_LONG_SPAN_HOURS = 24
 
 
 def overlapping(
@@ -189,6 +188,7 @@ def overlapping(
     window_end: time,
     *,
     night: date,
+    long_span_hours: int = DEFAULT_LONG_SPAN_HOURS,
 ) -> list[RankedEvent]:
     """Select pairs whose event is on during a time-of-day window.
 
@@ -215,7 +215,7 @@ def overlapping(
         window_from = _combine_on(night, start, window_start)
         window_to = _combine_on(night, start, window_end)
 
-        if _is_long_span(start, end):
+        if _is_long_span(start, end, long_span_hours):
             if _runs_all_day(start, end):
                 kept.append(pair)
                 continue
@@ -236,9 +236,9 @@ def overlapping(
     return kept
 
 
-def _is_long_span(start: datetime, end: datetime) -> bool:
+def _is_long_span(start: datetime, end: datetime, long_span_hours: int) -> bool:
     """Whether a span is too long to be one continuous occurrence."""
-    return (end - start).total_seconds() > LONG_SPAN_HOURS * 3600
+    return (end - start).total_seconds() > long_span_hours * 3600
 
 
 def _runs_all_day(start: datetime, end: datetime) -> bool:

@@ -20,6 +20,7 @@ import yaml
 
 
 from src.config import (
+    ViewConfig,
     DEFAULT_DAY_STARTS_AT,
     DEFAULT_EMBEDDING_MODEL,
     ConfigError,
@@ -36,7 +37,6 @@ from src.presentation.filters import (
     parse_time_window,
 )
 from src.presentation.render import (
-    DEFAULT_LIMIT,
     render_explanation,
     render_raw,
     render_recommendations,
@@ -112,6 +112,11 @@ class ViewSettings:
             reads under the same name. Falls back to the default when config is
             unreadable — the same degraded path as the zone, and announced by
             the same warning.
+        view: How many events a listing shows, how far `--upcoming` reaches,
+            how many reasons appear, and when a span becomes a daily programme.
+            Falls back to the dataclass defaults when config is unreadable, on
+            the same terms as the zone — a listing with sensible numbers beats
+            no listing.
         warning: Emitted to stderr when the settings had to be guessed. Carried
             on the value rather than printed by the loader, so the loader stays
             substitutable in tests without capturing a stream.
@@ -121,6 +126,7 @@ class ViewSettings:
     day_starts_at: time
     source_urls: Mapping[str, str] = field(default_factory=dict)
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    view: ViewConfig = field(default_factory=ViewConfig)
     warning: str | None = None
 
 
@@ -142,6 +148,7 @@ def default_view_settings() -> ViewSettings:
             day_starts_at=config.day_starts_at,
             source_urls=config.sources.site_url_by_source_type(),
             embedding_model=config.models.embeddings,
+            view=config.view,
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
         system_zone = datetime.now().astimezone().tzinfo
@@ -298,7 +305,12 @@ def _cmd_recommend(
         selected.sort(key=lambda ranked: ranked.rank)
 
         if window is not None:
-            selected = overlapping(selected, *window, night=night)
+            selected = overlapping(
+                selected,
+                *window,
+                night=night,
+                long_span_hours=view.view.long_span_hours,
+            )
         if args.after_sunset:
             selected = after_sunset(selected)
 
@@ -307,9 +319,10 @@ def _cmd_recommend(
                 selected,
                 heading=night.strftime("%A %-d %B"),
                 verbose=args.verbose,
-                limit=None if args.all else (args.limit or DEFAULT_LIMIT),
+                limit=None if args.all else (args.limit or view.view.limit),
                 color=_supports_color(stdout),
                 source_urls=view.source_urls,
+                reason_limit=view.view.reason_limit,
             )
         )
 
@@ -326,10 +339,12 @@ def _supports_color(stream: TextIO) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
 
 
-#: How many nights after tonight `--upcoming` covers when no window is given.
-#: Two weeks is long enough to catch anything needing a booking or a ticket, and
-#: short enough that the list is still a list.
-DEFAULT_UPCOMING_DAYS = 14
+#: What a bare `--upcoming` records, so the configured default can be applied
+#: once `view` is in hand. Negative because argparse must distinguish "no number
+#: given" from every number a person could type — 0 belongs to the user, and
+#: using it here made `--upcoming 0` silently mean "use the default" instead of
+#: reporting the mistake.
+_UPCOMING_FROM_CONFIG = -1
 
 
 def _cmd_upcoming(
@@ -352,6 +367,8 @@ def _cmd_upcoming(
     normalised per batch: a score from next Friday sorts against one from
     tonight honestly. It is also what the 90-day horizon was raised for.
     """
+    if args.upcoming == _UPCOMING_FROM_CONFIG:
+        args.upcoming = view.view.upcoming_days
     if args.upcoming < 1:
         print(f"Error: --upcoming must be 1 or more, got {args.upcoming}", file=stderr)
         return 1
@@ -386,10 +403,11 @@ def _cmd_upcoming(
             selected,
             heading=None,
             verbose=args.verbose,
-            limit=None if args.all else (args.limit or DEFAULT_LIMIT),
+            limit=None if args.all else (args.limit or view.view.limit),
             color=_supports_color(stdout),
             source_urls=view.source_urls,
             show_dates=True,
+            reason_limit=view.view.reason_limit,
         ),
         file=stdout,
         end="",
@@ -512,11 +530,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--upcoming",
         nargs="?",
         type=int,
-        const=DEFAULT_UPCOMING_DAYS,
+        const=_UPCOMING_FROM_CONFIG,
         metavar="DAYS",
         help=(
-            "One ranked list across the DAYS nights after tonight "
-            f"(default {DEFAULT_UPCOMING_DAYS}), best first, for planning ahead"
+            "One ranked list across the DAYS nights after tonight, best first, "
+            "for planning ahead. Defaults to view.upcoming_days in config"
         ),
     )
     parser.add_argument(
@@ -534,7 +552,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         metavar="N",
-        help=f"How many events to show (default: {DEFAULT_LIMIT})",
+        help="How many events to show (default: view.limit in config)",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show score components and every reason"

@@ -465,3 +465,28 @@ class TestOverlappingCorrectness:
         gig = _pair("e", start=_at(21), end=_at(23))
 
         assert len(overlapping([gig], time(20, 0), time(23, 59), night=TODAY)) == 1
+
+
+class TestConfigurableSpanThreshold:
+    """`long_span_hours` decides when a span stops being one occurrence.
+
+    The only one of the view's four numbers with no per-invocation override, and
+    the one most likely to want tuning against real listings — it is a claim
+    about how sources publish, not a display preference (#31).
+    """
+
+    def test_the_threshold_is_taken_from_the_caller(self):
+        """A 30-hour span is one occurrence at the default and a daily
+        programme at 24 — so the same event answers differently, which is the
+        whole reason for making it configurable."""
+        span = _pair("e", start=_at(9, day=10), end=_at(15, day=11))
+
+        as_continuous = overlapping(
+            [span], time(20, 0), time(23, 59), night=date(2025, 6, 10), long_span_hours=48
+        )
+        as_programme = overlapping(
+            [span], time(20, 0), time(23, 59), night=date(2025, 6, 10), long_span_hours=24
+        )
+
+        assert len(as_continuous) == 1
+        assert as_programme == []

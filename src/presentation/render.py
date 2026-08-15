@@ -30,13 +30,15 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RESET = "\033[0m"
 
-#: How many events the default view shows. The question `what-do` answers is
-#: "what is on tonight", and a screenful answers it.
+#: Fallback when no caller supplies a limit. `config.view.limit` is the real
+#: setting; this exists because the view root's config load is deliberately
+#: tolerant and an unreadable config must still produce a usable listing.
 DEFAULT_LIMIT = 10
 
-#: Semantic reasons shown per event before `--verbose`. Two is enough to say
-#: what an event is; the rest is an audit trail.
-_DEFAULT_REASON_LIMIT = 2
+#: Fallback for how many semantic reasons appear before `--verbose`. Two is
+#: enough to say what an event is; the rest is an audit trail.
+#: `config.view.reason_limit` is the real setting.
+DEFAULT_REASON_LIMIT = 2
 
 _SEMANTIC_FACTORS = (LIKE_FACTOR, DISLIKE_FACTOR)
 
@@ -95,6 +97,7 @@ def render_recommendations(
     color: bool = False,
     source_urls: Mapping[str, str] | None = None,
     show_dates: bool = False,
+    reason_limit: int = DEFAULT_REASON_LIMIT,
 ) -> str:
     """Render ranked events as one list, in the order given.
 
@@ -108,6 +111,8 @@ def render_recommendations(
         color: Emit ANSI styling. Off when stdout is not a terminal.
         source_urls: Human-facing page per `source_type`, used only for events
             carrying no URL of their own.
+        reason_limit: How many semantic reasons to show per event before
+            `--verbose`. From `config.view.reason_limit`.
         show_dates: Prefix the time column with the day. For a cross-day list,
             where there is no heading to place a row against — in a per-night
             view the heading already answers it and repeating it is noise.
@@ -148,7 +153,7 @@ def render_recommendations(
             lines.append(_style(f"      source: {site}", _DIM, color))
         if verbose:
             lines.append(_style(f"      {_components(score, ranking)}", _DIM, color))
-        for reason in _visible_reasons(score.reasons, verbose=verbose):
+        for reason in _visible_reasons(score.reasons, verbose=verbose, limit=reason_limit):
             lines.append(_style(f"      {_format_reason(reason)}", _DIM, color))
         lines.append("")
 
@@ -340,7 +345,9 @@ def _supersession_of(event: Event) -> str | None:
     return f"{mark} ({event.merged_by}, {event.merge_similarity:.3f})"
 
 
-def _visible_reasons(reasons: list[Reason], *, verbose: bool) -> list[Reason]:
+def _visible_reasons(
+    reasons: list[Reason], *, verbose: bool, limit: int = DEFAULT_REASON_LIMIT
+) -> list[Reason]:
     """Pick which reasons to show, strongest first.
 
     Default view keeps the two strongest semantic reasons — what the event *is* —
@@ -354,7 +361,7 @@ def _visible_reasons(reasons: list[Reason], *, verbose: bool) -> list[Reason]:
     semantic.sort(key=lambda r: abs(r.contribution), reverse=True)
     weather = [r for r in reasons if r.factor == WEATHER_FACTOR]
 
-    return semantic[:_DEFAULT_REASON_LIMIT] + weather
+    return semantic[:limit] + weather
 
 
 def _format_reason(reason: Reason) -> str:

@@ -56,6 +56,32 @@ class ScrapingConfig:
 
 
 @dataclass
+class ViewConfig:
+    """Numbers that decide what a listing looks like.
+
+    Defaults rather than constraints for the first three: `--limit`,
+    `--upcoming N` and `-v` each override at the call site. They live here
+    because a preference you have to retype every invocation is not
+    configurable.
+
+    `long_span_hours` is different in kind — nothing overrides it, and it
+    decides real behaviour: beyond it a stored span is read as a *daily
+    programme* whose hours are its own endpoints, rather than one continuous
+    occurrence. It is the number most likely to want tuning against real
+    listings.
+    """
+
+    #: How many events a listing shows before counting the rest.
+    limit: int = 10
+    #: How many nights after tonight `--upcoming` covers.
+    upcoming_days: int = 14
+    #: Semantic reasons shown per event before `--verbose`.
+    reason_limit: int = 2
+    #: Span beyond which an event is a recurring programme, not one occurrence.
+    long_span_hours: int = 24
+
+
+@dataclass
 class VenueDiscoveryConfig:
     categories: list[str] = field(
         default_factory=lambda: [
@@ -380,6 +406,7 @@ class AppConfig:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
+    view: ViewConfig = field(default_factory=ViewConfig)
     day_starts_at: time = DEFAULT_DAY_STARTS_AT
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
@@ -389,6 +416,19 @@ class AppConfig:
 
 #: The only values `Event.setting` may take.
 SETTINGS = ("indoor", "outdoor", "unknown")
+
+
+def _positive(raw: dict[str, Any], key: str, default: int) -> int:
+    """A `view` setting that must be at least one.
+
+    Zero is never a preference here — a listing of no events looks like having
+    nothing to show, and a span threshold of zero silently makes every event a
+    daily programme, rewriting what `--time` means for the whole listing.
+    """
+    value = int(raw.get(key, default))
+    if value < 1:
+        raise ConfigError(f"Invalid view.{key}: {value} — must be positive")
+    return value
 
 
 def _bounds(raw: dict[str, Any], key: str, factor: str) -> tuple[float, float]:
@@ -769,6 +809,14 @@ def load_config(
     if horizon_days <= 0:
         raise ConfigError(f"Invalid horizon_days: {horizon_days} — must be positive")
 
+    view_data = data.get("view", {})
+    view = ViewConfig(
+        limit=_positive(view_data, "limit", 10),
+        upcoming_days=_positive(view_data, "upcoming_days", 14),
+        reason_limit=_positive(view_data, "reason_limit", 2),
+        long_span_hours=_positive(view_data, "long_span_hours", 24),
+    )
+
     scraping = ScrapingConfig(
         lookback_days=int(scraping_data.get("lookback_days", 30)),
         horizon_days=horizon_days,
@@ -877,6 +925,7 @@ def load_config(
         scoring=scoring,
         sources=_load_sources(data.get("sources") or {}),
         models=_load_models(data.get("models") or {}),
+        view=view,
         day_starts_at=_load_day_starts_at(data),
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),

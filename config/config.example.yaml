@@ -444,3 +444,17 @@ synthetic_activities:
     tags: [outdoor, picnic, social]
     setting: outdoor
     summary: "A picnic at sunset"
+
+# What a listing looks like. The first three are defaults — `--limit`,
+# `--upcoming N` and `-v` each override at the call site — and live here so a
+# preference does not have to be retyped every invocation.
+view:
+  limit: 10             # events shown before the rest are counted
+  upcoming_days: 14     # nights after tonight that `--upcoming` covers
+  reason_limit: 2       # semantic reasons per event before `--verbose`
+  # Beyond this many hours a stored span is read as a recurring programme whose
+  # daily hours are its own endpoints, rather than one continuous occurrence.
+  # A workshop published as "10-14 August, 09:00-12:00" is a single row, so its
+  # real hours are only inferrable from the endpoints. Nothing overrides this at
+  # the call site, and it is the number most likely to want tuning.
+  long_span_hours: 24

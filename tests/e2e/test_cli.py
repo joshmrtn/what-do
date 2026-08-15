@@ -6,6 +6,7 @@ fixtures to mean anything.
 """
 
 import io
+import re
 import socket
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -19,6 +20,7 @@ import yaml
 from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
+from src.config import ViewConfig
 from src.presentation.cli import ViewSettings, run
 from src.scoring.similarity import Reason
 from src.storage.sqlite.connection import init_db
@@ -68,8 +70,15 @@ def _event(event_id: str, title: str, start: datetime | None, venue: str = "The 
     )
 
 
-def _recommendation(event_id: str, rank: int, score: float) -> tuple[EventScore, Ranking]:
-    """One event's verdict and its placement, which are now stored apart."""
+def _recommendation(
+    event_id: str, rank: int, score: float, extra_reasons: int = 0
+) -> tuple[EventScore, Ranking]:
+    """One event's verdict and its placement, which are now stored apart.
+
+    `extra_reasons` exists for the reason-limit tests, which need an event
+    carrying more reasons than the limit under test. Zero everywhere else, so no
+    other assertion shifts.
+    """
     return (
         EventScore(
             event_id=event_id,
@@ -85,7 +94,18 @@ def _recommendation(event_id: str, rank: int, score: float) -> tuple[EventScore,
                     contribution=score,
                     direction="positive",
                     tag="karaoke",
-                )
+                ),
+                *[
+                    Reason(
+                        factor="like_similarity",
+                        matched_preference=f"extra preference {n}",
+                        similarity=0.5,
+                        contribution=0.1,
+                        direction="positive",
+                        tag=f"extra{n}",
+                    )
+                    for n in range(extra_reasons)
+                ],
             ],
         ),
         Ranking(
@@ -123,7 +143,7 @@ def db_path(tmp_path: Path) -> Path:
     save_events(events, path)
 
     recommendations = [
-        _recommendation("t1", 1, 0.81),
+        _recommendation("t1", 1, 0.81, extra_reasons=1),
         _recommendation("t2", 2, 0.72),
         _recommendation("t3", 3, 0.64),
         _recommendation("u1", 4, 0.58),
@@ -141,7 +161,10 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def _invoke(
-    db_path: Path, *argv: str, now: datetime | None = None
+    db_path: Path,
+    *argv: str,
+    now: datetime | None = None,
+    view: ViewSettings | None = None,
 ) -> tuple[int, str, str]:
     """Run the CLI as a user would.
 
@@ -154,7 +177,7 @@ def _invoke(
         get_now=lambda: now if now is not None else NOW,
         stdout=stdout,
         stderr=stderr,
-        load_view_settings=lambda: VIEW,
+        load_view_settings=lambda: view if view is not None else VIEW,
     )
     return code, stdout.getvalue(), stderr.getvalue()
 
@@ -569,3 +592,53 @@ class TestUpcoming:
 
         assert code == 1
         assert "--upcoming" in err
+
+
+class TestConfiguredViewNumbers:
+    """The view's numbers come from config, not from constants in the source.
+
+    Three are defaults a flag can override, so they earn their place here by
+    sparing a preference from being retyped every invocation. `long_span_hours`
+    has no flag at all and decides real behaviour (#31).
+    """
+
+    def _view(self, **kwargs) -> ViewSettings:
+        return ViewSettings(
+            zone=VIEW.zone,
+            day_starts_at=VIEW.day_starts_at,
+            view=ViewConfig(**kwargs),
+        )
+
+    def test_the_configured_limit_decides_how_many_are_shown(self, db_path):
+        _, out, _ = _invoke(db_path, view=self._view(limit=2))
+
+        assert len(re.findall(r"^  \d+\. ", out, re.M)) == 2
+
+    def test_what_the_configured_limit_cuts_is_still_counted(self, db_path):
+        _, out, _ = _invoke(db_path, view=self._view(limit=2))
+
+        assert "more event" in out
+
+    def test_an_explicit_flag_still_beats_the_configured_limit(self, db_path):
+        _, out, _ = _invoke(db_path, "--limit", "1", view=self._view(limit=5))
+
+        assert len(re.findall(r"^  \d+\. ", out, re.M)) == 1
+
+    def test_the_configured_window_decides_how_far_upcoming_reaches(self, db_path):
+        """A bare `--upcoming` takes its span from config rather than a
+        constant — which is the whole difference between a default and a
+        number baked into the source."""
+        _, near, _ = _invoke(db_path, "--upcoming", view=self._view(upcoming_days=1))
+        _, far, _ = _invoke(db_path, "--upcoming", view=self._view(upcoming_days=30))
+
+        assert "Tomorrow Gig" in near
+        assert "Tomorrow Gig" in far
+
+    def test_the_configured_reason_limit_decides_how_many_reasons_show(self, db_path):
+        """`t1` carries a second reason for this, via `extra_reasons` — every
+        other event keeps exactly one, so no other assertion shifts."""
+        _, one, _ = _invoke(db_path, "--limit", "1", view=self._view(reason_limit=1))
+        _, two, _ = _invoke(db_path, "--limit", "1", view=self._view(reason_limit=2))
+
+        assert one.count("<-") == 1
+        assert two.count("<-") == 2

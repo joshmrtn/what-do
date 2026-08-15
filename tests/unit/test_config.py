@@ -1271,3 +1271,68 @@ class TestAmbientDotenvIsolation:
         )
 
         assert os.environ.get("APIFY_API_KEY") == "explicitly_asked_for"
+
+
+class TestViewConfig:
+    """The numbers that decide what a listing looks like (#31).
+
+    Three of the four have per-invocation overrides — `--limit`, `--upcoming N`,
+    `-v` — so they are defaults rather than constraints. `long_span_hours` had
+    no escape hatch at all, and it is the one that decides real behaviour: when
+    a stored span is read as a daily programme rather than one continuous
+    occurrence.
+
+    A preference you have to retype every invocation is not configurable, which
+    is why the other three move too.
+    """
+
+    def test_defaults_apply_when_the_section_is_absent(self, tmp_path):
+        cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+
+        assert cfg.view.limit == 10
+        assert cfg.view.upcoming_days == 14
+        assert cfg.view.reason_limit == 2
+        assert cfg.view.long_span_hours == 24
+
+    def test_each_value_is_read_from_config(self, tmp_path):
+        data = _valid_location_data()
+        data["view"] = {
+            "limit": 25,
+            "upcoming_days": 30,
+            "reason_limit": 4,
+            "long_span_hours": 12,
+        }
+
+        cfg = load_config(config_path=_write_config(tmp_path, data))
+
+        assert cfg.view.limit == 25
+        assert cfg.view.upcoming_days == 30
+        assert cfg.view.reason_limit == 4
+        assert cfg.view.long_span_hours == 12
+
+    def test_a_partial_section_keeps_the_other_defaults(self, tmp_path):
+        data = _valid_location_data()
+        data["view"] = {"limit": 5}
+
+        cfg = load_config(config_path=_write_config(tmp_path, data))
+
+        assert cfg.view.limit == 5
+        assert cfg.view.upcoming_days == 14
+
+    def test_a_non_positive_limit_is_rejected(self, tmp_path):
+        """A listing of zero events is not a preference, it is a broken config,
+        and silently showing nothing looks like having nothing to show."""
+        data = _valid_location_data()
+        data["view"] = {"limit": 0}
+
+        with pytest.raises(ConfigError, match="limit"):
+            load_config(config_path=_write_config(tmp_path, data))
+
+    def test_a_non_positive_long_span_is_rejected(self, tmp_path):
+        """At zero every event is a daily programme, which silently rewrites
+        what `--time` means for the whole listing."""
+        data = _valid_location_data()
+        data["view"] = {"long_span_hours": 0}
+
+        with pytest.raises(ConfigError, match="long_span_hours"):
+            load_config(config_path=_write_config(tmp_path, data))
