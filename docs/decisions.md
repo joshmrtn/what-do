@@ -2465,3 +2465,82 @@ time-of-day and the choice of night stops mattering — a week-long festival run
 **`--after-sunset` needed no anchoring at all**, because it reads each event's own
 recorded sunset rather than tonight's. That was deliberate when it was written and is
 what let it generalise for free.
+
+---
+
+## The tag-confidence curve refits itself, and never on request
+
+**Decision:** The curve's constants are re-derived nightly from real extractions,
+gated, smoothed, and applied to the *following* run. There is no suggest-only mode and no
+manual trigger.
+
+**Rationale:** A curve that is not refit automatically is not refit at all. The constants
+shipped were fitted over 24 events driven through Gemini; measured against 273 real rows they
+score **R² 0.465** where a refit scores **0.675**. The local model produces fewer tags than
+that fit expects, so the curve was demonstrably wrong for the population it was applied to,
+and would have stayed wrong indefinitely on any mechanism requiring someone to remember.
+
+**Each mechanism does exactly one job**, because conflating them is how a refit becomes either
+inert or wild:
+
+| mechanism | job |
+|---|---|
+| arming threshold (200 rows) | do not fit before a fit means anything |
+| held-out gate | decide **whether** to move |
+| EWMA (α=0.15) | decide **how fast** |
+| domain bounds | refuse a pathological parameter outright |
+| per-source multiplier | one curve cannot describe every feed |
+| CUSUM | notice a population changed |
+| Huber loss | stop one strange listing dragging the fit |
+
+**Arming at 200 was measured, not chosen.** Two independent halves of the corpus fitted to
+cap 3.90/3.65 and saturation 135/115 against a full-corpus 3.80/127, so ~135 rows already
+replicates. The original reasoning — "N≈1000, weeks of data" — was conservative by about four
+times.
+
+**The gate is the safety mechanism, not the rate limit.** Fit on 80%, score incumbent and
+candidate on the held-out 20%, adopt only on improvement, then refit on 100% — the held-out
+fifth pays for the decision, not for the answer. A gate refuses a bad move; a rate limit only
+slows one down. Folds are hashed from the event id so the same corpus splits identically on
+every run, which is what keeps a past score recomputable.
+
+**EWMA replaced a 5% clamp**, which was its discrete form. Given the gate, the clamp's only
+remaining job was bounding a run of individually-plausible moves, and wide domain bounds do
+that without a cliff.
+
+**Two ideas were rejected on measurement rather than taste.** Poisson regression, because tag
+counts are *under*-dispersed (variance/mean = 0.74) and Poisson is misspecified in the opposite
+direction — counts run 1–6 with a hard floor at 1. And a per-source term without shrinkage,
+because `do617` has two rows and a raw ratio of 1.40; shrunk by `n/(n+5)` it is 1.11, and the
+shrunk version beat both alternatives on held-out folds at +0.05 R².
+
+**Applied to the next run, never this one.** The refit writes `curve_state` after the ranking
+is saved; composition reads it before anything is scored. A night is never scored with
+constants that moved underneath it, and the EWMA compounds because each run steps from what the
+last accepted rather than from the config file.
+
+**A refusal is recorded as fully as a move.** Without that, a night where nothing changed is
+indistinguishable from one where the refit never ran.
+
+---
+
+## Scoring terms key on the feed, not the category
+
+**Decision:** `Event` records `source` — the feed that produced it — alongside `source_type`,
+and per-source scoring terms key on the feed.
+
+**Rationale:** One category holds feeds with genuinely different characteristics.
+`northshorenightout` covers an ICS feed averaging **290 chars and 2.06 tags** and an HTML
+listing averaging **83 and 1.47**. A single multiplier describes neither, and the difference is
+larger than the effect the multiplier exists to capture.
+
+Found by the change detector, which flagged a "change point" inside that category on its first
+run against real data. It was not a regime change; it was the boundary between two populations
+sharing a name.
+
+Backfilled by joining through `event_source_candidates`, taking the lexicographically first
+feed where a merged event descends from several, so the result is deterministic rather than
+dependent on join order.
+
+**Note the shape**, because it recurs: an `Event` had already dropped the thing a later stage
+needed. The same is true of the handle the ranking blocklist wants.
