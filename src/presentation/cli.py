@@ -340,11 +340,15 @@ def _supports_color(stream: TextIO) -> bool:
 
 
 #: What a bare `--upcoming` records, so the configured default can be applied
-#: once `view` is in hand. Negative because argparse must distinguish "no number
-#: given" from every number a person could type — 0 belongs to the user, and
-#: using it here made `--upcoming 0` silently mean "use the default" instead of
-#: reporting the mistake.
-_UPCOMING_FROM_CONFIG = -1
+#: once `view` is in hand — the parser is built before config is read.
+#:
+#: An **object**, not a number. argparse applies `type=` only to strings, so a
+#: non-string `const` passes through untouched, which is what keeps it outside
+#: the value domain entirely. Every integer sentinel is a value someone can
+#: type: `0` made `--upcoming 0` silently mean "use the default", and `-1` did
+#: exactly the same thing once it replaced it — argparse accepts a negative
+#: value when no option looks like a negative number.
+_UPCOMING_FROM_CONFIG = object()
 
 
 def _cmd_upcoming(
@@ -367,7 +371,7 @@ def _cmd_upcoming(
     normalised per batch: a score from next Friday sorts against one from
     tonight honestly. It is also what the 90-day horizon was raised for.
     """
-    if args.upcoming == _UPCOMING_FROM_CONFIG:
+    if args.upcoming is _UPCOMING_FROM_CONFIG:
         args.upcoming = view.view.upcoming_days
     if args.upcoming < 1:
         print(f"Error: --upcoming must be 1 or more, got {args.upcoming}", file=stderr)

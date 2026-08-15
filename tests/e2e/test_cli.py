@@ -593,6 +593,19 @@ class TestUpcoming:
         assert code == 1
         assert "--upcoming" in err
 
+    def test_a_negative_day_count_is_also_rejected(self, db_path):
+        """Not obvious, and it was briefly broken. A bare `--upcoming` has to
+        record *something* the parser can carry until config is loaded, and any
+        number chosen for that is a number a person can type — `-1` silently
+        meant "use the default" instead of reporting the mistake, exactly as `0`
+        had before it. The sentinel has to come from outside the value domain.
+        """
+        code, out, err = _invoke(db_path, "--upcoming", "-1")
+
+        assert code == 1
+        assert "--upcoming" in err
+        assert out == ""
+
 
 class TestConfiguredViewNumbers:
     """The view's numbers come from config, not from constants in the source.
