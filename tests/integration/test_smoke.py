@@ -63,6 +63,10 @@ from src.scoring.similarity_stage import SimilarityStage
 from src.storage.sqlite.connection import init_db
 from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.curve_state import SqliteCurveStateRepository
+from src.storage.sqlite.extraction_observations import (
+    SqliteExtractionObservationRepository,
+)
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.runs import SqliteRunRepository
@@ -1167,6 +1171,10 @@ def test_batch_smoke(tmp_path: Path) -> None:
         score_repository=SqliteScoreRepository(db_path),
         ranking_repository=SqliteRankingRepository(db_path),
         dedup_decision_repository=SqliteDedupDecisionRepository(db_path),
+        curve_state_repository=SqliteCurveStateRepository(db_path),
+        extraction_observation_repository=SqliteExtractionObservationRepository(
+            db_path
+        ),
         config=config,
         db_path=db_path,
         logger=logger,
@@ -1206,6 +1214,10 @@ def test_batch_smoke(tmp_path: Path) -> None:
         score_repository=SqliteScoreRepository(db_path),
         ranking_repository=SqliteRankingRepository(db_path),
         dedup_decision_repository=SqliteDedupDecisionRepository(db_path),
+        curve_state_repository=SqliteCurveStateRepository(db_path),
+        extraction_observation_repository=SqliteExtractionObservationRepository(
+            db_path
+        ),
         config=config,
         db_path=db_path,
         logger=logger,

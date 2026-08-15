@@ -118,8 +118,8 @@ def run_batch(
     score_repository: ScoreRepository,
     ranking_repository: RankingRepository,
     dedup_decision_repository: DedupDecisionRepository,
-    curve_state_repository: CurveStateRepository | None = None,
-    extraction_observation_repository: ExtractionObservationRepository | None = None,
+    curve_state_repository: CurveStateRepository,
+    extraction_observation_repository: ExtractionObservationRepository,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -432,7 +432,7 @@ def run_batch(
     # Recorded before the refit reads them, so tonight's extractions are in
     # tonight's corpus. Append-only and keyed on the instant, so a retried run
     # cannot double-count itself.
-    if not dry_run and extraction_observation_repository is not None:
+    if not dry_run:
         _stage(
             "record_extractions",
             lambda: extraction_observation_repository.append(
@@ -443,11 +443,7 @@ def run_batch(
     # Last, and wrapped like every other stage. It reads rows this run has just
     # written and applies to the *next* one, so a failure here costs a night's
     # refit and nothing else — the ranking is already saved above.
-    if (
-        not dry_run
-        and curve_state_repository is not None
-        and extraction_observation_repository is not None
-    ):
+    if not dry_run:
         _stage(
             "refit",
             lambda: _refit(

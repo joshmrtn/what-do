@@ -30,7 +30,11 @@ from src.enrichment.service import EnrichmentService
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.processing.extraction import ExtractionResult
 from src.storage.sqlite.connection import connect
+from src.storage.sqlite.curve_state import SqliteCurveStateRepository
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
+from src.storage.sqlite.extraction_observations import (
+    SqliteExtractionObservationRepository,
+)
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
 from src.scheduler import run_batch
 from src.scoring.embedding_stage import EmbeddingStage
@@ -581,6 +585,14 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
         on_replace=kwargs.pop("on_replace", None),
     )
     recs_spy = _SpyRankingRepository()
+
+    # Real repositories against the test database, so the refit and its
+    # observation log run on every batch here rather than only where a test
+    # thought to ask for them. `setdefault` leaves a test free to supply its own.
+    kwargs.setdefault("curve_state_repository", SqliteCurveStateRepository(db))
+    kwargs.setdefault(
+        "extraction_observation_repository", SqliteExtractionObservationRepository(db)
+    )
 
     result = run_batch(
         config=_config(),
@@ -1258,6 +1270,8 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             enrichment_service=_enrichment_service(db),
             extraction_stage=_extraction_stage(),
             dedup_decision_repository=SqliteDedupDecisionRepository(db),
+            curve_state_repository=SqliteCurveStateRepository(db),
+            extraction_observation_repository=SqliteExtractionObservationRepository(db),
             embedding_stage=_embedding_stage(),
             semantic_deduplicator=_DedupSpy(SemanticDeduplicationEngine()),
             similarity_stage=_similarity_stage(),
