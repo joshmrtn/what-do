@@ -598,7 +598,10 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
         config=_config(),
         db_path=db,
         logger=get_logger("batch_test", stream=io.StringIO()),
-        get_now=lambda: NOW,
+        # Overridable so a test can drive the batch's clock away from the one the
+        # stages carry. While the two were the same instant, an assertion that
+        # named the run clock passed against code reading the event's.
+        get_now=kwargs.pop("get_now", lambda: NOW),
         run_date=RUN_DATE,
         candidate_repository=candidates_repo,
         run_repository=SqliteRunRepository(db),
@@ -1696,6 +1699,71 @@ def test_a_decision_names_the_run_that_made_it(db):
 
     assert stored, "no decisions stored, so this asserted nothing"
     assert all(d.run_id for d in stored)
+
+
+def _stored_observations(db):
+    return SqliteExtractionObservationRepository(db).load_all()
+
+
+def test_tonights_extractions_reach_the_observation_log(db):
+    """`events` keeps only the latest extraction, so an observation not written
+    as it happened is not recoverable later."""
+    _run(db, candidates=[_candidate("c1"), _candidate("c2", title="Poetry Slam")])
+
+    stored = _stored_observations(db)
+
+    assert stored, "the batch extracted events and recorded nothing"
+    assert all(row.model for row in stored)
+
+
+def test_an_observation_is_stamped_with_the_run_clock(db):
+    """The corpus needs when the observation was made — the ordering the change
+    detector reads, and reading `created_at` as that chronology is what invented
+    #34's change point.
+
+    The batch's clock is driven away from the module's, so this pins the
+    *injected* instant rather than a constant that happens to match it. It does
+    not separate `now` from `event.updated_at`: that field is stamped from this
+    same clock, so the two are equal by construction and a mutation swapping them
+    is equivalent, not an escape.
+    """
+    later = NOW + timedelta(hours=3)
+
+    _run(db, candidates=[_candidate("c1")], get_now=lambda: later)
+
+    assert [row.observed_at for row in _stored_observations(db)] == [later]
+
+
+def test_the_batch_writes_the_curve_it_refitted(db):
+    """The whole point of the refit, and the thing that silently never happened.
+
+    This is also the ordering assertion: the log starts empty, and a refit that
+    ran before the append would read nothing, return None and save nothing. So a
+    stored curve can only mean tonight's observations were written first.
+    """
+    _run(db, candidates=[_candidate("c1"), _candidate("c2", title="Poetry Slam")])
+
+    assert SqliteCurveStateRepository(db).load() is not None
+
+
+def test_a_refusing_gate_is_still_recorded(db):
+    """A corpus this small cannot arm, and that is the case worth storing: with
+    nothing written, a refused gate and a refit that never ran look identical —
+    which is exactly how the missing wiring survived a night."""
+    _run(db, candidates=[_candidate("c1")])
+
+    state = SqliteCurveStateRepository(db).load()
+
+    assert state is not None
+    assert state.provenance["accepted"] is False
+
+
+def test_a_dry_run_records_no_observations_and_no_curve(db):
+    """A dry run persists nothing, and the refit reads what a run persisted."""
+    _run(db, candidates=[_candidate("c1")], dry_run=True)
+
+    assert _stored_observations(db) == []
+    assert SqliteCurveStateRepository(db).load() is None
 
 
 def test_the_run_records_the_dedup_config_it_used(db):
