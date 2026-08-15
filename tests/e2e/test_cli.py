@@ -781,3 +781,60 @@ class TestBlankInputIsNotInput:
 
         assert code == 0
         assert yaml.safe_load(seeds.read_text())["handles"] == ["@jazzclub"]
+
+
+class TestFlagsThatCannotWorkTogether:
+    """A flag that is ignored must say so.
+
+    Silently dropping one is how `--time` came to render an unfiltered listing
+    while looking filtered. Two shapes here: combinations that are *contradictory*
+    (refused), and one that is merely redundant (allowed, but announced).
+    """
+
+    def test_all_with_a_limit_warns_rather_than_dropping_it_silently(self, db_path):
+        """`--all` means no limit, so `--limit` cannot also apply — but the
+        request is coherent enough to serve rather than refuse."""
+        code, out, err = _invoke(db_path, "--all", "--limit", "3")
+
+        assert code == 0
+        assert "--limit" in err
+        assert len(re.findall(r"^  \d+\. ", out, re.M)) > 3
+
+    def test_raw_with_a_time_filter_is_refused(self, db_path):
+        """`--raw` is unranked and unfiltered by definition. Ignoring the window
+        prints a listing that looks filtered and is not."""
+        code, out, err = _invoke(db_path, "--raw", "--time", "20:00-23:59")
+
+        assert code == 1
+        assert "--raw" in err and "--time" in err
+        assert out == ""
+
+    def test_raw_with_a_date_is_refused(self, db_path):
+        code, out, err = _invoke(db_path, "--raw", "--date", TOMORROW.isoformat())
+
+        assert code == 1
+        assert "--raw" in err and "--date" in err
+
+    def test_explain_with_a_filter_is_refused(self, db_path):
+        """`--explain` accounts for one named event, so a filter over the list
+        has nothing to act on — it would either change nothing or hide the very
+        event that was asked about."""
+        code, out, err = _invoke(db_path, "--explain", "1", "--after-sunset")
+
+        assert code == 1
+        assert "--explain" in err and "--after-sunset" in err
+
+    def test_upcoming_with_a_time_filter_is_refused_for_now(self, db_path):
+        """Wanted, and not yet built — `overlapping` needs a night to anchor to
+        and the upcoming view spans many. Refused rather than ignored, so the
+        gap is visible instead of looking like it worked."""
+        code, out, err = _invoke(db_path, "--upcoming", "--time", "20:00-23:59")
+
+        assert code == 1
+        assert "--upcoming" in err and "--time" in err
+
+    def test_a_lone_flag_is_unaffected(self, db_path):
+        """The guards must not make any of them unusable on their own."""
+        for argv in (["--all"], ["--raw"], ["--upcoming"], ["--time", "20:00-23:59"]):
+            code, _, _ = _invoke(db_path, *argv)
+            assert code == 0, argv

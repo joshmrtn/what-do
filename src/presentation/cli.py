@@ -221,6 +221,16 @@ def _cmd_recommend(
     view: ViewSettings,
 ) -> int:
     """Render the default view: the latest run, filtered to tonight."""
+    if (conflict := _conflicting_flags(args)) is not None:
+        print(f"Error: {conflict}", file=stderr)
+        return 1
+
+    if args.all and args.limit is not None:
+        # Served rather than refused: the request is coherent, one half simply
+        # cannot apply. Announced, because a silently dropped flag is how
+        # `--time` came to render an unfiltered listing that looked filtered.
+        print("Warning: --all shows every event, so --limit is ignored.", file=stderr)
+
     db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
 
     if not db_ready(db_path):
@@ -405,17 +415,6 @@ def _cmd_upcoming(
         print(f"Error: --upcoming must be 1 or more, got {args.upcoming}", file=stderr)
         return 1
 
-    # All three choose what is shown, so accepting a pair would mean silently
-    # ignoring one of them.
-    if args.date or args.days is not None:
-        other = "--date" if args.date else "--days"
-        print(
-            f"Error: --upcoming and {other} cannot be combined; "
-            "they both choose which events to show",
-            file=stderr,
-        )
-        return 1
-
     # Starts tomorrow. `--upcoming` reads as "after tonight", the default view
     # already answers tonight, and tonight is the one night needing no planning
     # — it is also the busiest, so including it crowds out the far-out events
@@ -445,6 +444,56 @@ def _cmd_upcoming(
         end="",
     )
     return 0
+
+
+#: Flags that select *which events* are shown, and the other flags each one
+#: cannot be combined with. Refused rather than ignored: a dropped flag prints a
+#: listing that looks like it obeyed.
+_INCOMPATIBLE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    # `--raw` is unranked and unfiltered by definition, and reads events rather
+    # than ranked pairs, which is what the filters take. Making it filter is
+    # wanted — see the issue — and is not a matter of passing the value through.
+    ("raw", "--raw", ("time", "after_sunset", "date", "days", "upcoming", "explain")),
+    # `--explain` accounts for one named event, so a filter over the listing has
+    # nothing to act on: it would change nothing, or hide the event asked about.
+    ("explain", "--explain", ("time", "after_sunset", "date", "days", "upcoming")),
+    # `--upcoming` spans many nights, and `overlapping` anchors its window to
+    # one. Wanted, and the reason it is refused rather than ignored.
+    # `--date` and `--days` also choose which events are shown, so a pair would
+    # mean silently ignoring one; `--time` and `--after-sunset` are the wanted
+    # ones, refused only until `overlapping` can anchor per event.
+    ("upcoming", "--upcoming", ("time", "after_sunset", "date", "days")),
+)
+
+#: Argument names to the flag a person typed, for the message.
+_FLAG_NAMES = {
+    "time": "--time",
+    "after_sunset": "--after-sunset",
+    "date": "--date",
+    "days": "--days",
+    "upcoming": "--upcoming",
+    "explain": "--explain",
+    "raw": "--raw",
+}
+
+
+def _conflicting_flags(args: argparse.Namespace) -> str | None:
+    """The first combination that cannot be honoured, described for a person.
+
+    Checked ahead of every dispatch rather than inside the command that wins, so
+    no path can be reached with a flag it is about to discard.
+    """
+    for attr, flag, incompatible in _INCOMPATIBLE:
+        if getattr(args, attr) in (None, False):
+            continue
+        for other in incompatible:
+            if getattr(args, other) not in (None, False):
+                return (
+                    f"{flag} cannot be combined with {_FLAG_NAMES[other]} — "
+                    f"{flag} does not apply it, and ignoring it would print a "
+                    "listing that looks like it did"
+                )
+    return None
 
 
 def _nights_to_show(args: argparse.Namespace, tonight: date) -> list[date]:

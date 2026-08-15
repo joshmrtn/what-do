@@ -299,12 +299,22 @@ class TestRawMode:
         assert harness.load_events_calls == 1
         assert "TOP PICKS" not in harness.out
 
-    def test_ignores_the_time_filter(self):
-        """--raw is the escape hatch; it must not quietly apply a filter."""
-        harness = _Harness()
-        harness.invoke("--raw", "--time", "20:30-23:30")
+    def test_refuses_a_time_filter_rather_than_ignoring_it(self):
+        """`--raw` is the escape hatch; it must not quietly apply a filter.
 
-        assert "Tonight Early" in harness.out
+        Inverted 2026-08-14: it must not quietly *ignore* one either. Printing
+        1667 unfiltered events under a typed `--time` is a listing that looks
+        filtered, which is the failure mode this whole audit was about. Making
+        `--raw` actually filter is wanted and tracked, and is not a matter of
+        passing the value through — the filters take ranked pairs and `--raw`
+        reads events.
+        """
+        harness = _Harness()
+        code = harness.invoke("--raw", "--time", "20:30-23:30")
+
+        assert code == 1
+        assert "--raw" in harness.err and "--time" in harness.err
+        assert harness.out == ""
 
 
 class TestEmptyDatabase:
