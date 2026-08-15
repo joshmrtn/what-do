@@ -78,6 +78,39 @@ def smooth(old: float, new: float, alpha: float = DEFAULT_ALPHA) -> float:
     return (1.0 - alpha) * old + alpha * new
 
 
+def drop_pre_change(
+    rows: list[Observation], change_points: dict[str, int]
+) -> list[Observation]:
+    """Remove the rows a feed produced before it changed.
+
+    A change point declares a new regime for that feed alone, so its earlier
+    observations describe a population that no longer exists and averaging the
+    two describes neither.
+
+    The index counts that feed's own rows in observed order, which is what the
+    detector returns.
+
+    This can leave a regime below its arming threshold, and that is correct
+    rather than a failure: the curve then holds at the last accepted values
+    until the new regime earns its own. That is the arming rule doing its
+    ordinary job — the same reason the curve holds on day one of a deployment —
+    not a policy of standing still because something moved.
+    """
+    if not change_points:
+        return rows
+
+    seen: dict[str, int] = {}
+    kept: list[Observation] = []
+    for row in rows:
+        index = seen.get(row.source_type, 0)
+        seen[row.source_type] = index + 1
+        cutoff = change_points.get(row.source_type)
+        if cutoff is not None and index < cutoff:
+            continue
+        kept.append(row)
+    return kept
+
+
 def plan_refit(
     rows: list[Observation],
     *,

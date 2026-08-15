@@ -12,6 +12,7 @@ import pytest
 from src.scoring.curve_fit import Observation, expected_tags
 from src.scoring.refit_policy import (
     ARMING_ROWS,
+    drop_pre_change,
     CAP_BOUNDS,
     SATURATION_BOUNDS,
     RefitPolicy,
@@ -129,3 +130,46 @@ class TestSmoothing:
         fast = plan_refit(_rows(ARMING_ROWS), incumbent=STATIC, policy=RefitPolicy(alpha=1.0))
 
         assert fast.parameters == fast.decision.candidate
+
+
+class TestChangePointResponse:
+    """A detected change is acted on, not just noted.
+
+    Firing declares a new regime for that feed: its pre-change rows are dropped,
+    so the fit describes the population that exists now rather than an average
+    of two. The arming threshold then applies again, which is what holds the
+    curve until the new regime earns its own — the arming rule doing its
+    ordinary job, not a policy of standing still because something moved.
+    """
+
+    def test_a_feeds_pre_change_rows_are_dropped(self):
+        steady = _rows(ARMING_ROWS, cap=3.7)
+        for row in steady:
+            object.__setattr__(row, "source_type", "steady")
+        shifted = _rows(60, cap=3.7) + _rows(60, cap=9.0)
+        for i, row in enumerate(shifted):
+            object.__setattr__(row, "source_type", "shifted")
+            object.__setattr__(row, "event_id", f"shifted-{i}")
+
+        kept = drop_pre_change(steady + shifted, {"shifted": 60})
+
+        assert len(kept) == ARMING_ROWS + 60
+        assert all(r.source_type != "shifted" or int(r.event_id.split("-")[1]) >= 60
+                   for r in kept)
+
+    def test_a_feed_with_no_change_point_is_untouched(self):
+        rows = _rows(50)
+
+        assert drop_pre_change(rows, {}) == rows
+
+    def test_dropping_can_leave_a_regime_below_its_threshold(self):
+        """And that is correct. The curve then holds at the last accepted values
+        until the new regime re-arms, because the corpus genuinely no longer has
+        enough comparable rows — the same reason it holds on day one."""
+        rows = _rows(ARMING_ROWS)
+        for i, row in enumerate(rows):
+            object.__setattr__(row, "event_id", f"one-{i}")
+
+        kept = drop_pre_change(rows, {"s": ARMING_ROWS - 20})
+
+        assert len(kept) < ARMING_ROWS

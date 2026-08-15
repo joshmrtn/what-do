@@ -13,7 +13,7 @@ from typing import Any
 
 from src.scoring.change_detection import detect_change
 from src.scoring.curve_fit import Observation
-from src.scoring.refit_policy import RefitPolicy, plan_refit
+from src.scoring.refit_policy import RefitPolicy, drop_pre_change, plan_refit
 from src.storage.extraction_observations import ExtractionObservation
 from src.scoring.source_terms import source_multipliers
 from src.storage.curve_state import CurveState
@@ -66,6 +66,13 @@ def run_refit(
     if not rows:
         return None
 
+    # Detected before fitting, and acted on: a feed that changed contributes
+    # only its post-change rows, so the fit describes the population that exists
+    # rather than an average of two. Run against the incumbent, since that is
+    # the curve the residuals are relative to before anything moves.
+    change_points = detect_change(rows, *incumbent)
+    rows = drop_pre_change(rows, change_points)
+
     outcome = plan_refit(rows, incumbent=incumbent, policy=policy)
     in_regime = [row for row in rows if row.regime == outcome.regime]
 
@@ -82,14 +89,14 @@ def run_refit(
         "incumbent": list(incumbent),
         "applied": list(outcome.parameters),
     }
+    provenance["change_points"] = change_points
     if outcome.decision.accepted:
-        # Only meaningful against a curve worth having: multipliers and change
-        # points computed off an unarmed regime's incumbent would describe a
-        # curve nothing was fitted to.
+        # Only meaningful against a curve worth having: multipliers computed off
+        # an unarmed regime's incumbent would describe a curve nothing was
+        # fitted to.
         provenance["source_multipliers"] = source_multipliers(
             in_regime, *outcome.parameters
         )
-        provenance["change_points"] = detect_change(in_regime, *outcome.parameters)
 
     return CurveState(
         cap=outcome.parameters[0],
