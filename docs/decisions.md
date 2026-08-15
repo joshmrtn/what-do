@@ -2544,3 +2544,60 @@ dependent on join order.
 
 **Note the shape**, because it recurs: an `Event` had already dropped the thing a later stage
 needed. The same is true of the handle the ranking blocklist wants.
+
+---
+
+## Every extraction is kept, and the chronology is the reason
+
+**Decision:** `extraction_observations` records each extraction append-only, keyed on
+`(event_id, observed_at)`. The refit reads it rather than reading `events`.
+
+**Rationale, as stated:** `events` holds one extraction per event because re-extraction
+overwrites in place, so the two observations most worth comparing — either side of a prompt
+change — are exactly the ones that never survive there.
+
+**Rationale, as it turned out:** the retention mattered less than the *ordering*. Reading from
+`events` left only `created_at` to sequence by, and that is when the **event** was created, not
+when the extraction ran. Every one of the 128 rows in the largest feed was re-extracted days
+after creation, so the series the change detector was reading was not a chronology of
+extractions at all.
+
+Measured, on the same corpus:
+
+```
+ordered by created_at    change point: northshorenightout_listing at row 33
+ordered by observed_at   change points: none
+```
+
+The detector's only finding was an artefact of the ordering. **This is why the change-point
+response had to follow the log rather than precede it** — acting on that would have dropped a
+feed's rows for a shift the data could not express.
+
+Backfilled from `updated_at`, which is the last write and therefore close to the extraction,
+and every backfilled row is marked so a later reader can tell evidence from inference.
+
+**The general shape, which has now appeared three times in this codebase:** the derived row is
+not the record. `candidate_versions` for what a source published, `dedup_decisions` for what a
+comparison concluded, and this for what the model was asked. Each exists because the thing that
+overwrites is not the thing worth keeping.
+
+---
+
+## A detected change resets that feed alone
+
+**Decision:** When CUSUM flags a feed, its pre-change observations are dropped before the fit.
+The curve is not frozen and no operator is asked anything.
+
+**Rationale:** Freezing is the wrong response to a population changing — the curve must follow
+it, just not by blending two populations into one average. Dropping the earlier rows leaves the
+fit describing what exists now.
+
+**Dropping can leave a regime below its arming threshold, and that is correct rather than a
+failure.** The curve then holds at the last accepted values until the new regime earns its own.
+That is the arming rule doing its ordinary job — the same reason the curve holds on day one of
+a fresh deployment — not a policy of standing still because something moved. It re-arms by
+itself, which is the whole point of the refit being automatic.
+
+**Per-feed throughout.** A single global detector would reset everything whenever one feed
+altered its listings, and the "hold until re-armed" would then bite the entire corpus each
+time.
