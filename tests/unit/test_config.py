@@ -4,6 +4,9 @@ from datetime import time
 import pytest
 import yaml
 
+from dataclasses import dataclass
+
+import src.config as config_module
 from src.config import (
     DEFAULT_HORIZON_DAYS,
     ConfigError,
@@ -84,13 +87,16 @@ def test_gemini_api_key_reads_from_env(tmp_path, monkeypatch):
 
 
 def test_gemini_api_key_none_when_not_set(tmp_path, monkeypatch):
+    """No longer needs an explicit empty `env_path`.
+
+    That workaround was here because this machine's `.env` holds a real
+    `GEMINI_API_KEY`, which `load_dotenv()` put straight back after the delenv.
+    `no_ambient_dotenv` handles it for every test in this module now, so the
+    test reads as what it means — and it still fails without the fixture, which
+    is the clearest proof the fixture does anything.
+    """
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    empty_env = tmp_path / ".env"
-    empty_env.write_text("")
-    cfg = load_config(
-        config_path=_write_config(tmp_path, _valid_location_data()),
-        env_path=empty_env,
-    )
+    cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
     assert cfg.gemini_api_key is None
 
 
@@ -1177,3 +1183,91 @@ class TestTheExtractionBudget:
     def test_a_non_numeric_budget_is_rejected(self, tmp_path):
         with pytest.raises(ConfigError, match="extraction_budget_minutes"):
             _load(tmp_path, {"models": {"extraction_budget_minutes": "overnight"}})
+
+
+@dataclass
+class _AmbientReads:
+    """Records ambient `.env` reads this module suppressed.
+
+    A double that records and does not reimplement: an explicit path is
+    delegated to the real loader untouched, so the only behaviour changed is
+    that the machine's own `.env` is not consulted.
+    """
+
+    suppressed: int = 0
+
+
+_ambient_reads = _AmbientReads()
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_dotenv(monkeypatch):
+    """Isolate every config test from whatever is in this machine's `.env`.
+
+    `load_config` calls `load_dotenv()` with no path when none is given, which
+    reads the `.env` beside the source tree straight into `os.environ` — undoing
+    a `monkeypatch.delenv` moments after it happens. Any assertion that a
+    variable is *absent* then passes or fails according to whose machine runs
+    it, which is how `test_gemini_api_key_none_when_not_set` broke once
+    `GEMINI_API_KEY` was added locally (#6).
+
+    Autouse, because the fragility belongs to every defaults-when-unset test in
+    this module rather than to the two that have been bitten so far.
+    """
+    real = config_module.load_dotenv
+    _ambient_reads.suppressed = 0
+
+    def _loader(path=None, *args, **kwargs):
+        if path is None:
+            _ambient_reads.suppressed += 1
+            return False
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(config_module, "load_dotenv", _loader)
+    return _ambient_reads
+
+
+class TestAmbientDotenvIsolation:
+    """Config tests must not depend on what is in the machine's own `.env`.
+
+    `load_config` calls `load_dotenv()` with no path when none is given, which
+    reads the `.env` in the working directory straight into `os.environ`. A test
+    that asserts a variable is *absent* therefore passes or fails according to
+    whose machine it runs on — `monkeypatch.delenv` is undone moments later by
+    the loader itself.
+
+    This already bit once: `test_gemini_api_key_none_when_not_set` broke when
+    `GEMINI_API_KEY` was added locally, and was patched by passing an explicit
+    empty `env_path`. That fix was per-test, and every other defaults-when-unset
+    assertion still passed only because this machine's `.env` happens to hold
+    nothing else (#6).
+    """
+
+    def test_loading_config_does_not_read_the_ambient_dotenv(self, tmp_path):
+        """The property, asserted where it can be pinned deterministically.
+
+        The failure it prevents is by nature machine-dependent — it appears only
+        when someone's `.env` holds the variable under test — so it cannot be
+        reproduced in a test that must pass everywhere. `load_dotenv()` also
+        resolves from the *calling module's* directory rather than the working
+        one, so `chdir` cannot stage a fake ambient file either.
+
+        What is deterministic is that the ambient read is suppressed at all.
+        """
+        load_config(config_path=_write_config(tmp_path, _valid_location_data()))
+
+        assert _ambient_reads.suppressed == 1, "the ambient .env was read"
+
+    def test_an_explicit_env_path_is_still_honoured(self, tmp_path, monkeypatch):
+        """Isolation must not neuter the feature. A caller naming a file still
+        gets it — only the *ambient* lookup is suppressed."""
+        env_file = tmp_path / "named.env"
+        env_file.write_text("APIFY_API_KEY=explicitly_asked_for\n")
+        monkeypatch.delenv("APIFY_API_KEY", raising=False)
+
+        load_config(
+            config_path=_write_config(tmp_path, _valid_location_data()),
+            env_path=env_file,
+        )
+
+        assert os.environ.get("APIFY_API_KEY") == "explicitly_asked_for"
