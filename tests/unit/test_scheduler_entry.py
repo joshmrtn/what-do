@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import fields
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from src.composition.batch import BatchDependencies
 from src.ingestion.ingestion_service import RawCandidateRecord
 from src.models.event_candidate import EventCandidate
 from src.scheduler import BatchResult, run
@@ -34,6 +36,7 @@ class _Recorder:
         self.kwargs: dict = {}
         self.result = result or BatchResult(outcome="success")
         self.raw = raw
+        self.deps: object | None = None
 
     def __call__(self, **kwargs):
         self.kwargs = kwargs
@@ -44,26 +47,11 @@ class _Recorder:
         return self.result
 
 
-_STAGES = (
-    "ingestion_service",
-    "normalization_service",
-    "enrichment_service",
-    "extraction_stage",
-    "embedding_stage",
-    "semantic_deduplicator",
-    "similarity_stage",
-    "ranking_engine",
-)
-
-
-_REPOSITORIES = (
-    "candidate_repository",
-    "event_repository",
-    "run_repository",
-    "score_repository",
-    "ranking_repository",
-    "dedup_decision_repository",
-)
+#: Read off the real dataclass rather than restated. A hardcoded list here is a
+#: second place to remember a new dependency, and the one that will be forgotten:
+#: it named exactly the six repositories the entry point happened to forward, so
+#: the two it dropped were invisible to every test in this file.
+_DEPENDENCIES = tuple(field.name for field in fields(BatchDependencies))
 
 
 class _FakeDeps:
@@ -71,13 +59,9 @@ class _FakeDeps:
 
     def __init__(self, **built_with) -> None:
         self.built_with = built_with
+        for name in _DEPENDENCIES:
+            setattr(self, name, object())
         self.skipped_sources = ["apify"]
-        for stage in _STAGES:
-            setattr(self, stage, object())
-        # Persistence now comes from the composition root too, so the
-        # stand-in has to supply it like everything else.
-        for repo in _REPOSITORIES:
-            setattr(self, repo, object())
 
 
 def _fake_build(**kwargs):
@@ -92,6 +76,13 @@ def invoke(tmp_path):
         batch = _Recorder(result, raw=raw)
         config_calls: list = []
 
+        def _build(**kwargs):
+            # Kept so a test can assert the batch was handed the very object the
+            # composition root built, rather than merely something of the right
+            # name.
+            batch.deps = (build or _fake_build)(**kwargs)
+            return batch.deps
+
         def _load_config(config_path=None, env_path=None):
             config_calls.append(config_path)
             return object()
@@ -102,7 +93,7 @@ def invoke(tmp_path):
             get_now=lambda: NOW,
             stdout=stdout,
             load_config_fn=_load_config,
-            build_dependencies_fn=build or _fake_build,
+            build_dependencies_fn=_build,
             run_batch_fn=batch,
             init_db_fn=lambda path: None,
             check_schema_fn=check_schema or (lambda path: []),
@@ -245,6 +236,25 @@ def test_skipped_sources_are_reported_not_inferred(invoke):
     _, batch, _, _ = invoke([])
 
     assert batch.kwargs["skipped_sources"] == ["apify"]
+
+
+@pytest.mark.parametrize("name", _DEPENDENCIES)
+def test_every_built_dependency_reaches_the_batch(invoke, name):
+    """Nothing the composition root builds may be dropped in transit.
+
+    The entry point is the one seam where a dependency can be built, typed and
+    still never arrive: `run_batch` reads it off a keyword, so an omitted one is
+    simply absent. `curve_state_repository` and
+    `extraction_observation_repository` were both dropped here, and the refit
+    silently did not run for as long as they were.
+
+    Parametrised off the dataclass so a dependency added later is covered the
+    moment it is declared, rather than when somebody remembers this file.
+    """
+    _, batch, _, _ = invoke([])
+
+    assert name in batch.kwargs, f"{name} was built but never forwarded"
+    assert batch.kwargs[name] is getattr(batch.deps, name)
 
 
 def test_a_successful_run_exits_zero(invoke):

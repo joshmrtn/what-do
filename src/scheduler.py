@@ -842,6 +842,8 @@ def run(
             score_repository=dependencies.score_repository,
             ranking_repository=dependencies.ranking_repository,
             dedup_decision_repository=dependencies.dedup_decision_repository,
+            curve_state_repository=dependencies.curve_state_repository,
+            extraction_observation_repository=dependencies.extraction_observation_repository,
             logger=logger,
             run_date=run_date,
             get_now=get_now,
