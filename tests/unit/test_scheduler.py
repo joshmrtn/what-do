@@ -1758,6 +1758,22 @@ def test_a_refusing_gate_is_still_recorded(db):
     assert state.provenance["accepted"] is False
 
 
+def test_the_result_carries_what_the_refit_decided(db):
+    """So a night the gate declined is legible from cron output alone, without
+    opening the database to find out whether the refit ran at all."""
+    result, *_ = _run(db, candidates=[_candidate("c1")])
+
+    assert result.refit is not None
+    assert "refused" in result.refit
+
+
+def test_a_dry_run_says_nothing_about_a_refit(db):
+    """It did not run, and reporting a decision it never made would be a lie."""
+    result, *_ = _run(db, candidates=[_candidate("c1")], dry_run=True)
+
+    assert result.refit is None
+
+
 def test_a_dry_run_records_no_observations_and_no_curve(db):
     """A dry run persists nothing, and the refit reads what a run persisted."""
     _run(db, candidates=[_candidate("c1")], dry_run=True)

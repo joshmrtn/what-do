@@ -90,6 +90,10 @@ class BatchResult:
     per_source: dict[str, SourceTally] = field(default_factory=dict)
     #: Sources that raised during the fetch, by name.
     failed_sources: list[str] = field(default_factory=list)
+    #: What the nightly refit decided, or None where it did not run. A gate that
+    #: declines and a refit that never ran are the same silence otherwise, and
+    #: the batch spent a night in the second state looking like the first.
+    refit: str | None = None
 
 
 def run_batch(
@@ -444,7 +448,7 @@ def run_batch(
     # written and applies to the *next* one, so a failure here costs a night's
     # refit and nothing else — the ranking is already saved above.
     if not dry_run:
-        _stage(
+        result.refit = _stage(
             "refit",
             lambda: _refit(
                 extraction_observation_repository, config, curve_state_repository, now
@@ -484,7 +488,7 @@ def _refit(
     config: AppConfig,
     curve_state: CurveStateRepository,
     now: datetime,
-) -> None:
+) -> str:
     """Re-derive the tag-confidence curve from what extraction actually did.
 
     Reads the incumbent from config, which composition has already replaced with
@@ -503,8 +507,15 @@ def _refit(
         ),
         now=now,
     )
-    if state is not None:
-        curve_state.save(state)
+    if state is None:
+        return "not run — no usable observations"
+
+    curve_state.save(state)
+    provenance = state.provenance
+    rows = provenance.get("rows")
+    if provenance.get("accepted"):
+        return f"accepted — cap {state.cap:.3f}, saturation {state.saturation:.1f} ({rows} rows)"
+    return f"refused — {provenance.get('reason')} ({rows} rows)"
 
 
 def _merge_candidates(
@@ -697,6 +708,8 @@ def _summarise(result: BatchResult) -> str:
                 f"of {tally.fetched:>4} fetched{note}"
             )
 
+    if result.refit is not None:
+        lines.append(f"  refit: {result.refit}")
     if result.failed_sources:
         lines.append(f"  failed sources: {', '.join(result.failed_sources)}")
     if result.skipped_sources:

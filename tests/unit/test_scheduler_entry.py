@@ -293,6 +293,24 @@ def test_the_summary_reports_the_outcome_and_counts(invoke):
     assert "apify" in output
 
 
+def test_the_summary_says_what_the_refit_decided(invoke):
+    """A refit that declined and one that never ran read identically otherwise,
+    which is how the missing wiring survived a night of cron output."""
+    result = BatchResult(outcome="success", refit="refused — too few rows (12 rows)")
+
+    _, _, output, _ = invoke([], result=result)
+
+    assert "refit: refused — too few rows (12 rows)" in output
+
+
+def test_a_run_with_no_refit_line_says_nothing_about_one(invoke):
+    """Absence is reserved for the stage not running at all — a dry run, or a
+    failure `_stage` has already reported as an error."""
+    _, _, output, _ = invoke([], result=BatchResult(outcome="success"))
+
+    assert "refit" not in output
+
+
 # ----------------------------------------------------------------------
 # Ingest-only and the raw dump
 # ----------------------------------------------------------------------
