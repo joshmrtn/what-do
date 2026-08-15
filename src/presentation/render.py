@@ -121,7 +121,13 @@ def render_recommendations(
         The rendered view, ending in a newline.
     """
     if not pairs:
-        return _join([_style("No events to show.", _DIM, color)])
+        # The heading survives an empty list. Without it a run of quiet nights
+        # under `--days` becomes indistinguishable repetitions of the same
+        # sentence, with nothing saying which night each one was.
+        empty = _style("No events to show.", _DIM, color)
+        if heading:
+            return _join([_style(heading, _BOLD, color), "", empty])
+        return _join([empty])
 
     shown = pairs if limit is None else pairs[:limit]
     hidden = len(pairs) - len(shown)

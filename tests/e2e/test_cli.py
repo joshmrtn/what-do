@@ -655,3 +655,56 @@ class TestConfiguredViewNumbers:
 
         assert one.count("<-") == 1
         assert two.count("<-") == 2
+
+
+class TestInputThatCannotBeHonoured:
+    """Values a person can type that were silently reinterpreted.
+
+    All the same shape as the `--upcoming` sentinel: an input inside the domain
+    the user can express, given a meaning they did not ask for. The failure is
+    never a crash — it is a listing that looks right.
+    """
+
+    def test_a_zero_limit_is_refused_rather_than_replaced(self, db_path):
+        """`args.limit or default` reads 0 as "unset", so asking for none
+        silently produced the default ten."""
+        code, out, err = _invoke(db_path, "--limit", "0")
+
+        assert code == 1
+        assert "--limit" in err
+        assert out == ""
+
+    def test_a_negative_limit_is_refused_rather_than_slicing_from_the_end(self, db_path):
+        """The worst of the family, because it looks like it worked: `pairs[:-5]`
+        drops the *last* five and renders everything else, so the listing is
+        plausible and wrong, and the "+ N more" count no longer describes it."""
+        code, out, err = _invoke(db_path, "--limit", "-5")
+
+        assert code == 1
+        assert "--limit" in err
+        assert out == ""
+
+    def test_an_empty_explain_selector_is_refused(self, db_path):
+        """An empty string is falsy, so `--explain ''` fell through to the
+        default view — the one command that must never quietly answer a
+        different question."""
+        code, out, err = _invoke(db_path, "--explain", "")
+
+        assert code == 1
+        assert "--explain" in err
+        assert out == ""
+
+    def test_a_whitespace_only_explain_selector_is_refused(self, db_path):
+        code, _, err = _invoke(db_path, "--explain", "   ")
+
+        assert code == 1
+        assert "--explain" in err
+
+    def test_a_night_with_nothing_on_still_says_which_night(self, db_path):
+        """`--days` renders one section per night, and an empty one dropped its
+        heading — so a run of quiet nights became indistinguishable repetitions
+        of "No events to show." with nothing saying which was which."""
+        _, out, _ = _invoke(db_path, "--days", "4")
+
+        quiet = RUN_DATE + timedelta(days=3)
+        assert quiet.strftime("%A %-d %B") in out

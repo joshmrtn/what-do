@@ -234,13 +234,26 @@ def _cmd_recommend(
         )
         return 0
 
+    if args.limit is not None and args.limit < 1:
+        # Not `or default`: 0 is falsy, so asking for no events silently
+        # produced the default, and a negative slices from the end —
+        # `pairs[:-5]` drops the last five and renders a plausible, wrong list.
+        print(f"Error: --limit must be 1 or more, got {args.limit}", file=stderr)
+        return 1
+
+    if args.explain is not None and not args.explain.strip():
+        # An empty string is falsy, so this fell through to the default view —
+        # the one command that must never quietly answer a different question.
+        print("Error: --explain needs an event: a rank, or part of a title", file=stderr)
+        return 1
+
     try:
         run_date = date.fromisoformat(args.run_date) if args.run_date else None
     except ValueError:
         print(f"Error: --run-date must be YYYY-MM-DD, got {args.run_date!r}", file=stderr)
         return 1
 
-    if args.explain:
+    if args.explain is not None:
         return _cmd_explain(
             args.explain,
             db_path=db_path,
@@ -319,7 +332,7 @@ def _cmd_recommend(
                 selected,
                 heading=night.strftime("%A %-d %B"),
                 verbose=args.verbose,
-                limit=None if args.all else (args.limit or view.view.limit),
+                limit=None if args.all else (args.limit if args.limit is not None else view.view.limit),
                 color=_supports_color(stdout),
                 source_urls=view.source_urls,
                 reason_limit=view.view.reason_limit,
@@ -407,7 +420,7 @@ def _cmd_upcoming(
             selected,
             heading=None,
             verbose=args.verbose,
-            limit=None if args.all else (args.limit or view.view.limit),
+            limit=None if args.all else (args.limit if args.limit is not None else view.view.limit),
             color=_supports_color(stdout),
             source_urls=view.source_urls,
             show_dates=True,
