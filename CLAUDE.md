@@ -67,9 +67,26 @@ they read the zone rather than the text. `_normalize_timestamp` is the boundary.
 convention is optional — an `Event` in UTC misfiles every evening event by a day, and a
 candidate in local time reintroduces the mixed-offset comparison.
 
-**A naive timestamp is tolerated at the raw layer and resolved at normalization.** Ingestion
-must never crash on one — that is what killed the first live fetch — and only the adapter
-knows which zone it meant, so `EventCandidate` leaves it exactly as it is. See #30.
+**A naive timestamp is resolved at ingestion, and the assumption is recorded.** `_resolve_naivety`
+reads a bare timestamp as local and writes `metadata["assumed_zone"]`, because ingestion is the
+single funnel every fetched candidate passes through — no adapter can bypass it and none has to
+remember. `EventCandidate` itself stays tolerant: it has no zone to convert with, and ingestion
+must never crash on a naive value, which is what killed the first live fetch.
+
+**Compare on a canonical key; store what the source wrote.** Three instances, all landed
+2026-08-14 and all the same shape — put both sides into one representation, then compare
+*exactly*. This is never a loosening, and a fuzzy comparison is not the same thing:
+
+| what | key | why |
+|---|---|---|
+| timestamps | UTC | text order only matches chronological order at a fixed offset |
+| venues | casefolded, leading article stripped | `The Rhumb Line` and `Rhumb Line` are one venue |
+| titles | casefolded, `w/`→`with`, `&`→`and` | `token_sort_ratio` is case-sensitive |
+
+The key is deliberately **not** what gets stored or displayed — stripping the article from a
+stored venue would put "House Of The Seven Gables" on screen. Expansions stay short and each is
+a judgement: `ft.` is excluded because it genuinely means *feet*, `@` because it is a handle as
+often as a preposition, and both have tests pinning the exclusion.
 
 ---
 
@@ -317,6 +334,8 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | A recording double that pins a signature | `_DedupSpy.deduplicate(self, events, config)` broke the moment the real method grew a `now`. A spy exists to record and forward; the instant it declares the shape of what it forwards, it has started reimplementing. Use `**kwargs`, or `__getattr__`, as `_StageSpy` does |
 | Reasoning from the shapes the code already has | "Losers are destroyed, so provenance goes on the survivor, so Pass 1 can never be explained" — every step true, conclusion wrong, because the premise was the thing to change. Ask what this would look like with no existing code, then decide what to keep. It turned a lossy row-shaped design into `dedup_decisions`, which can record the label a row *cannot*: "compared, and judged different" |
 | Assuming O(n²) means unaffordable | The dedup guards cut 1.39M possible pairs to **1,784 actually scored**. The expensive-looking thing was already cheap and nobody had measured it. Measure the population before designing around its size |
+| Assuming a fuzzy string library folds case | **`fuzz.token_sort_ratio` is case-sensitive** — rapidfuzz applies no processor by default. Measured: `HEADLANDS` vs `Headlands` scored **0.111**, so a venue writing its listings in caps was invisible to dedup Pass 1 entirely, and a `w/` versus `with` pair lost twice as much to casing as to the abbreviation. Any rapidfuzz comparison needs a canonical key |
+| A structural guard compared on raw strings | A failed guard is *no comparison*, not a low score, so a venue written two ways silently removes the pair from dedup altogether. Measured: 3 of 154 venues collided, costing 4 pairs and 2 real duplicates. Canonicalise both sides and keep the guard exact — loosening it to a *fuzzy* venue match would admit pairs to Pass 2, whose summary vectors cannot tell two events at one venue apart (#13) |
 | Comparing ISO timestamp strings across mixed offsets | Meaningless, and it looks fine. Google Calendar's `basic.ics` emits `DTSTART:…Z` for some events and `DTSTART;TZID=…` for others **in one file**, so `event_candidates` held three offsets and `for_window`'s text comparison wrongly kept events that were already over. **Both sides must share the offset** — canonicalise the *bound* too, or a local-form floor disagrees with the truth (measured: 15 candidates) against a table that is entirely UTC |
 | Assuming a row absent from a query's result is gone | A retrieval filter is not a delete. There is no `DELETE` against `event_candidates` anywhere in `src/`, so a narrower bound is reversible: widen it and the row is reloaded, re-derived, and rematched onto its event by candidate id. Reasoning about "eviction" from a layer that is never destroyed nearly justified the right decision for an invented reason |
 | Making two filters over one field "agree" | Name the question each asks first. `_scope_filter` asks *is this worth ranking* (product); `for_window` asks *is this record still live* (currency). They share a **floor**, because a finished event is both — and must not share a **ceiling**, because a horizon says nothing about staleness. Sharing the whole predicate bakes the confusion in |
