@@ -176,25 +176,85 @@ def during_night(
     return kept
 
 
-def overlapping(pairs: list[RankedEvent], window_start: time, window_end: time) -> list[RankedEvent]:
-    """Select pairs whose event overlaps a time-of-day window, both ends inclusive.
+#: Beyond this, a span is read as a recurring programme rather than one
+#: continuous occurrence. A source publishes "10–14 August, 09:00–12:00" as a
+#: single row with no recurrence, so the daily hours are not recoverable from
+#: the data — only inferrable from the endpoints.
+LONG_SPAN_HOURS = 24
 
-    The window is anchored to each event's own date, so it means the same thing
-    for tonight and for an event three days out. An event with no `end_time` is
-    treated as instantaneous rather than being given an invented duration: it
-    overlaps only if it starts inside the window.
+
+def overlapping(
+    pairs: list[RankedEvent],
+    window_start: time,
+    window_end: time,
+    *,
+    night: date,
+) -> list[RankedEvent]:
+    """Select pairs whose event is on during a time-of-day window.
+
+    The window is anchored to the **night being shown**, not to each event's own
+    date. Anchoring it to the event meant that for anything which began earlier
+    the window was built on that earlier date and the comparison stopped meaning
+    anything — a month-long exhibition that opened on the 1st cleared every
+    window unconditionally.
+
+    The window's end is inclusive and the **event's** end is exclusive: you can
+    arrive as the window closes, but not at something that has just finished.
+
+    An event with no `end_time` is treated as instantaneous rather than given an
+    invented duration. Changing that is a separate decision, because it also
+    changes single-day events and `during_night` uses the same idiom — the two
+    filters have to agree about one event.
     """
     kept = []
     for pair in pairs:
         start = pair.event.start_time
         if start is None:
             continue
-        window_from = _combine(start, window_start)
-        window_to = _combine(start, window_end)
         end = pair.event.end_time or start
-        if start <= window_to and end >= window_from:
+        window_from = _combine_on(night, start, window_start)
+        window_to = _combine_on(night, start, window_end)
+
+        if _is_long_span(start, end):
+            if _runs_all_day(start, end):
+                kept.append(pair)
+                continue
+            # Its own endpoints are its daily hours. Compared on the night being
+            # shown, so a 09:00–12:00 workshop stops matching an evening while a
+            # festival running 20:00–23:00 nightly still does.
+            start = _combine_on(night, start, start.timetz())
+            end = _combine_on(night, start, end.timetz())
+
+        if pair.event.end_time is None:
+            # Instantaneous, so a half-open interval would be empty and the
+            # exclusive end below would drop an event starting exactly as the
+            # window opens. It overlaps if it starts inside the window.
+            if window_from <= start <= window_to:
+                kept.append(pair)
+        elif start <= window_to and end > window_from:
             kept.append(pair)
     return kept
+
+
+def _is_long_span(start: datetime, end: datetime) -> bool:
+    """Whether a span is too long to be one continuous occurrence."""
+    return (end - start).total_seconds() > LONG_SPAN_HOURS * 3600
+
+
+def _runs_all_day(start: datetime, end: datetime) -> bool:
+    """Whether a long span is genuinely continuous rather than a daily programme.
+
+    Equal times-of-day mean the span is a whole number of days, which is the one
+    readable signal of continuity in data that records no recurrence. A mooring
+    rental stored 12:00 → 12:00 next day is not a programme that runs at noon —
+    you have the mooring at 8pm.
+
+    It will occasionally be wrong: a festival that genuinely runs overnight for
+    a week reads as a daily programme. Accepted, because the alternative needs a
+    field no source publishes and the behaviour it replaces was "matches every
+    window that can be typed".
+    """
+    return start.timetz() == end.timetz()
 
 
 def after_sunset(pairs: list[RankedEvent]) -> list[RankedEvent]:
@@ -216,6 +276,16 @@ def after_sunset(pairs: list[RankedEvent]) -> list[RankedEvent]:
 def _combine(reference: datetime, at: time) -> datetime:
     """Place a time of day on the reference datetime's own date and timezone."""
     return datetime.combine(reference.date(), at, tzinfo=reference.tzinfo)
+
+
+def _combine_on(night: date, reference: datetime, at: time) -> datetime:
+    """Place a time of day on a given date, in the reference's own timezone.
+
+    The zone comes from the event rather than from the caller: a window is a
+    claim about local wall-clock hours, and the event already knows which offset
+    its own listing was published under.
+    """
+    return datetime.combine(night, at.replace(tzinfo=None), tzinfo=reference.tzinfo)
 
 
 def _sunset_of(event: Event) -> datetime | None:

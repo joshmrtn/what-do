@@ -284,7 +284,7 @@ def _cmd_recommend(
     selected.sort(key=lambda ranked: ranked.rank)
 
     if window is not None:
-        selected = overlapping(selected, *window)
+        selected = overlapping(selected, *window, night=tonight)
     if args.after_sunset:
         selected = after_sunset(selected)
 

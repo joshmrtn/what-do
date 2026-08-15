@@ -23,6 +23,7 @@ from src.presentation.filters import (
 
 TZ = timezone(timedelta(hours=-4))
 TODAY = date(2025, 6, 21)
+TOMORROW = date(2025, 6, 22)
 
 
 def _pair(
@@ -128,44 +129,59 @@ class TestOverlapping:
     WINDOW = (time(20, 30), time(23, 30))
 
     def test_keeps_an_event_starting_inside_the_window(self):
-        assert _ids(overlapping([_pair("in", start=_at(21))], *self.WINDOW)) == ["in"]
+        assert _ids(overlapping([_pair("in", start=_at(21))], *self.WINDOW, night=TODAY)) == ["in"]
 
     def test_drops_an_event_starting_before_the_window_with_no_end_time(self):
-        assert overlapping([_pair("early", start=_at(19))], *self.WINDOW) == []
+        assert overlapping([_pair("early", start=_at(19))], *self.WINDOW, night=TODAY) == []
 
     def test_drops_an_event_starting_after_the_window(self):
-        assert overlapping([_pair("late", start=_at(23, 45))], *self.WINDOW) == []
+        assert overlapping([_pair("late", start=_at(23, 45))], *self.WINDOW, night=TODAY) == []
 
     def test_window_start_is_inclusive(self):
-        assert _ids(overlapping([_pair("edge", start=_at(20, 30))], *self.WINDOW)) == ["edge"]
+        assert _ids(overlapping([_pair("edge", start=_at(20, 30))], *self.WINDOW, night=TODAY)) == ["edge"]
 
     def test_window_end_is_inclusive(self):
-        assert _ids(overlapping([_pair("edge", start=_at(23, 30))], *self.WINDOW)) == ["edge"]
+        assert _ids(overlapping([_pair("edge", start=_at(23, 30))], *self.WINDOW, night=TODAY)) == ["edge"]
 
     def test_an_earlier_event_still_running_overlaps(self):
         """A gig from 19:00 to 22:00 is a real option at 20:30."""
         pairs = [_pair("running", start=_at(19), end=_at(22))]
 
-        assert _ids(overlapping(pairs, *self.WINDOW)) == ["running"]
+        assert _ids(overlapping(pairs, *self.WINDOW, night=TODAY)) == ["running"]
 
-    def test_an_event_ending_exactly_at_the_window_start_overlaps(self):
+    def test_an_event_ending_exactly_at_the_window_start_does_not_overlap(self):
+        """Inverted 2026-08-14: the event's end is now exclusive.
+
+        It used to count as overlapping, which is 82 of the 312 events a
+        20:00 window wrongly kept. You cannot attend something that finishes as
+        you arrive. The *window's* end stays inclusive — see the test below,
+        where an event starting at the last minute is still an option.
+        """
         pairs = [_pair("ending", start=_at(19), end=_at(20, 30))]
 
-        assert _ids(overlapping(pairs, *self.WINDOW)) == ["ending"]
+        assert overlapping(pairs, *self.WINDOW, night=TODAY) == []
 
     def test_an_event_ending_before_the_window_does_not(self):
         pairs = [_pair("done", start=_at(18), end=_at(20))]
 
-        assert overlapping(pairs, *self.WINDOW) == []
+        assert overlapping(pairs, *self.WINDOW, night=TODAY) == []
 
     def test_drops_undated_events(self):
-        assert overlapping([_pair("undated", start=None)], *self.WINDOW) == []
+        assert overlapping([_pair("undated", start=None)], *self.WINDOW, night=TODAY) == []
 
-    def test_compares_against_each_events_own_date(self):
-        """The window is a time of day, so tomorrow's 21:00 event matches too."""
+    def test_the_window_is_a_time_of_day_on_whichever_night_is_asked_about(self):
+        """The window generalises across dates — but it is now anchored to the
+        night in question rather than to the event's own start date.
+
+        Anchoring to the event was the bug: for anything that began earlier the
+        window was built on that earlier date, so a month-long exhibition
+        cleared every window unconditionally. The intent survives; the caller
+        says which night it means.
+        """
         pairs = [_pair("tomorrow", start=_at(21, day=22))]
 
-        assert _ids(overlapping(pairs, *self.WINDOW)) == ["tomorrow"]
+        assert _ids(overlapping(pairs, *self.WINDOW, night=TOMORROW)) == ["tomorrow"]
+        assert overlapping(pairs, *self.WINDOW, night=TODAY) == []
 
 
 class TestAfterSunset:
@@ -376,3 +392,76 @@ class TestMatching:
 
     def test_an_untitled_event_is_not_matched_by_text(self):
         assert matching([_pair("a", title=None)], "anything") == []
+
+
+class TestOverlappingCorrectness:
+    """`--time` answers "is this on during these hours", and it was wrong.
+
+    Measured 2026-08-14 against the live ranking: **312** events survive a
+    20:00–23:59 window despite starting before it. 207 genuinely overlap and are
+    an arrival-semantics question nothing stored can answer yet. The other 105
+    are these two bugs.
+    """
+
+    def test_the_window_is_anchored_to_the_night_not_the_event(self):
+        """A month-long exhibition that opened on the 1st built its window on the
+        1st, so its end date cleared it unconditionally — the comparison stopped
+        meaning anything for any event that began earlier."""
+        exhibition = _pair(
+            "e", start=_at(9, day=1), end=_at(17, day=30), sunset=None
+        )
+
+        kept = overlapping([exhibition], time(20, 0), time(23, 59), night=date(2025, 6, 21))
+
+        assert kept == []
+
+    def test_an_event_ending_exactly_as_the_window_opens_is_excluded(self):
+        """82 of the 105. You cannot attend something that has just finished."""
+        finished = _pair("e", start=_at(18), end=_at(20))
+
+        kept = overlapping([finished], time(20, 0), time(23, 59), night=TODAY)
+
+        assert kept == []
+
+    def test_an_event_starting_exactly_as_the_window_closes_is_kept(self):
+        """The other end stays inclusive — you can still arrive."""
+        late = _pair("e", start=_at(23, 59), end=_at(23, 59) + timedelta(hours=1))
+
+        kept = overlapping([late], time(20, 0), time(23, 59), night=TODAY)
+
+        assert len(kept) == 1
+
+    def test_a_long_span_is_read_as_a_daily_programme(self):
+        """A workshop stored as Aug 10 09:00 -> Aug 14 12:00 is 96 unbroken hours
+        and overlapped every window that could be typed. Its endpoints are its
+        daily hours, and 09:00–12:00 is not an evening."""
+        workshop = _pair("e", start=_at(9, day=10), end=_at(12, day=14))
+
+        kept = overlapping([workshop], time(20, 0), time(23, 59), night=date(2025, 6, 12))
+
+        assert kept == []
+
+    def test_a_long_span_whose_daily_hours_do_match_is_kept(self):
+        """The rule must not simply drop everything long. A week-long festival
+        running 20:00–23:00 nightly is exactly what the window is asking for."""
+        festival = _pair("e", start=_at(20, day=10), end=_at(23, day=14))
+
+        kept = overlapping([festival], time(20, 0), time(23, 59), night=date(2025, 6, 12))
+
+        assert len(kept) == 1
+
+    def test_a_whole_number_of_days_is_genuinely_continuous(self):
+        """A mooring rental stored 12:00 -> 12:00 next day is not a programme
+        that runs at noon; you have the mooring at 8pm. Equal times-of-day mean
+        the span is whole days, which is the one readable signal of continuity."""
+        mooring = _pair("e", start=_at(12, day=10), end=_at(12, day=11))
+
+        kept = overlapping([mooring], time(20, 0), time(23, 59), night=date(2025, 6, 10))
+
+        assert len(kept) == 1
+
+    def test_a_short_evening_event_is_unaffected(self):
+        """The ordinary case, which none of this may disturb."""
+        gig = _pair("e", start=_at(21), end=_at(23))
+
+        assert len(overlapping([gig], time(20, 0), time(23, 59), night=TODAY)) == 1
