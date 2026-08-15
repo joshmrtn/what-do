@@ -133,3 +133,47 @@ class TestCurveStateRoundTrip:
 
         assert incumbent[0] < 4.4
         assert incumbent[0] > state.provenance["fitted"][0]
+
+
+class TestChangePointsAreActedOn:
+    """Not merely recorded. A mutation removing the response passed until this
+    existed, because no corpus here contained a change point to respond to."""
+
+    def _shifted(self, n: int) -> list[ExtractionObservation]:
+        """A feed that abruptly starts earning far more tags."""
+        rows = _corpus(n)
+        half = n // 2
+        return [
+            ExtractionObservation(
+                event_id=r.event_id,
+                observed_at=r.observed_at,
+                chars=r.chars,
+                tags=r.tags if i < half else r.tags + 3,
+                model=r.model,
+                prompt_version=r.prompt_version,
+                degradation=None,
+                source="shifting-feed",
+            )
+            for i, r in enumerate(rows)
+        ]
+
+    def test_the_change_is_reported(self):
+        state = run_refit(self._shifted(300), incumbent=STATIC, now=NOW)
+
+        assert state is not None
+        assert state.provenance["change_points"]
+
+    def test_the_pre_change_rows_stop_counting(self):
+        """The fit is made from the population that exists now, so the corpus it
+        reports is smaller than what it was handed."""
+        state = run_refit(self._shifted(300), incumbent=STATIC, now=NOW)
+
+        assert state is not None
+        assert state.provenance["rows"] < 300
+
+    def test_an_unchanged_corpus_keeps_every_row(self):
+        state = run_refit(_corpus(300), incumbent=STATIC, now=NOW)
+
+        assert state is not None
+        assert state.provenance["change_points"] == {}
+        assert state.provenance["rows"] == 300
