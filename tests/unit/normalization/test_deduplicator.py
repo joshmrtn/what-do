@@ -12,6 +12,8 @@ from src.config import DeduplicationConfig
 from src.models.event import Event
 from src.normalization.deduplicator import (
     DeduplicationEngine,
+    _title_similarity,
+    canonical_title,
     canonical_venue,
     venues_match,
 )
@@ -455,3 +457,57 @@ class TestVenueMatching:
 
     def test_one_absent_venue_still_does_not(self):
         assert not venues_match("The Rhumb Line", None)
+
+
+class TestTitleCanonicalisation:
+    """Titles are compared on a canonical key, like venues and timestamps.
+
+    `fuzz.token_sort_ratio` is **case-sensitive**: `HEADLANDS` against
+    `Headlands` scores 0.111, because as raw strings they share almost no
+    characters. A venue that writes its listings in caps was invisible to Pass 1
+    entirely. Measured over 1788 pairs passing the structural guards,
+    casefolding newly merges four — all four genuine duplicates, none spurious.
+
+    Casefolding can only raise a similarity, never lower one, so the whole risk
+    is false positives, and it measured zero.
+
+    The stored title is untouched. This is the comparison key only.
+    """
+
+    def test_case_alone_no_longer_hides_a_duplicate(self):
+        assert canonical_title("HEADLANDS") == canonical_title("Headlands")
+
+    def test_the_common_abbreviation_for_with_is_expanded(self):
+        """Nearly always "with" in a listing, and unlikely to take another
+        meaning in this domain."""
+        assert canonical_title("Bluegrass Night w/ Joe Wilkins") == canonical_title(
+            "Bluegrass night with Joe Wilkins"
+        )
+
+    def test_without_is_not_mangled_into_witho(self):
+        """`w/o` has to be read before `w/`, or the longer form is destroyed by
+        the shorter rule."""
+        assert canonical_title("Trivia w/o Prizes") == canonical_title(
+            "Trivia without prizes"
+        )
+
+    def test_ampersand_reads_as_and(self):
+        assert canonical_title("Rock & Roll Night") == canonical_title(
+            "Rock and Roll Night"
+        )
+
+    def test_ft_is_deliberately_not_expanded(self):
+        """It genuinely means feet — "20 ft" is a real listing string — so
+        expanding it to "featuring" would invent a word the source never used."""
+        assert canonical_title("Ft. Someone") != canonical_title("featuring Someone")
+
+    def test_an_at_sign_is_deliberately_not_expanded(self):
+        """`@` is a handle as often as it is a preposition."""
+        assert canonical_title("Jazz @ The Hall") != canonical_title("Jazz at The Hall")
+
+    def test_two_genuinely_different_titles_stay_different(self):
+        assert canonical_title("Tour en Español") != canonical_title("Hands-on History")
+
+    def test_the_similarity_uses_the_key(self):
+        """The property that matters — the canonicaliser exists to feed this."""
+        assert _title_similarity("HEADLANDS", "Headlands") == 1.0

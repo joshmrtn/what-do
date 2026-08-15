@@ -75,6 +75,41 @@ def content_fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: Expansions applied before comparing two titles, longest form first so a
+#: shorter rule cannot destroy a longer one — `w/o` must be read before `w/`,
+#: or "without" becomes "witho".
+#:
+#: Deliberately short. Each entry is a judgement about what a source meant, and
+#: two obvious candidates are excluded on purpose: `ft.` genuinely means *feet*
+#: ("20 ft" is a real listing string), and `@` is a handle at least as often as
+#: it is a preposition. Both would invent a word the source never used.
+_TITLE_EXPANSIONS = (
+    (re.compile(r"\bw/o\b"), "without"),
+    (re.compile(r"\bw/"), "with "),
+    (re.compile(r"\s*&\s*"), " and "),
+)
+
+
+def canonical_title(title: str) -> str:
+    """The comparison key for a title.
+
+    `fuzz.token_sort_ratio` is **case-sensitive**, which is not obvious and cost
+    real merges: `HEADLANDS` against `Headlands` scores 0.111, because as raw
+    strings they share almost no characters. A venue that writes its listings in
+    caps was invisible to Pass 1 entirely.
+
+    Casefolding also makes the fuzzy half agree with the embedding half —
+    `nomic-embed-text` is uncased, so summary comparison already read text this
+    way while title comparison did not.
+
+    Not what gets stored or displayed. The title stays as the source wrote it.
+    """
+    key = title.casefold()
+    for pattern, replacement in _TITLE_EXPANSIONS:
+        key = pattern.sub(replacement, key)
+    return " ".join(key.split())
+
+
 def _title_similarity(a: str | None, b: str | None) -> float | None:
     """How alike two titles are, or None when there is nothing to compare.
 
@@ -86,7 +121,7 @@ def _title_similarity(a: str | None, b: str | None) -> float | None:
         return 1.0
     if a is None or b is None:
         return None
-    return float(fuzz.token_sort_ratio(a, b)) / 100.0
+    return float(fuzz.token_sort_ratio(canonical_title(a), canonical_title(b))) / 100.0
 
 
 def venues_match(a: str | None, b: str | None) -> bool:
