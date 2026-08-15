@@ -75,12 +75,20 @@ class EventCandidate:
         local reasoning lives and `.date()` reads the zone rather than the text.
 
         **A naive value is left exactly as it is, deliberately.** It carries no
-        instant to convert, and only the adapter knows which zone it meant, so
-        guessing here would misplace an event silently. Naivety is tolerated at
-        the raw layer by design — ingestion must not crash on it, which is the
-        failure that killed the first live fetch — and resolved one layer on by
-        `_normalize_timestamp`, which attaches the configured zone. See #30 for
-        the gap that leaves in `for_window`; no stored row has ever hit it.
+        instant to convert, and this type has no zone to convert it with —
+        guessing one here would misplace an event silently.
+
+        Naivety is *resolved* one layer out, at ingestion, where the configured
+        zone is known: `_resolve_naivety` reads a bare timestamp as local and
+        records `assumed_zone` in the candidate's metadata, so the raw layer
+        holds an instant and the fact that we supplied its offset. Ingestion is
+        the seam because it is the single funnel every fetched candidate passes
+        through, so no adapter can bypass it (#30).
+
+        This stays tolerant rather than strict for two reasons: ingestion must
+        not crash on a naive candidate — the failure that killed the first live
+        fetch — and a candidate constructed outside that funnel, in a test or a
+        one-off script, is not wrong, merely unresolved.
         """
         for name in ("discovered_at", "last_seen_at", "start_time",
                      "end_time", "raw_published_at"):

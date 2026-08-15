@@ -8,7 +8,7 @@ import sqlite3
 from src.storage.protocols import EntityRepository
 from src.storage.sqlite.candidates import write_candidates
 from src.storage.sqlite.connection import connect
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, replace
 from datetime import datetime, timedelta, tzinfo, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -218,6 +218,8 @@ class IngestionService:
                     discarded += 1
                     continue
 
+                ec = _resolve_naivety(ec, zone, self._config.location.timezone)
+
                 _record(source_name, ec, None)
                 accepted_by_source[source_name] = accepted_by_source.get(source_name, 0) + 1
                 accepted.append(ec)
@@ -407,6 +409,63 @@ class IngestionService:
                 component="ingestion",
                 duration_ms=0,
             )
+
+
+#: Records that a timestamp's zone was assumed rather than published. Written
+#: only when something actually was assumed, so its presence is a fact about
+#: the feed rather than a field on every row.
+ASSUMED_ZONE = "assumed_zone"
+
+
+def _resolve_naivety(
+    ec: EventCandidate, zone: tzinfo, zone_name: str
+) -> EventCandidate:
+    """Read a candidate's bare timestamps as local, and record that we did.
+
+    Ingestion is the seam because it is the single funnel every fetched
+    candidate passes through, so no adapter can bypass it and none has to
+    remember. `_localise` has lived here all along for the two filters below;
+    this is the same reading, kept rather than discarded.
+
+    **Why it must be kept.** `event_candidates` is compared as *text* by
+    `for_window` — stored timestamps are canonical UTC, and a naive value has no
+    offset to compare against one. The answer is wrong rather than absent, which
+    is the worst shape a bug can take. Two adapters can still produce one:
+    `jsonld_listing` passes `fromisoformat` straight through and schema.org
+    permits an offsetless `startDate`; `rss` uses `parsedate_to_datetime`, which
+    returns naive for `-0000`. Every other adapter localises for itself (#30).
+
+    **Why the flag.** Localising is a judgement — the feed did not say. Without
+    a record the raw layer holds a resolved instant with no trace that anything
+    was resolved, and "did PEM stop publishing offsets?" stops being answerable
+    from the data. It is the same reasoning that put a content hash on a dedup
+    decision: keep the input to a judgement beside the judgement.
+
+    The zone *name* rather than a bool, because `config.location.timezone` can
+    change and a row should say what was assumed at the time, not what would be
+    assumed now.
+    """
+    # Named one at a time rather than looped: `mypy --strict` can then check
+    # each against its field, and a new timestamp on `EventCandidate` shows up
+    # here as a decision to make instead of being silently skipped.
+    if not any(
+        value is not None and value.tzinfo is None
+        for value in (ec.start_time, ec.end_time, ec.raw_published_at)
+    ):
+        return ec
+
+    return replace(
+        ec,
+        start_time=_localise_optional(ec.start_time, zone),
+        end_time=_localise_optional(ec.end_time, zone),
+        raw_published_at=_localise_optional(ec.raw_published_at, zone),
+        metadata={**ec.metadata, ASSUMED_ZONE: zone_name},
+    )
+
+
+def _localise_optional(value: datetime | None, zone: tzinfo) -> datetime | None:
+    """`_localise`, for a field a source need not have filled in."""
+    return None if value is None else _localise(value, zone)
 
 
 def _localise(value: datetime, zone: tzinfo) -> datetime:

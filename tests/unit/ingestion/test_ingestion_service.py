@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from unittest.mock import MagicMock
 import io
@@ -23,6 +24,9 @@ from src.utils.logging import get_logger
 
 
 FIXED_NOW = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+#: The zone the test config declares, and therefore the one ingestion assumes
+#: for a candidate whose feed states none.
+TIMEZONE = "America/New_York"
 
 
 def _make_config(lookback_days: int = 30, promotion_threshold: int = 3) -> AppConfig:
@@ -32,7 +36,7 @@ def _make_config(lookback_days: int = 30, promotion_threshold: int = 3) -> AppCo
             longitude=-70.89,
             postal_code="01970",
             search_radius_miles=10,
-            timezone="America/New_York",
+            timezone=TIMEZONE,
         ),
         scraping=ScrapingConfig(
             lookback_days=lookback_days,
@@ -1002,3 +1006,138 @@ def test_a_naive_candidate_survives_an_aware_clock(db, seeds_yaml):
     )
 
     assert result.accepted == 1
+
+
+class TestNaiveTimestampsAreResolvedOnAccept:
+    """The raw layer holds instants, so naivety is resolved before it is stored.
+
+    Two adapters can still emit a naive value: `jsonld_listing` passes
+    `fromisoformat` on `startDate` straight through, and schema.org permits an
+    offsetless one; `rss` uses `parsedate_to_datetime`, which returns naive for
+    `-0000`. Every other adapter localises for itself.
+
+    Measured 2026-08-14: 0 of 2231 stored candidates are naive, because PEM's
+    feed currently states an offset. That is a property of PEM's CMS output, not
+    of our code — a template change flips all 82 with nothing to warn us, and a
+    naive value in `event_candidates` makes `for_window`'s text comparison
+    wrong, silently (#30).
+
+    Ingestion is the seam because it is the single funnel every fetched
+    candidate passes through, and `_localise` already lives here for exactly
+    this reason — used by both filters, but never stored until now.
+    """
+
+    def test_a_naive_start_time_is_stored_localised(self, db, seeds_yaml):
+        naive = EventCandidate(
+            id="n1",
+            source="listing",
+            source_type="listing",
+            title="No stated zone",
+            start_time=(FIXED_NOW + timedelta(days=2)).replace(tzinfo=None),
+            discovered_at=FIXED_NOW,
+        )
+
+        result = _service(db, seeds_yaml, [_NamedSource("listing", [naive])]).run(
+            get_now=lambda: FIXED_NOW
+        )
+
+        assert result.accepted == 1
+        stored = result.candidates[0]
+        assert stored.start_time is not None
+        assert stored.start_time.utcoffset() is not None
+
+    def test_the_localised_instant_is_the_wall_clock_read_as_local(self, db, seeds_yaml):
+        """Not a shift: 19:00 with no zone means 19:00 here."""
+        wall = (FIXED_NOW + timedelta(days=2)).replace(tzinfo=None, hour=19, minute=0)
+        naive = EventCandidate(
+            id="n1",
+            source="listing",
+            source_type="listing",
+            title="Seven in the evening",
+            start_time=wall,
+            discovered_at=FIXED_NOW,
+        )
+
+        result = _service(db, seeds_yaml, [_NamedSource("listing", [naive])]).run(
+            get_now=lambda: FIXED_NOW
+        )
+
+        stored = result.candidates[0].start_time
+        assert stored.astimezone(ZoneInfo(TIMEZONE)).hour == 19
+
+    def test_it_records_which_zone_it_assumed(self, db, seeds_yaml):
+        """The feed did not say, and we did. Without this the raw layer holds a
+        resolved instant with no trace that anything was resolved — so "did PEM
+        stop publishing offsets?" stops being answerable."""
+        naive = EventCandidate(
+            id="n1",
+            source="listing",
+            source_type="listing",
+            title="No stated zone",
+            start_time=(FIXED_NOW + timedelta(days=2)).replace(tzinfo=None),
+            discovered_at=FIXED_NOW,
+        )
+
+        result = _service(db, seeds_yaml, [_NamedSource("listing", [naive])]).run(
+            get_now=lambda: FIXED_NOW
+        )
+
+        assert result.candidates[0].metadata["assumed_zone"] == TIMEZONE
+
+    def test_a_candidate_that_stated_its_offset_is_untouched(self, db, seeds_yaml):
+        """No flag, and no conversion: the feed already said what it meant."""
+        stated = EventCandidate(
+            id="a1",
+            source="listing",
+            source_type="listing",
+            title="States an offset",
+            start_time=FIXED_NOW + timedelta(days=2),
+            discovered_at=FIXED_NOW,
+        )
+
+        result = _service(db, seeds_yaml, [_NamedSource("listing", [stated])]).run(
+            get_now=lambda: FIXED_NOW
+        )
+
+        stored = result.candidates[0]
+        assert stored.start_time == FIXED_NOW + timedelta(days=2)
+        assert "assumed_zone" not in stored.metadata
+
+    def test_a_naive_end_time_is_resolved_too(self, db, seeds_yaml):
+        """`_within_event_window` reads `end_time` to keep a run still under
+        way, so leaving it naive moves the gap rather than closing it."""
+        naive_end = EventCandidate(
+            id="n1",
+            source="listing",
+            source_type="listing",
+            title="Runs late",
+            start_time=FIXED_NOW + timedelta(days=2),
+            end_time=(FIXED_NOW + timedelta(days=2, hours=3)).replace(tzinfo=None),
+            discovered_at=FIXED_NOW,
+        )
+
+        result = _service(db, seeds_yaml, [_NamedSource("listing", [naive_end])]).run(
+            get_now=lambda: FIXED_NOW
+        )
+
+        stored = result.candidates[0]
+        assert stored.end_time is not None
+        assert stored.end_time.utcoffset() is not None
+
+    def test_an_undated_candidate_is_not_flagged(self, db, seeds_yaml):
+        """Nothing was assumed, so nothing is recorded. A flag on every undated
+        social post would make the field meaningless."""
+        undated = EventCandidate(
+            id="u1",
+            source="listing",
+            source_type="listing",
+            title="Whenever",
+            start_time=None,
+            discovered_at=FIXED_NOW,
+        )
+
+        result = _service(db, seeds_yaml, [_NamedSource("listing", [undated])]).run(
+            get_now=lambda: FIXED_NOW
+        )
+
+        assert "assumed_zone" not in result.candidates[0].metadata
