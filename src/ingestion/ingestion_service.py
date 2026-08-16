@@ -68,10 +68,12 @@ class IngestionResult:
     failed_sources: list[str] = dataclass_field(default_factory=list)
     #: Every candidate as fetched, only when `collect_raw` asked for it.
     raw: list[RawCandidateRecord] = dataclass_field(default_factory=list)
-    #: Whether each source's own ids identified anything this run, by
-    #: `source_type`. Keyed differently from `per_source` on purpose: identity
-    #: is a property of the feed, while a tally is per fetch name, and one feed
-    #: can be fetched under several (`cabot page 1`…`page 8`).
+    #: Whether each feed's own ids identified anything this run, by `source`.
+    #: Keyed differently from `per_source` on purpose: identity is a property
+    #: of the feed, while a tally is per fetch name, and one feed can be
+    #: fetched under several (`cabot page 1`…`page 8`). **Not `source_type`**,
+    #: which is the category above the feed and holds two of them for
+    #: `northshorenightout` alone (#34).
     churn: dict[str, ChurnTally] = dataclass_field(default_factory=dict)
 
 

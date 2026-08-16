@@ -1151,10 +1151,13 @@ class TestIdChurnIsMeasured:
     reports a perfectly healthy source no matter what arrived.
     """
 
-    def _listing(self, cid: str) -> EventCandidate:
+    def _listing(self, cid: str, source: str = "nsno_ics") -> EventCandidate:
+        # `source` is deliberately unequal to `source_type`, and variable. Held
+        # equal, or held constant, no test here can tell which of the two the
+        # measurement keys on.
         return EventCandidate(
             id=cid,
-            source="nsno",
+            source=source,
             source_type="northshorenightout",
             title="Isabel Stover",
             venue="The Joy Nest",
@@ -1168,7 +1171,7 @@ class TestIdChurnIsMeasured:
 
         result = _service(db, seeds_yaml, [source]).run(get_now=lambda: FIXED_NOW)
 
-        assert result.churn["northshorenightout"].rate is None
+        assert result.churn["nsno_ics"].rate is None
 
     def test_a_republished_id_reports_no_churn(self, db, seeds_yaml):
         svc = lambda cid: _service(db, seeds_yaml, [_NamedSource("nsno", [self._listing(cid)])])
@@ -1176,7 +1179,7 @@ class TestIdChurnIsMeasured:
 
         result = svc("uid-1").run(get_now=lambda: FIXED_NOW)
 
-        assert result.churn["northshorenightout"].rate == 0.0
+        assert result.churn["nsno_ics"].rate == 0.0
 
     def test_a_re_minted_id_for_a_stored_listing_reports_churn(self, db, seeds_yaml):
         """The measurement that would have caught northshorenightout on day two."""
@@ -1185,7 +1188,7 @@ class TestIdChurnIsMeasured:
 
         result = svc("uid-new").run(get_now=lambda: FIXED_NOW)
 
-        assert result.churn["northshorenightout"].rate == 1.0
+        assert result.churn["nsno_ics"].rate == 1.0
 
     def test_the_rate_is_read_before_this_run_persists(self, db, seeds_yaml):
         """The ordering the whole measurement depends on. Persist first and the
@@ -1196,5 +1199,22 @@ class TestIdChurnIsMeasured:
         both = _NamedSource("nsno", [self._listing("uid-new")])
         result = _service(db, seeds_yaml, [both]).run(get_now=lambda: FIXED_NOW)
 
-        assert result.churn["northshorenightout"].churned == 1
-        assert result.churn["northshorenightout"].seen_before == 1
+        assert result.churn["nsno_ics"].churned == 1
+        assert result.churn["nsno_ics"].seen_before == 1
+
+    def test_two_feeds_in_one_category_are_reported_apart(self, db, seeds_yaml):
+        """One `source_type` holds several feeds (#34), and identity policy is a
+        property of the feed. Reported together, a churning feed and a stable
+        one average into a rate that describes neither."""
+        def svc(ics: str, html: str):
+            return _service(db, seeds_yaml, [
+                _NamedSource("nsno", [self._listing(ics, source="nsno_ics")]),
+                _NamedSource("nsno_listing", [self._listing(html, source="nsno_html")]),
+            ])
+
+        svc("ics-old", "html-1").run(get_now=lambda: FIXED_NOW)
+
+        result = svc("ics-new", "html-1").run(get_now=lambda: FIXED_NOW)
+
+        assert result.churn["nsno_ics"].rate == 1.0
+        assert result.churn["nsno_html"].rate == 0.0

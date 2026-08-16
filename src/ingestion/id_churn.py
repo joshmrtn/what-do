@@ -47,6 +47,11 @@ class ChurnTally:
 def content_key(candidate: EventCandidate) -> ContentKey:
     """What identifies the listing itself, rather than the publisher's handle on it.
 
+    Scoped to the **feed**, not the category: a calendar feed and a listing page
+    legitimately cover the same event, so a key spanning `source_type` would let
+    one feed's stored row make the other's first publication look already known,
+    and its correct, stable, genuinely new id would be counted as churn.
+
     Canonical on both text fields, because a re-cased republish would otherwise
     read as a brand new listing and hide the very churn this measures — the same
     reason dedup compares on a canonical key rather than raw strings.
@@ -56,7 +61,7 @@ def content_key(candidate: EventCandidate) -> ContentKey:
     listing and reports the season as churn.
     """
     return (
-        candidate.source_type,
+        candidate.source,
         canonical_title(candidate.title or ""),
         canonical_venue(candidate.venue or ""),
         candidate.start_time.isoformat() if candidate.start_time else "",
@@ -66,18 +71,24 @@ def content_key(candidate: EventCandidate) -> ContentKey:
 def churn_by_source(
     fetched: list[EventCandidate], *, stored: list[EventCandidate]
 ) -> dict[str, ChurnTally]:
-    """Per source, how many already-known listings arrived under a new id.
+    """Per feed, how many already-known listings arrived under a new id.
+
+    Keyed on `source` — the feed — rather than `source_type`, which is a
+    *category* and can hold several feeds with opposite identity policies
+    (#34). Live, `source_type = 'northshorenightout'` covers an ICS feed that
+    re-mints every Google UID and a listing page keyed on a content hash;
+    averaged, 100% and 0% reported 60% and described neither.
 
     Genuinely new listings are **outside the rate entirely**. They carry no
     evidence either way, and counting them would dilute the measurement with
-    every real addition a healthy source publishes.
+    every real addition a healthy feed publishes.
 
     Args:
         fetched: This run's candidates, as fetched.
         stored: Candidates already persisted.
 
     Returns:
-        One tally per `source_type` present in `fetched`.
+        One tally per feed (`source`) present in `fetched`.
     """
     known_ids = {candidate.id for candidate in stored}
     known_keys = {content_key(candidate) for candidate in stored}
@@ -86,7 +97,7 @@ def churn_by_source(
     churned: dict[str, int] = {}
 
     for candidate in fetched:
-        source = candidate.source_type
+        source = candidate.source
         seen_before.setdefault(source, 0)
         churned.setdefault(source, 0)
 

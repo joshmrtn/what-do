@@ -12,7 +12,10 @@ START = datetime(2026, 8, 22, 23, 0, tzinfo=timezone.utc)
 def _candidate(cid: str, **overrides: object) -> EventCandidate:
     fields: dict = {
         "id": cid,
-        "source": "nsno",
+        # Deliberately unequal to `source_type`. Held equal — or held constant
+        # while only `source_type` varies — no test can tell which field the
+        # measurement keys on, and the choice becomes untestable.
+        "source": "nsno_ics",
         "source_type": "northshorenightout",
         "title": "Isabel Stover",
         "venue": "The Joy Nest",
@@ -29,7 +32,7 @@ def test_a_republished_id_is_not_churn():
 
     result = churn_by_source([_candidate("uid-1")], stored=[stored])
 
-    assert result["northshorenightout"].rate == 0.0
+    assert result["nsno_ics"].rate == 0.0
 
 
 def test_a_new_id_for_a_stored_listing_is_churn():
@@ -39,7 +42,7 @@ def test_a_new_id_for_a_stored_listing_is_churn():
 
     result = churn_by_source([_candidate("uid-new")], stored=[stored])
 
-    assert result["northshorenightout"].rate == 1.0
+    assert result["nsno_ics"].rate == 1.0
 
 
 def test_a_genuinely_new_listing_is_outside_the_rate():
@@ -50,8 +53,8 @@ def test_a_genuinely_new_listing_is_outside_the_rate():
 
     result = churn_by_source(fresh, stored=stored and [stored])
 
-    assert result["northshorenightout"].rate == 0.0
-    assert result["northshorenightout"].seen_before == 1
+    assert result["nsno_ics"].rate == 0.0
+    assert result["nsno_ics"].seen_before == 1
 
 
 def test_nothing_seen_before_leaves_the_rate_undefined():
@@ -59,19 +62,55 @@ def test_nothing_seen_before_leaves_the_rate_undefined():
     read as 'ids are stable', which is the opposite of what is known."""
     result = churn_by_source([_candidate("uid-1")], stored=[])
 
-    assert result["northshorenightout"].rate is None
+    assert result["nsno_ics"].rate is None
 
 
-def test_sources_are_measured_separately():
-    """Identity policy is a property of one source; an average over all of them
+def test_feeds_are_measured_separately():
+    """Identity policy is a property of one feed; an average over all of them
     would describe none."""
-    stored = [_candidate("a-old", source_type="a"), _candidate("b-1", source_type="b")]
-    fresh = [_candidate("a-new", source_type="a"), _candidate("b-1", source_type="b")]
+    stored = [_candidate("a-old", source="a"), _candidate("b-1", source="b")]
+    fresh = [_candidate("a-new", source="a"), _candidate("b-1", source="b")]
 
     result = churn_by_source(fresh, stored=stored)
 
     assert result["a"].rate == 1.0
     assert result["b"].rate == 0.0
+
+
+def test_two_feeds_under_one_category_are_measured_apart():
+    """`source_type` is a category and one category holds several feeds (#34).
+    Live: `northshorenightout` covers an ICS feed that re-mints every Google
+    UID and a listing page keyed on a content hash. Averaged, 100% and 0%
+    report 60% and describe neither.
+    """
+    stored = [
+        _candidate("ics-old", source="nsno_ics"),
+        _candidate("html-1", source="nsno_html", title="Other"),
+    ]
+    fresh = [
+        _candidate("ics-new", source="nsno_ics"),
+        _candidate("html-1", source="nsno_html", title="Other"),
+    ]
+
+    result = churn_by_source(fresh, stored=stored)
+
+    assert result["nsno_ics"].rate == 1.0
+    assert result["nsno_html"].rate == 0.0
+
+
+def test_a_listing_carried_by_two_feeds_is_not_churn_in_either():
+    """A calendar feed and a listing page legitimately cover the same event. If
+    the content key spanned the category, the second feed's own first
+    publication would match the first feed's stored row and its id — correct,
+    stable and new to us — would be counted as churn.
+    """
+    stored = [_candidate("ics-1", source="nsno_ics")]
+    fresh = [_candidate("html-1", source="nsno_html")]
+
+    result = churn_by_source(fresh, stored=stored)
+
+    assert result["nsno_html"].rate is None
+    assert result["nsno_html"].seen_before == 0
 
 
 def test_the_key_is_canonical_so_casing_is_not_a_new_listing():
@@ -82,7 +121,7 @@ def test_the_key_is_canonical_so_casing_is_not_a_new_listing():
 
     result = churn_by_source(fresh, stored=[stored])
 
-    assert result["northshorenightout"].rate == 1.0
+    assert result["nsno_ics"].rate == 1.0
 
 
 def test_a_partly_churning_source_reports_the_share():
@@ -97,9 +136,9 @@ def test_a_partly_churning_source_reports_the_share():
 
     result = churn_by_source(fresh, stored=stored)
 
-    assert result["northshorenightout"].rate == 0.5
-    assert result["northshorenightout"].churned == 2
-    assert result["northshorenightout"].seen_before == 4
+    assert result["nsno_ics"].rate == 0.5
+    assert result["nsno_ics"].churned == 2
+    assert result["nsno_ics"].seen_before == 4
 
 
 def test_the_key_holds_the_start_so_a_series_is_not_one_listing():
