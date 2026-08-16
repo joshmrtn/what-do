@@ -169,6 +169,21 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
 4. **Phase gates.** No phase begins until all previous phase tests are green AND the smoke
    test passes. See `docs/implementation-plan.md` for smoke test per phase.
 5. **No hardcoded geography, credentials, or magic numbers.** Everything configurable.
+6. **A config key is two files.** `config/config.example.yaml` is tracked; `config/config.yaml`
+   is gitignored and is what actually runs. Adding or changing a key in the example updates
+   documentation and nothing else — the live file is untouched, `git status` stays clean, and
+   the suite passes either way, because every test builds its own config.
+
+   > **Whenever a config key is added or changed, stop and ask the user about updating the
+   > live `config/config.yaml`.** Never edit it unprompted, and never assume the example
+   > reached it.
+
+   Measured 2026-08-16: the live `weather:` section held **only `provider`**, so the comfort
+   curves never loaded and `weather_adjustment` was **0.0 on every ranking ever stored** —
+   phase 8 had contributed nothing to any score since it shipped. `scoring.domain_map` was
+   empty the same way, leaving every `[movies]` preference inert against 621 cinema events.
+   Both failed *silently*, because an absent key and a configured-empty one are
+   indistinguishable to `raw.get("x") or {}` behind a `default_factory=dict`.
 
 ## Test structure
 
@@ -344,6 +359,8 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | Assuming a row absent from a query's result is gone | A retrieval filter is not a delete. There is no `DELETE` against `event_candidates` anywhere in `src/`, so a narrower bound is reversible: widen it and the row is reloaded, re-derived, and rematched onto its event by candidate id. Reasoning about "eviction" from a layer that is never destroyed nearly justified the right decision for an invented reason |
 | Making two filters over one field "agree" | Name the question each asks first. `_scope_filter` asks *is this worth ranking* (product); `for_window` asks *is this record still live* (currency). They share a **floor**, because a finished event is both — and must not share a **ceiling**, because a horizon says nothing about staleness. Sharing the whole predicate bakes the confusion in |
 | A shared bound that no test distinguishes from the obvious alternative | `_scope_floor` versus `now` differ only for events between local midnight and the batch's 02:00 start — so every test passed with the floor reverted. The one decision deliberately made was the one nothing checked. Write the case that separates them, then mutate to prove it |
+| A tunable whose default is empty | It is a feature that ships switched off, and nothing says so. `weather.comfort` defaults to `{}`, so a missing section meant `compute_comfort` iterated nothing, returned no factors, and every weather adjustment was 0.0 — for every run ever stored. The other weather numbers have real code defaults; the curves were the odd ones out. Prefer a working default, or refuse to start |
+| Editing `config.example.yaml` and stopping there | The example is tracked and documents; `config.yaml` is gitignored and *runs*. A key added to one never reaches the other, `git status` stays clean, and the suite passes because every test builds its own config. Ask before touching the live file — but always ask |
 | Attributing an LLM transcript prompt to one event | A recurring series produces **byte-identical `extraction_input` across dates** — the same title, venue and category on every occurrence. Two events matched one prompt and a whole diagnosis was built on the wrong one. Key on the stored hash, never on prompt text |
 
 ---
