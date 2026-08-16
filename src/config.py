@@ -79,6 +79,13 @@ class ViewConfig:
     reason_limit: int = 2
     #: Span beyond which an event is a recurring programme, not one occurrence.
     long_span_hours: int = 24
+    #: Candidates `--explain` lists when a selector is ambiguous, before
+    #: counting the rest. Deliberately its own key rather than reusing `limit`,
+    #: which happens to share the number: that one answers *how many
+    #: recommendations to show* and this one *how many candidates to
+    #: disambiguate between*. Sharing a key because two numbers coincide is how
+    #: one predicate ends up quietly answering two questions.
+    match_limit: int = 10
 
 
 @dataclass
@@ -815,6 +822,7 @@ def load_config(
         upcoming_days=_positive(view_data, "upcoming_days", 14),
         reason_limit=_positive(view_data, "reason_limit", 2),
         long_span_hours=_positive(view_data, "long_span_hours", 24),
+        match_limit=_positive(view_data, "match_limit", 10),
     )
 
     scraping = ScrapingConfig(

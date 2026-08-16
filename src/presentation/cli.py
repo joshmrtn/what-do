@@ -603,13 +603,28 @@ def _cmd_explain(
     if len(found) > 1:
         # Listed rather than guessed. Picking one silently is how somebody ends
         # up reading the wrong event's explanation and believing it.
+        #
+        # Folded rather than dumped, on the listing's own terms: show some, say
+        # how many there were. A broad selector can match hundreds — `--explain
+        # a` matches most of the corpus — and burying the answer under them is
+        # no more useful than picking one. The count stays on screen for the
+        # same reason it does in the listing: a cut match must not be silent.
         print(f"Error: {selector!r} matches {len(found)} events:", file=stderr)
-        for pair in found:
+        for pair in found[: view.view.match_limit]:
             # Handles, not ranks. This list exists to be picked from, so every
             # line must be something you can paste straight back — a rank would
             # invite typing a number that no longer selects anything.
             handle = f"{HANDLE_SIGIL}{short_handle(pair.event.event_id)}"
             print(f"  {handle}  {pair.event.title}", file=stderr)
+        if (rest := len(found) - view.view.match_limit) > 0:
+            print(f"  + {rest} more match{'' if rest == 1 else 'es'}", file=stderr)
+        # Fitted to what was actually typed. Telling somebody who typed `#0f`
+        # to "use the #handle" is the same presumption as deciding a bare
+        # integer meant a rank — they did use one, they need more of it.
+        if selector.startswith(HANDLE_SIGIL):
+            print("  Give more of the handle.", file=stderr)
+        else:
+            print("  Name one with its #handle.", file=stderr)
         return 1
 
     unranked = _unranked_match(

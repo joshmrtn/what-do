@@ -407,6 +407,13 @@ def test_after_midnight_still_shows_the_evening_in_progress(db_path):
 class TestExplain:
     """One event, accounted for, through the real parser and real reads."""
 
+    def _match_view(self, **kwargs) -> ViewSettings:
+        return ViewSettings(
+            zone=VIEW.zone,
+            day_starts_at=VIEW.day_starts_at,
+            view=ViewConfig(**kwargs),
+        )
+
     def test_a_handle_from_the_list_explains_that_event(self, db_path):
         """The handle printed beside the event is what a reader has in front of
         them, and unlike a rank it means the same thing in every view."""
@@ -426,6 +433,40 @@ class TestExplain:
 
         assert code == 1
         assert "no event matches" in err.lower()
+
+    def test_an_over_broad_selector_folds_and_counts_the_rest(self, db_path):
+        """The same shape as the listing's own cut: show some, say how many
+        there were. Flooding the terminal with every match is no more useful
+        than picking one silently."""
+        code, out, err = _invoke(
+            db_path, "--explain", "a", view=self._match_view(match_limit=2)
+        )
+
+        assert code == 1
+        assert out == ""
+        assert len(re.findall(r"^  #[0-9a-f]{7}  ", err, re.M)) == 2
+        assert "more match" in err
+
+    def test_nothing_is_folded_when_the_matches_fit(self, db_path):
+        code, _, err = _invoke(
+            db_path, "--explain", "tomorrow", view=self._match_view(match_limit=50)
+        )
+
+        assert code == 1
+        assert "more match" not in err
+
+    def test_a_text_selector_is_told_to_name_one_by_handle(self, db_path):
+        _, _, err = _invoke(db_path, "--explain", "tomorrow")
+
+        assert "#handle" in err
+
+    def test_a_handle_prefix_is_told_to_give_more_of_it(self, db_path):
+        """Not "use the #handle" — they did. Answering the question nobody
+        asked is the failure this whole change is about."""
+        _, _, err = _invoke(db_path, "--explain", "#")
+
+        assert "#handle" not in err
+        assert "more of the handle" in err.lower()
 
     def test_a_handle_survives_the_round_trip_through_raw(self, db_path):
         """`--raw` prints no ranks and the superseded events it exists to reveal

@@ -452,6 +452,11 @@ view:
   limit: 10             # events shown before the rest are counted
   upcoming_days: 14     # nights after tonight that `--upcoming` covers
   reason_limit: 2       # semantic reasons per event before `--verbose`
+  # Candidates `--explain` lists when a selector is ambiguous, before counting
+  # the rest. Its own key rather than reusing `limit`, which happens to share
+  # the number: that answers how many recommendations to show, this answers how
+  # many candidates to choose between.
+  match_limit: 10
   # Beyond this many hours a stored span is read as a recurring programme whose
   # daily hours are its own endpoints, rather than one continuous occurrence.
   # A workshop published as "10-14 August, 09:00-12:00" is a single row, so its

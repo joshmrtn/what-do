@@ -1293,6 +1293,7 @@ class TestViewConfig:
         assert cfg.view.upcoming_days == 14
         assert cfg.view.reason_limit == 2
         assert cfg.view.long_span_hours == 24
+        assert cfg.view.match_limit == 10
 
     def test_each_value_is_read_from_config(self, tmp_path):
         data = _valid_location_data()
@@ -1301,6 +1302,7 @@ class TestViewConfig:
             "upcoming_days": 30,
             "reason_limit": 4,
             "long_span_hours": 12,
+            "match_limit": 3,
         }
 
         cfg = load_config(config_path=_write_config(tmp_path, data))
@@ -1309,6 +1311,11 @@ class TestViewConfig:
         assert cfg.view.upcoming_days == 30
         assert cfg.view.reason_limit == 4
         assert cfg.view.long_span_hours == 12
+        # Deliberately different from `limit` above. They default to the same
+        # number and answer different questions — how many recommendations to
+        # show, versus how many candidates to disambiguate between — so a test
+        # that left them equal could not tell a coupling from a coincidence.
+        assert cfg.view.match_limit == 3
 
     def test_a_partial_section_keeps_the_other_defaults(self, tmp_path):
         data = _valid_location_data()
