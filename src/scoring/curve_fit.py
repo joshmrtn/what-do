@@ -48,7 +48,13 @@ class Observation:
     event_id: str
     chars: int
     tags: float
-    source_type: str
+    #: The **feed**, `event_candidates.source` — not `source_type`, which is the
+    #: category above it and holds two feeds for `northshorenightout` alone,
+    #: with 290 vs 83 mean chars (#34). Named for what it holds: while this was
+    #: called `source_type` and populated with the feed, `source_type` meant
+    #: "feed" here and "category" everywhere else, and the id-churn measurement
+    #: reached for the wrong one.
+    source: str
     #: Which extraction regime produced this row — model and prompt version.
     #: Rows from two regimes are never fitted together: a prompt or model change
     #: is a step, not drift, and a curve fitted across one describes a

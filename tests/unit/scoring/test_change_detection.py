@@ -28,7 +28,7 @@ def _rows(source: str, n: int, factor: float, start: int = 0) -> list[Observatio
             event_id=f"{source}-{start + i}",
             chars=c,
             tags=expected_tags(c, *GLOBAL) * factor + 0.25 * (((start + i) % 5) - 2),
-            source_type=source,
+            source=source,
         )
         for i, c in enumerate(lengths)
     ]

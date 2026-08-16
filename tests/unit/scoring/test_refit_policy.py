@@ -31,7 +31,7 @@ def _rows(n: int, cap: float = 3.7, saturation: float = 125.0, regime: str = "m/
             event_id=f"evt-{regime}-{i}",
             chars=c,
             tags=expected_tags(c, cap, saturation) + 0.3 * ((i % 7) - 3),
-            source_type="s",
+            source="s",
             regime=regime,
         )
         for i, c in enumerate(lengths)
@@ -145,16 +145,16 @@ class TestChangePointResponse:
     def test_a_feeds_pre_change_rows_are_dropped(self):
         steady = _rows(ARMING_ROWS, cap=3.7)
         for row in steady:
-            object.__setattr__(row, "source_type", "steady")
+            object.__setattr__(row, "source", "steady")
         shifted = _rows(60, cap=3.7) + _rows(60, cap=9.0)
         for i, row in enumerate(shifted):
-            object.__setattr__(row, "source_type", "shifted")
+            object.__setattr__(row, "source", "shifted")
             object.__setattr__(row, "event_id", f"shifted-{i}")
 
         kept = drop_pre_change(steady + shifted, {"shifted": 60})
 
         assert len(kept) == ARMING_ROWS + 60
-        assert all(r.source_type != "shifted" or int(r.event_id.split("-")[1]) >= 60
+        assert all(r.source != "shifted" or int(r.event_id.split("-")[1]) >= 60
                    for r in kept)
 
     def test_a_feed_with_no_change_point_is_untouched(self):

@@ -46,12 +46,12 @@ class TestObservations:
         """`source_type` conflates feeds with different characteristics (#34)."""
         rows = observations([_event(1, 100, 2, source="feed-b")])
 
-        assert rows[0].source_type == "feed-b"
+        assert rows[0].source == "feed-b"
 
     def test_a_row_with_no_feed_recorded_is_still_usable(self):
         rows = observations([_event(1, 100, 2, source=None)])
 
-        assert rows[0].source_type == "unknown"
+        assert rows[0].source == "unknown"
 
     def test_rows_are_ordered_by_when_they_were_observed(self):
         """The change detector reads them as a series, and this is the only

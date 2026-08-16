@@ -49,7 +49,7 @@ def detect_change(
         saturation: The global curve's saturation.
 
     Returns:
-        `source_type -> index of the change point`, for sources that changed.
+        `source` (the feed) `-> index of the change point`, for sources that changed.
         An absent source did not, and most nights the result is empty.
 
     A firing is not a reason to freeze. It declares a new regime for that
@@ -60,7 +60,7 @@ def detect_change(
     """
     by_source: dict[str, list[Observation]] = defaultdict(list)
     for row in rows:
-        by_source[row.source_type].append(row)
+        by_source[row.source].append(row)
 
     changes: dict[str, int] = {}
     for source, source_rows in by_source.items():

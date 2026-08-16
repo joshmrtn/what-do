@@ -40,18 +40,18 @@ def source_multipliers(
         saturation: The global curve's saturation.
 
     Returns:
-        `source_type -> multiplier`. A source that is absent has said nothing,
-        and a caller should read that as 1.0 — which is cold start solved by
-        having no opinion rather than by a special case.
+        `source -> multiplier`, keyed on the feed. A feed that is absent has
+        said nothing, and a caller should read that as 1.0 — which is cold
+        start solved by having no opinion rather than by a special case.
     """
     actual: dict[str, float] = defaultdict(float)
     predicted: dict[str, float] = defaultdict(float)
     counts: dict[str, int] = defaultdict(int)
 
     for row in rows:
-        actual[row.source_type] += row.tags
-        predicted[row.source_type] += cap * (1.0 - math.exp(-row.chars / saturation))
-        counts[row.source_type] += 1
+        actual[row.source] += row.tags
+        predicted[row.source] += cap * (1.0 - math.exp(-row.chars / saturation))
+        counts[row.source] += 1
 
     terms: dict[str, float] = {}
     for source, total in predicted.items():

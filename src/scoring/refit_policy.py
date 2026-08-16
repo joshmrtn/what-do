@@ -102,9 +102,9 @@ def drop_pre_change(
     seen: dict[str, int] = {}
     kept: list[Observation] = []
     for row in rows:
-        index = seen.get(row.source_type, 0)
-        seen[row.source_type] = index + 1
-        cutoff = change_points.get(row.source_type)
+        index = seen.get(row.source, 0)
+        seen[row.source] = index + 1
+        cutoff = change_points.get(row.source)
         if cutoff is not None and index < cutoff:
             continue
         kept.append(row)

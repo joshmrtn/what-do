@@ -37,7 +37,7 @@ def _rows(cap: float, saturation: float, n: int = 60, noise: float = 0.0) -> lis
             event_id=f"evt-{i}",
             chars=c,
             tags=expected_tags(c, cap, saturation) + noise * ((i % 7) - 3),
-            source_type="s",
+            source="s",
         )
         for i, c in enumerate(lengths)
     ]

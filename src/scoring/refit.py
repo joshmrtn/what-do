@@ -42,7 +42,7 @@ def observations(recorded: list[ExtractionObservation]) -> list[Observation]:
             event_id=row.event_id,
             chars=row.chars,
             tags=float(row.tags),
-            source_type=row.source or "unknown",
+            source=row.source or "unknown",
             regime=f"{row.model}/{row.prompt_version}",
         )
         for row in usable

@@ -24,7 +24,7 @@ def _rows(source: str, n: int, factor: float) -> list[Observation]:
             event_id=f"{source}-{i}",
             chars=c,
             tags=expected_tags(c, *GLOBAL) * factor,
-            source_type=source,
+            source=source,
         )
         for i, c in enumerate(lengths)
     ]
