@@ -20,6 +20,7 @@ from datetime import date, datetime
 from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
+from src.presentation.handles import HANDLE_SIGIL, short_handle
 from src.models.timing import ALL_DAY, UNKNOWN
 from src.models.ranked_event import RankedEvent
 from src.scoring.ranking import CONFIDENCE_FACTOR, MATCH_FACTOR
@@ -148,15 +149,25 @@ def render_recommendations(
         # caught your eye, so it should not sit below two lines of score
         # narrative. Bare and unlabelled — a URL says what it is, and terminals
         # make it clickable.
+        #
+        # The handle leads this line rather than trailing the title, so it holds
+        # one column whatever the title's length and survives the wrapping of a
+        # long link. Dimmed with the rest of the block: time and title are what
+        # the eye scans, and the handle is there when something catches it. The
+        # line exists for the handle alone when there is no link — an event
+        # nobody can name cannot be explained.
+        handle = f"{HANDLE_SIGIL}{short_handle(event.event_id)}"
         if event.url:
-            lines.append(_style(f"      {event.url}", _DIM, color))
+            lines.append(_style(f"      {handle}  {event.url}", _DIM, color))
         # No per-event link: name the source instead. 320 of 359 NSNO events
         # publish no URL, so without this a listing's own error arrives with
         # nothing to check it against and reads as ours. Labelled, because it
         # opens the site rather than the event — an unlabelled URL here would
         # promise more than it delivers.
         elif source_urls and (site := source_urls.get(event.source_type)):
-            lines.append(_style(f"      source: {site}", _DIM, color))
+            lines.append(_style(f"      {handle}  source: {site}", _DIM, color))
+        else:
+            lines.append(_style(f"      {handle}", _DIM, color))
         if verbose:
             lines.append(_style(f"      {_components(score, ranking)}", _DIM, color))
         for reason in _visible_reasons(score.reasons, verbose=verbose, limit=reason_limit):

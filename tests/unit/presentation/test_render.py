@@ -6,6 +6,7 @@ from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranked_event import RankedEvent
 from src.models.ranking import Ranking
+from src.presentation.handles import short_handle
 from src.presentation.render import (
     render_explanation,
     render_raw,
@@ -637,6 +638,66 @@ class TestSourceAttribution:
         pairs = [_pair(source_type="northshorenightout", url=None)]
 
         assert "source:" not in render_recommendations(pairs)
+
+
+class TestTheHandleIsOnScreen:
+    """The copyable name of an event, which a rank is not.
+
+    A rank is re-derived every night and, once numbering is view-local, names a
+    different event in every view. The handle is derived from `event_id`, which
+    is stable across runs, so it is the same string in `--raw`, in a filtered
+    listing, and in yesterday's scrollback.
+    """
+
+    SITES = {"northshorenightout": "https://northshorenightout.com/"}
+
+    def test_the_handle_leads_the_link_line(self):
+        """Position 7 on every row regardless of title length, so it reads as a
+        column and survives the wrapping of a long link."""
+        pairs = [_pair(event_id="evt-9", source_type="northshorenightout", url=None)]
+
+        output = render_recommendations(pairs, source_urls=self.SITES)
+
+        assert (
+            f"      #{short_handle('evt-9')}  source: https://northshorenightout.com/"
+            in output
+        )
+
+    def test_the_handle_leads_an_events_own_url_too(self):
+        """The link is bare in this case and labelled in the other. The handle
+        comes first either way, so its column does not move."""
+        pairs = [_pair(event_id="evt-9", url="https://example.com/event/9")]
+
+        output = render_recommendations(pairs, source_urls=self.SITES)
+
+        assert f"      #{short_handle('evt-9')}  https://example.com/event/9" in output
+
+    def test_an_event_with_no_link_at_all_still_shows_its_handle(self):
+        """There is no link line to lead when the source is unmapped, and the
+        handle is not optional — an event nobody can name cannot be explained."""
+        pairs = [_pair(event_id="evt-9", source_type="synthetic", url=None)]
+
+        output = render_recommendations(pairs, source_urls=self.SITES)
+
+        assert f"      #{short_handle('evt-9')}" in output
+        assert "source:" not in output
+
+    def test_every_event_gets_its_own_handle(self):
+        pairs = [_pair(event_id="evt-1"), _pair(event_id="evt-2")]
+
+        output = render_recommendations(pairs)
+
+        assert f"#{short_handle('evt-1')}" in output
+        assert f"#{short_handle('evt-2')}" in output
+
+    def test_the_handle_line_is_dimmed_with_the_rest_of_the_block(self):
+        """Time and title are what the eye scans; the handle is there when
+        something catches it."""
+        pairs = [_pair(event_id="evt-9", url="https://example.com/event/9")]
+
+        output = render_recommendations(pairs, color=True)
+
+        assert f"\033[2m      #{short_handle('evt-9')}" in output
 
 
 class TestStalenessNotice:
