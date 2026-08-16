@@ -27,6 +27,7 @@ from src.config import (
     load_config,
 )
 from src.models.event import Event
+from src.presentation.handles import HANDLE_SIGIL, short_handle
 from src.presentation.filters import (
     RankedEvent,
     after_sunset,
@@ -262,7 +263,7 @@ def _cmd_recommend(
     # somewhere, and an empty string is falsy — so a flag the user typed reads
     # as one they did not, and the command answers a different question.
     for flag, value, wants in (
-        ("--explain", args.explain, "an event: a rank, or part of a title"),
+        ("--explain", args.explain, "an event: a #handle, or part of a title"),
         ("--time", args.time, "a window, e.g. 20:30-23:30"),
         ("--date", args.date, "a date as YYYY-MM-DD"),
         ("--run-date", args.run_date, "a date as YYYY-MM-DD"),
@@ -602,7 +603,11 @@ def _cmd_explain(
         # up reading the wrong event's explanation and believing it.
         print(f"Error: {selector!r} matches {len(found)} events:", file=stderr)
         for pair in found:
-            print(f"  {pair.ranking.rank}. {pair.event.title}", file=stderr)
+            # Handles, not ranks. This list exists to be picked from, so every
+            # line must be something you can paste straight back — a rank would
+            # invite typing a number that no longer selects anything.
+            handle = f"{HANDLE_SIGIL}{short_handle(pair.event.event_id)}"
+            print(f"  {handle}  {pair.event.title}", file=stderr)
         return 1
 
     unranked = _unranked_match(
@@ -617,16 +622,20 @@ def _cmd_explain(
 
 
 def _unranked_match(selector: str, events: list[Event]) -> Event | None:
-    """An event with no ranking row, named by part of its title.
+    """An event with no ranking row, named by handle or by part of its title.
 
-    Deliberately title-only: an unranked event has no rank to be named by, so a
-    numeric selector that reached here found nothing and should say so rather
-    than matching a title that happens to contain the digits.
+    The same two selectors as `matching`, and for the same reason: a handle is
+    derived from `event_id`, which every stored event has, so it reaches the
+    superseded rows that have no score and no ranking. Those are precisely the
+    events `--raw` exists to reveal, and before the handle nothing it showed
+    could be named back.
     """
-    if selector.strip().lstrip("+-").isdigit():
-        return None
-    needle = selector.casefold()
-    matches = [e for e in events if e.title and needle in e.title.casefold()]
+    if selector.startswith(HANDLE_SIGIL):
+        prefix = selector[len(HANDLE_SIGIL) :].strip().casefold()
+        matches = [e for e in events if short_handle(e.event_id).startswith(prefix)]
+    else:
+        needle = selector.casefold()
+        matches = [e for e in events if e.title and needle in e.title.casefold()]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -667,7 +676,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--explain",
         metavar="EVENT",
-        help="Account for one event: a rank from the list, or part of its title",
+        help="Account for one event: its #handle from the list, or part of its title",
     )
     parser.add_argument(
         "--limit",

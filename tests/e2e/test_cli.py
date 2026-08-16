@@ -407,12 +407,41 @@ def test_after_midnight_still_shows_the_evening_in_progress(db_path):
 class TestExplain:
     """One event, accounted for, through the real parser and real reads."""
 
-    def test_a_rank_from_the_list_explains_that_event(self, db_path):
-        code, out, _ = _invoke(db_path, "--explain", "1")
+    def test_a_handle_from_the_list_explains_that_event(self, db_path):
+        """The handle printed beside the event is what a reader has in front of
+        them, and unlike a rank it means the same thing in every view."""
+        _, listing, _ = _invoke(db_path)
+        handle = re.search(r"#[0-9a-f]{7}", listing).group()
+
+        code, out, _ = _invoke(db_path, "--explain", handle)
 
         assert code == 0
         assert "Karaoke Night" in out
         assert "karaoke night" in out  # the matched preference line
+
+    def test_a_rank_no_longer_selects_anything(self, db_path):
+        """Removed on purpose. Displayed numbering is view-local, so a typed
+        rank would explain whichever event happened to sit at that position."""
+        code, _, err = _invoke(db_path, "--explain", "1")
+
+        assert code == 1
+        assert "no event matches" in err.lower()
+
+    def test_a_handle_survives_the_round_trip_through_raw(self, db_path):
+        """`--raw` prints no ranks and the superseded events it exists to reveal
+        have no ranking row, so before the handle nothing `--raw` showed could
+        be named back to `--explain`."""
+        loser = _event("dead", "Wood & Bone", _at(19))
+        loser.superseded_by = "t1"
+        save_events([loser], db_path)
+
+        _, raw, _ = _invoke(db_path, "--raw")
+        handle = re.search(r"#[0-9a-f]{7}(?=\s+\S+\s+Wood & Bone)", raw).group()
+
+        code, out, _ = _invoke(db_path, "--explain", handle)
+
+        assert code == 0
+        assert "Wood & Bone" in out
 
     def test_part_of_a_title_explains_that_event(self, db_path):
         code, out, _ = _invoke(db_path, "--explain", "open mic")

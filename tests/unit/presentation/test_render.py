@@ -423,6 +423,16 @@ class TestRenderRaw:
 
         assert "2" in out
 
+    def test_every_raw_event_shows_its_handle(self):
+        """`--raw` has never had a selector of its own — it prints no ranks, and
+        the superseded events it exists to reveal have no ranking row at all. A
+        handle is the same string here as in the listing, so what `--raw` makes
+        visible, `--explain` can now reach."""
+        out = render_raw([_event("a", title="One"), _event("b", title="Two")])
+
+        assert f"#{short_handle('a')}" in out
+        assert f"#{short_handle('b')}" in out
+
     def test_empty_input_renders_a_friendly_message(self):
         assert "No events" in render_raw([])
 

@@ -15,6 +15,7 @@ from datetime import date, datetime, time, timedelta, tzinfo
 
 from src.models.event import Event
 from src.models.ranked_event import RankedEvent
+from src.presentation.handles import HANDLE_SIGIL, short_handle
 from src.utils.nights import night_of
 
 __all__ = [
@@ -34,25 +35,34 @@ __all__ = [
 def matching(pairs: list[RankedEvent], selector: str) -> list[RankedEvent]:
     """Pairs a `--explain` selector names, in the order given.
 
-    Two kinds, told apart by whether the selector parses as an integer:
+    Two kinds, told apart by the sigil:
 
-    - **a rank**, which is what is actually printed beside each event, so it is
-      what a reader has in front of them;
-    - **a title substring**, case-insensitive, because `--raw` prints no ranks
-      and a superseded event has no ranking row at all.
+    - **a `#handle`**, or any prefix of one, as git resolves a short SHA;
+    - **a title substring**, case-insensitive, which is what anything else is.
 
-    The integer test comes first and is exclusive, so a title containing a
-    number is never reachable by rank. Letting the two overlap would make the
-    result depend on the data rather than on what was asked.
+    **A rank is deliberately not a selector.** Displayed numbering is
+    view-local, so the number beside an event names a different event under
+    every filter, and the number a reader types is the one they *counted* — the
+    resulting explanation would be valid, of the wrong event, with nothing to
+    signal it. The sigil is what keeps the two apart: an unmarked handle that
+    happened to be all digits would reintroduce exactly that ambiguity.
+
+    A consequence worth having: a bare number is now a title substring, so
+    `--explain 1984` finds the film. Under the old integer-first rule no title
+    containing digits was reachable at all.
 
     Returns:
         Every match. One is the answer, several is a question for the caller to
         put back to the reader, none is a miss — picking one silently is how
         somebody ends up reading the wrong event's explanation.
     """
-    if selector.strip().lstrip("+-").isdigit():
-        wanted = int(selector)
-        return [pair for pair in pairs if pair.ranking.rank == wanted]
+    if selector.startswith(HANDLE_SIGIL):
+        prefix = selector[len(HANDLE_SIGIL) :].strip().casefold()
+        return [
+            pair
+            for pair in pairs
+            if short_handle(pair.event.event_id).startswith(prefix)
+        ]
 
     needle = selector.casefold()
     return [

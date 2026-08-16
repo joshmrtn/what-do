@@ -202,7 +202,8 @@ def render_raw(events: list[Event]) -> str:
     lines = [tally, ""]
     for event in ordered:
         when = _when_of(event)
-        lines.append(f"  {when}  {_describe(event)}  [{event.source_type}]")
+        handle = f"{HANDLE_SIGIL}{short_handle(event.event_id)}"
+        lines.append(f"  {handle}  {when}  {_describe(event)}  [{event.source_type}]")
         if (mark := _supersession_of(event)) is not None:
             lines.append(f"         {mark}")
 

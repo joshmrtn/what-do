@@ -9,6 +9,7 @@ from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranked_event import RankedEvent
 from src.models.ranking import Ranking
+from src.presentation.handles import short_handle
 from src.presentation.filters import (
     matching,
     after_sunset,
@@ -351,19 +352,45 @@ class TestMultiNightEvents:
 class TestMatching:
     """How `--explain` names an event.
 
-    A rank is what is actually on screen, so it is the obvious selector — but
-    `--raw` has no ranks and a superseded event has no ranking row at all, so a
-    rank alone cannot reach the events supersession marking just made visible.
-    Hence both: an integer is a rank, anything else is a title substring.
+    Not by rank. Displayed numbering is view-local, so the number beside an
+    event names a different event in every view, and a reader who types the
+    number they counted would get a valid explanation of the wrong event —
+    silently. The two selectors are a `#handle`, which is stable and visibly
+    not a position, and a title substring.
     """
 
-    def test_an_integer_selects_by_rank(self):
-        pairs = [_pair("a", rank=1, title="First"), _pair("b", rank=2, title="Second")]
+    def test_a_handle_selects_its_event(self):
+        pairs = [_pair("a", title="First"), _pair("b", title="Second")]
 
-        assert [p.event.title for p in matching(pairs, "2")] == ["Second"]
+        selector = f"#{short_handle('b')}"
 
-    def test_a_rank_that_does_not_exist_matches_nothing(self):
-        assert matching([_pair("a", rank=1)], "9") == []
+        assert [p.event.title for p in matching(pairs, selector)] == ["Second"]
+
+    def test_a_handle_prefix_is_enough(self):
+        """As git does. Any length resolves, because ambiguity is answered by
+        returning every match rather than by demanding more characters."""
+        pairs = [_pair("a", title="First"), _pair("b", title="Second")]
+
+        selector = f"#{short_handle('b')[:4]}"
+
+        assert [p.event.title for p in matching(pairs, selector)] == ["Second"]
+
+    def test_an_ambiguous_handle_prefix_returns_every_match(self):
+        """A collision becomes likely past ~10k events. It must degrade to a
+        question, never to a wrong answer."""
+        pairs = [_pair("a", title="First"), _pair("b", title="Second")]
+
+        assert len(matching(pairs, "#")) == 2
+
+    def test_a_handle_that_matches_nothing_matches_nothing(self):
+        assert matching([_pair("a")], "#ffffffff") == []
+
+    def test_the_handle_is_not_reachable_without_its_sigil(self):
+        """The sigil is what makes a handle unmistakable for a position. Bare,
+        an all-digit handle would be exactly the ambiguity being removed."""
+        pairs = [_pair("a", title="First")]
+
+        assert matching(pairs, short_handle("a")) == []
 
     def test_text_selects_by_title_substring(self):
         pairs = [_pair("a", title="Karaoke Night"), _pair("b", title="Open Mic")]
@@ -383,12 +410,19 @@ class TestMatching:
 
         assert len(matching(pairs, "karaoke")) == 2
 
-    def test_a_number_is_never_treated_as_text(self):
-        """A title containing the digit must not be reachable by rank, or the
-        two selector kinds quietly overlap and the result depends on data."""
-        pairs = [_pair("a", rank=7, title="Room 101"), _pair("b", rank=101, title="Quiz")]
+    def test_a_bare_number_is_a_title_substring(self):
+        """With the integer path gone, a numeric title is reachable at last —
+        `--explain 1984` finds the film. Previously the integer test came first
+        and was exclusive, so no title containing digits could be named."""
+        pairs = [_pair("a", rank=7, title="1984"), _pair("b", rank=1984, title="Quiz")]
 
-        assert [p.event.title for p in matching(pairs, "101")] == ["Quiz"]
+        assert [p.event.title for p in matching(pairs, "1984")] == ["1984"]
+
+    def test_a_rank_is_no_longer_a_selector(self):
+        """The behaviour deliberately removed. A number names titles now."""
+        pairs = [_pair("a", rank=1, title="First"), _pair("b", rank=2, title="Second")]
+
+        assert matching(pairs, "2") == []
 
     def test_an_untitled_event_is_not_matched_by_text(self):
         assert matching([_pair("a", title=None)], "anything") == []
