@@ -24,6 +24,7 @@ from typing import Any, Callable, TextIO
 from src.composition.batch import BatchDependencies, build_dependencies
 from src.config import AppConfig, load_config
 from src.enrichment.service import EnrichmentService
+from src.ingestion.id_churn import ChurnTally
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
@@ -90,6 +91,10 @@ class BatchResult:
     per_source: dict[str, SourceTally] = field(default_factory=dict)
     #: Sources that raised during the fetch, by name.
     failed_sources: list[str] = field(default_factory=list)
+    #: Whether each source's own ids identified anything, by source_type. A
+    #: source whose ids re-mint every night cannot be tracked across runs, and
+    #: nothing else in the batch would notice.
+    churn: dict[str, ChurnTally] = field(default_factory=dict)
     #: What the nightly refit decided, or None where it did not run. A gate that
     #: declines and a refit that never ran are the same silence otherwise, and
     #: the batch spent a night in the second state looking like the first.
@@ -280,6 +285,7 @@ def run_batch(
             result.stage_counts["ingested"] = ingested.accepted
             result.per_source = ingested.per_source
             result.failed_sources = list(ingested.failed_sources)
+            result.churn = ingested.churn
             if raw_dump_fn is not None:
                 raw_dump_fn(ingested.raw)
             if dry_run:
@@ -708,6 +714,7 @@ def _summarise(result: BatchResult) -> str:
                 f"of {tally.fetched:>4} fetched{note}"
             )
 
+    lines.extend(_churn_lines(result.churn))
     if result.refit is not None:
         lines.append(f"  refit: {result.refit}")
     if result.failed_sources:
@@ -717,6 +724,38 @@ def _summarise(result: BatchResult) -> str:
     for error in result.errors:
         lines.append(f"  error: {error}")
     return "\n".join(lines)
+
+
+def _churn_lines(churn: dict[str, ChurnTally]) -> list[str]:
+    """Report only what was actually measured, and never a bare silence.
+
+    A source with nothing seen before has an *undefined* rate, and rendering it
+    as 0.00 would claim its ids are stable on no evidence — the reading that
+    would have blessed northshorenightout on its first night.
+
+    Nothing at all is worse still: a run where the measurement did not happen
+    would look exactly like a run where every source behaved, which is how the
+    refit went a night without anybody noticing.
+    """
+    measured = {name: t for name, t in churn.items() if t.rate is not None}
+    if not measured:
+        return []
+
+    unstable = sorted(
+        ((name, t) for name, t in measured.items() if t.rate),
+        key=lambda item: -(item[1].rate or 0),
+    )
+    if not unstable:
+        return [f"  id churn: none — {len(measured)} source(s) kept their ids"]
+
+    lines = ["  id churn:"]
+    width = max(len(name) for name, _ in unstable)
+    lines.extend(
+        f"    {name.ljust(width)}  {tally.churned:>4} of {tally.seen_before:>4} "
+        f"known listings re-minted ({(tally.rate or 0):.0%})"
+        for name, tally in unstable
+    )
+    return lines
 
 
 def _write_raw(records: list[Any], destination: str, stdout: TextIO) -> None:

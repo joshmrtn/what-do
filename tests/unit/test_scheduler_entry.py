@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from src.composition.batch import BatchDependencies
+from src.ingestion.id_churn import ChurnTally
 from src.ingestion.ingestion_service import RawCandidateRecord
 from src.models.event_candidate import EventCandidate
 from src.scheduler import BatchResult, run
@@ -309,6 +310,40 @@ def test_a_run_with_no_refit_line_says_nothing_about_one(invoke):
     _, _, output, _ = invoke([], result=BatchResult(outcome="success"))
 
     assert "refit" not in output
+
+
+def test_the_summary_names_a_source_whose_ids_churned(invoke):
+    """The line that would have caught northshorenightout on day two, instead of
+    a dedup row count looking odd three weeks later."""
+    result = BatchResult(
+        outcome="success", churn={"northshorenightout": ChurnTally(seen_before=122, churned=122)}
+    )
+
+    _, _, output, _ = invoke([], result=result)
+
+    assert "northshorenightout" in output
+    assert "122" in output
+
+
+def test_a_clean_run_says_the_ids_held_rather_than_nothing(invoke):
+    """Silence would be indistinguishable from the measurement not running --
+    the exact failure that hid the refit for a night."""
+    result = BatchResult(outcome="success", churn={"cabot": ChurnTally(seen_before=40, churned=0)})
+
+    _, _, output, _ = invoke([], result=result)
+
+    assert "id churn" in output
+    assert "1" in output
+
+
+def test_an_unmeasurable_source_is_not_reported_as_healthy(invoke):
+    """A source with nothing seen before has an undefined rate. Rendering it as
+    0.00 would claim its ids are stable on no evidence at all."""
+    result = BatchResult(outcome="success", churn={"brandnew": ChurnTally(seen_before=0, churned=0)})
+
+    _, _, output, _ = invoke([], result=result)
+
+    assert "brandnew" not in output
 
 
 # ----------------------------------------------------------------------
