@@ -1141,3 +1141,60 @@ class TestNaiveTimestampsAreResolvedOnAccept:
         )
 
         assert "assumed_zone" not in result.candidates[0].metadata
+
+
+class TestIdChurnIsMeasured:
+    """Whether a source's own ids identify anything, observed every run.
+
+    Read before the inserts below it: ingestion persists as it accepts, so a
+    comparison made afterwards finds every fetched id already stored and
+    reports a perfectly healthy source no matter what arrived.
+    """
+
+    def _listing(self, cid: str) -> EventCandidate:
+        return EventCandidate(
+            id=cid,
+            source="nsno",
+            source_type="northshorenightout",
+            title="Isabel Stover",
+            venue="The Joy Nest",
+            start_time=FIXED_NOW + timedelta(days=7),
+            discovered_at=FIXED_NOW,
+        )
+
+    def test_a_first_run_leaves_the_rate_undefined(self, db, seeds_yaml):
+        """Nothing was stored, so nothing can be compared."""
+        source = _NamedSource("nsno", [self._listing("uid-1")])
+
+        result = _service(db, seeds_yaml, [source]).run(get_now=lambda: FIXED_NOW)
+
+        assert result.churn["northshorenightout"].rate is None
+
+    def test_a_republished_id_reports_no_churn(self, db, seeds_yaml):
+        svc = lambda cid: _service(db, seeds_yaml, [_NamedSource("nsno", [self._listing(cid)])])
+        svc("uid-1").run(get_now=lambda: FIXED_NOW)
+
+        result = svc("uid-1").run(get_now=lambda: FIXED_NOW)
+
+        assert result.churn["northshorenightout"].rate == 0.0
+
+    def test_a_re_minted_id_for_a_stored_listing_reports_churn(self, db, seeds_yaml):
+        """The measurement that would have caught northshorenightout on day two."""
+        svc = lambda cid: _service(db, seeds_yaml, [_NamedSource("nsno", [self._listing(cid)])])
+        svc("uid-old").run(get_now=lambda: FIXED_NOW)
+
+        result = svc("uid-new").run(get_now=lambda: FIXED_NOW)
+
+        assert result.churn["northshorenightout"].rate == 1.0
+
+    def test_the_rate_is_read_before_this_run_persists(self, db, seeds_yaml):
+        """The ordering the whole measurement depends on. Persist first and the
+        fetched id is already stored, so churn reads zero for any input."""
+        first = _NamedSource("nsno", [self._listing("uid-old")])
+        _service(db, seeds_yaml, [first]).run(get_now=lambda: FIXED_NOW)
+
+        both = _NamedSource("nsno", [self._listing("uid-new")])
+        result = _service(db, seeds_yaml, [both]).run(get_now=lambda: FIXED_NOW)
+
+        assert result.churn["northshorenightout"].churned == 1
+        assert result.churn["northshorenightout"].seen_before == 1

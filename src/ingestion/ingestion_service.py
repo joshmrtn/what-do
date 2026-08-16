@@ -19,6 +19,7 @@ from src.ingestion.failover import FailoverChain
 from src.ingestion.handle_extractor import HandleExtractor
 from src.ingestion.seeds import load_seeds
 from src.ingestion.source import IngestionSource
+from src.ingestion.id_churn import ChurnTally, churn_by_source
 from src.models.event_candidate import EventCandidate
 from src.utils.nights import night_start
 
@@ -67,6 +68,11 @@ class IngestionResult:
     failed_sources: list[str] = dataclass_field(default_factory=list)
     #: Every candidate as fetched, only when `collect_raw` asked for it.
     raw: list[RawCandidateRecord] = dataclass_field(default_factory=list)
+    #: Whether each source's own ids identified anything this run, by
+    #: `source_type`. Keyed differently from `per_source` on purpose: identity
+    #: is a property of the feed, while a tally is per fetch name, and one feed
+    #: can be fetched under several (`cabot page 1`…`page 8`).
+    churn: dict[str, ChurnTally] = dataclass_field(default_factory=dict)
 
 
 class IngestionService:
@@ -171,6 +177,11 @@ class IngestionService:
                 get_now=get_now,
             )
 
+            # Read before the loop below, which persists as it accepts. Taken
+            # afterwards, every id fetched this run is already stored and the
+            # measurement reports a healthy source whatever arrived.
+            previously_stored = self._stored_candidates()
+
             now = get_now()
             cutoff = now - timedelta(days=self._config.scraping.lookback_days)
             zone = _zone_of(self._config.location.timezone)
@@ -261,6 +272,7 @@ class IngestionService:
             },
             failed_sources=failed_sources,
             raw=raw,
+            churn=churn_by_source(accepted, stored=previously_stored),
         )
 
     # ------------------------------------------------------------------
@@ -370,6 +382,39 @@ class IngestionService:
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
+
+    def _stored_candidates(self) -> list[EventCandidate]:
+        """Just enough of every stored candidate to judge whether ids are stable.
+
+        Reads its own connection rather than borrowing the write one, so it is
+        unaffected by `persist`: a dry run should still be able to say whether a
+        source is re-minting ids, and it writes nothing to find out.
+
+        Only the identity columns, plus `discovered_at` because the model
+        requires it. The full row mapper is not wanted here — this answers "have
+        we seen this listing, under this id" and nothing else.
+        """
+        conn = connect(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, source, source_type, title, venue, start_time, "
+                "discovered_at FROM event_candidates"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        return [
+            EventCandidate(
+                id=row[0],
+                source=row[1],
+                source_type=row[2],
+                title=row[3],
+                venue=row[4],
+                start_time=datetime.fromisoformat(row[5]) if row[5] else None,
+                discovered_at=datetime.fromisoformat(row[6]),
+            )
+            for row in rows
+        ]
 
     def _persist_candidate(self, conn: sqlite3.Connection, ec: EventCandidate) -> None:
         """Write one candidate through the shared row mapper.
