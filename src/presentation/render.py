@@ -220,6 +220,7 @@ def render_explanation(
     score: EventScore | None,
     ranking: Ranking | None,
     *,
+    total: int,
     color: bool = False,
 ) -> str:
     """Account for one event's placement, in full.
@@ -239,12 +240,19 @@ def render_explanation(
         score: Its stored verdict, or None when it has none — a superseded
             event never got one, and that is worth saying rather than hiding.
         ranking: Its placement, or None on the same terms.
+        total: How many events the run ranked, for the `rank N of M` line.
+            Required rather than defaulted: a default would let a call site
+            state a denominator it never actually had.
         color: Emit ANSI styling.
     """
     lines: list[str] = []
-    place = f"  {ranking.rank}. " if ranking is not None else "  "
+    # The handle leads, not the rank. It is what the listing printed and what
+    # this command accepts, so the header names the event the same way twice.
+    handle = f"{HANDLE_SIGIL}{short_handle(event.event_id)}"
     when = _when_of(event)
-    lines.append(_style(f"{place}{when + '  ' if when else ''}{_describe(event)}", _BOLD, color))
+    lines.append(
+        _style(f"  {handle}  {when + '  ' if when else ''}{_describe(event)}", _BOLD, color)
+    )
     if event.url:
         lines.append(_style(f"      {event.url}", _DIM, color))
     lines.append("")
@@ -255,6 +263,10 @@ def render_explanation(
         # point — this is the "that merge looks wrong, why?" case.
         lines.append("  not ranked — no score was stored for this event")
     else:
+        # The batch's own number, which the listing no longer shows. Here it is
+        # the useful fact rather than a confusing one: where this sits among
+        # everything ranked, not among the handful that survived a filter.
+        lines.append(f"  rank     {ranking.rank} of {total}")
         lines.append(f"  score    {_score_arithmetic(score, ranking)}")
 
     if (mark := _supersession_of(event)) is not None:
@@ -268,6 +280,9 @@ def render_explanation(
     if event.summary:
         lines.append(f"  summary  \"{event.summary}\"")
     lines.append(f"  model    {_provenance_of(event)}")
+    # The handle is a hash, so it cannot be grepped in SQLite. The id it was
+    # derived from can, which is what keeps the handle traceable to storage.
+    lines.append(_style(f"  id       {event.event_id}", _DIM, color))
 
     if score is not None and score.reasons:
         lines.append("")

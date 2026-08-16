@@ -817,16 +817,48 @@ class TestRenderExplanation:
         fields.update(kwargs)
         return EventScore(**fields)
 
-    def test_the_title_and_rank_lead(self):
+    def test_the_handle_and_title_lead(self):
+        """The handle, not the rank — it is what the listing printed and what
+        `--explain` accepts, so the header matches both."""
         out = render_explanation(
-            _event("a", title="Steamboats"), self._score(), _ranking(rank=782)
+            _event("a", title="Steamboats"), self._score(), _ranking(rank=782),
+            total=1169,
         )
 
-        assert "782" in out
+        assert f"#{short_handle('a')}" in out
         assert "Steamboats" in out
 
+    def test_the_global_rank_is_stated_with_its_denominator(self):
+        """This is where the batch's own number belongs. On the listing it read
+        as a bug; here "782 of 1169" is exactly the useful fact — where this
+        sits among everything ranked, not just among what was on screen."""
+        out = render_explanation(
+            _event("a", title="Steamboats"), self._score(), _ranking(rank=782),
+            total=1169,
+        )
+
+        assert "782 of 1169" in out
+
+    def test_an_unranked_event_claims_no_rank(self):
+        """A superseded event has no ranking row, so there is no place to
+        state — and inventing one is how a merged-away duplicate reads as real."""
+        out = render_explanation(_event("a"), None, None, total=1169)
+
+        assert "of 1169" not in out
+        assert "not ranked" in out.lower()
+
+    def test_the_full_event_id_is_shown(self):
+        """The handle is derived, so it cannot be grepped in SQLite. The id it
+        came from can, which is what makes the handle traceable back to storage."""
+        out = render_explanation(
+            _event("531a3fa7-8515-44d7-8ac4-c2f6180a1a10"),
+            self._score(), _ranking(), total=1169,
+        )
+
+        assert "531a3fa7-8515-44d7-8ac4-c2f6180a1a10" in out
+
     def test_every_reason_appears_with_its_preference_and_similarity(self):
-        out = render_explanation(_event("a"), self._score(), _ranking())
+        out = render_explanation(_event("a"), self._score(), _ranking(), total=1169)
 
         assert "pop music" in out
         assert "0.778" in out
@@ -835,23 +867,23 @@ class TestRenderExplanation:
     def test_reasons_are_ordered_by_strength(self):
         """Strongest first, because the question is "why is it here" and one
         contribution usually dominates — 85% of this score is a single tag."""
-        out = render_explanation(_event("a"), self._score(), _ranking())
+        out = render_explanation(_event("a"), self._score(), _ranking(), total=1169)
 
         assert out.index("pop music") < out.index("karaoke") < out.index("breakfast")
 
     def test_direction_is_visible_per_reason(self):
-        out = render_explanation(_event("a"), self._score(), _ranking())
+        out = render_explanation(_event("a"), self._score(), _ranking(), total=1169)
 
         assert "+" in out and "−" in out
 
     def test_the_summary_reason_is_labelled_rather_than_blank(self):
         """It carries no tag. An empty column would read as a missing value."""
-        out = render_explanation(_event("a"), self._score(), _ranking())
+        out = render_explanation(_event("a"), self._score(), _ranking(), total=1169)
 
         assert "summary" in out
 
     def test_the_score_line_shows_the_stored_components(self):
-        out = render_explanation(_event("a"), self._score(), _ranking(final=-0.067))
+        out = render_explanation(_event("a"), self._score(), _ranking(final=-0.067), total=1169)
 
         assert "-0.067" in out
         assert "maybe" in out
@@ -860,12 +892,12 @@ class TestRenderExplanation:
         """The multiplier is direction-aware: it divides a negative base so the
         clearest rejections are not rewarded. That looks like a bug from the
         outside, which is exactly why the view says which happened."""
-        out = render_explanation(_event("a"), self._score(base_score=-0.067), _ranking())
+        out = render_explanation(_event("a"), self._score(base_score=-0.067), _ranking(), total=1169)
 
         assert "÷" in out
 
     def test_a_positive_base_is_shown_being_multiplied(self):
-        out = render_explanation(_event("a"), self._score(base_score=0.4), _ranking())
+        out = render_explanation(_event("a"), self._score(base_score=0.4), _ranking(), total=1169)
 
         assert "×" in out
 
@@ -873,7 +905,7 @@ class TestRenderExplanation:
         event = _event("a")
         event.tags = [Tag(text="steamboats", weight=1.0), Tag(text="food", weight=0.7)]
 
-        out = render_explanation(event, self._score(), _ranking())
+        out = render_explanation(event, self._score(), _ranking(), total=1169)
 
         assert "steamboats" in out
         assert "1.0" in out
@@ -884,14 +916,14 @@ class TestRenderExplanation:
         event.extraction_model = "gemma4:e4b"
         event.extraction_prompt_version = "v3"
 
-        out = render_explanation(event, self._score(), _ranking())
+        out = render_explanation(event, self._score(), _ranking(), total=1169)
 
         assert "gemma4:e4b" in out
 
     def test_a_row_with_no_provenance_says_so_rather_than_leaving_a_blank(self):
         """Most stored events predate provenance. A blank would read as a value
         the batch failed to record rather than one it never had."""
-        out = render_explanation(_event("a"), self._score(), _ranking())
+        out = render_explanation(_event("a"), self._score(), _ranking(), total=1169)
 
         assert "not recorded" in out
 
@@ -899,7 +931,7 @@ class TestRenderExplanation:
         event = _event("a")
         event.extraction_degradation = "no_summary"
 
-        out = render_explanation(event, self._score(), _ranking())
+        out = render_explanation(event, self._score(), _ranking(), total=1169)
 
         assert "no_summary" in out
 
@@ -912,7 +944,7 @@ class TestRenderExplanation:
             reasons=[Reason("match_classification", "maybe", 1.0, 0.0, "positive", None)]
         )
 
-        out = render_explanation(_event("a"), score, _ranking())
+        out = render_explanation(_event("a"), score, _ranking(), total=1169)
 
         assert "match" in out
         assert "(summary)" not in out
@@ -922,7 +954,7 @@ class TestRenderExplanation:
         event = _event("a")
         event.tags = [Tag(text="steamboats", weight=1.0)]
 
-        out = render_explanation(event, self._score(), _ranking())
+        out = render_explanation(event, self._score(), _ranking(), total=1169)
 
         assert "steamboats 1.0" in out
 
@@ -930,12 +962,12 @@ class TestRenderExplanation:
         event = _event("a")
         event.tags = [Tag(text="trivia", weight=0.85)]
 
-        out = render_explanation(event, self._score(), _ranking())
+        out = render_explanation(event, self._score(), _ranking(), total=1169)
 
         assert "0.85" in out
 
     def test_an_event_with_no_reasons_still_renders(self):
-        out = render_explanation(_event("a"), self._score(reasons=[]), _ranking())
+        out = render_explanation(_event("a"), self._score(reasons=[]), _ranking(), total=1169)
 
         assert "Karaoke Night" in out
 
@@ -946,7 +978,7 @@ class TestExplainingAnUnrankedEvent:
     marking exists for, so it must still say what it knows."""
 
     def test_it_says_there_is_no_ranking_rather_than_failing(self):
-        out = render_explanation(_event("a", superseded_by="winner"), None, None)
+        out = render_explanation(_event("a", superseded_by="winner"), None, None, total=1169)
 
         assert "not ranked" in out.lower()
 
@@ -955,8 +987,7 @@ class TestExplainingAnUnrankedEvent:
             _event("a", superseded_by="0bbe43b6", merged_by="semantic",
                    merge_similarity=0.926),
             None,
-            None,
-        )
+            None, total=1169)
 
         assert "superseded by 0bbe43b6" in out
         assert "0.926" in out
@@ -966,7 +997,7 @@ class TestExplainingAnUnrankedEvent:
         event.tags = [Tag(text="trivia", weight=1.0)]
         event.extraction_model = "gemma4:e4b"
 
-        out = render_explanation(event, None, None)
+        out = render_explanation(event, None, None, total=1169)
 
         assert "trivia" in out
         assert "gemma4:e4b" in out

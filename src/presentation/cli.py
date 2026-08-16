@@ -592,7 +592,9 @@ def _cmd_explain(
 
     if len(found) == 1:
         print(
-            render_explanation(found[0].event, found[0].score, found[0].ranking),
+            render_explanation(
+                found[0].event, found[0].score, found[0].ranking, total=len(pairs)
+            ),
             file=stdout,
             end="",
         )
@@ -614,7 +616,7 @@ def _cmd_explain(
         selector, load_all_events(db_path, embedding_model=view.embedding_model)
     )
     if unranked is not None:
-        print(render_explanation(unranked, None, None), file=stdout, end="")
+        print(render_explanation(unranked, None, None, total=len(pairs)), file=stdout, end="")
         return 0
 
     print(f"Error: no event matches {selector!r}", file=stderr)
