@@ -538,6 +538,20 @@ class TestOtherNights:
             TOMORROW.strftime("%A %-d %B")
         )
 
+    def test_each_night_numbers_from_one(self, db_path):
+        """Looking across several nights you want the top of each, not a
+        position in a merged list — and each section already carries its own
+        heading and its own limit."""
+        code, out, _ = _invoke(db_path, "--days", "2")
+
+        assert code == 0
+        tonight, tomorrow = (
+            out.index(RUN_DATE.strftime("%A %-d %B")),
+            out.index(TOMORROW.strftime("%A %-d %B")),
+        )
+        assert "  1. " in out[tonight:tomorrow]
+        assert "  1. " in out[tomorrow:]
+
     def test_days_starts_from_tonight(self, db_path):
         code, out, _ = _invoke(db_path, "--days", "1")
 
@@ -588,6 +602,13 @@ class TestUpcoming:
 
         assert "Tomorrow Gig" in out
         assert "Tomorrow Market" in out
+
+    def test_it_numbers_from_one(self, db_path):
+        """It is a leaderboard of what it shows, and the stored ranks behind it
+        are scattered across the whole horizon."""
+        _, out, _ = _invoke(db_path, "--upcoming", "--limit", "20")
+
+        assert "  1. " in out
 
     def test_it_is_one_list_not_per_night_sections(self, db_path):
         _, out, _ = _invoke(db_path, "--upcoming")

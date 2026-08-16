@@ -137,12 +137,17 @@ def render_recommendations(
     if heading:
         lines += [_style(heading, _BOLD, color), ""]
 
-    for ranked in shown:
+    # Numbered by position in this list, not by `ranking.rank`. The batch ranks
+    # the whole horizon in one sequence — 1169 events across 89 nights on the
+    # 08-16 run — so a per-night view of it printed 4, 7, 9, 15, 47 under a
+    # heading naming one night: two different questions answered on one line.
+    # The order is still entirely the batch's; only the label is local.
+    for position, ranked in enumerate(shown, start=1):
         event, score, ranking = ranked.event, ranked.score, ranked.ranking
         when = _when_of(event)
         if show_dates and event.start_time is not None:
             when = f"{event.start_time.strftime('%a %-d')} {when}"
-        prefix = f"  {ranking.rank}. "
+        prefix = f"  {position}. "
         lines.append(f"{prefix}{when + '  ' if when else ''}{_describe(event)}")
         # Directly under the title, ahead of the reasons. The reasons are the
         # batch's justification; the link is what you want next once a title has

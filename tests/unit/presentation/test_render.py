@@ -135,11 +135,39 @@ class TestRankedList:
 
         assert "No events" in out
 
-    def test_the_batchs_rank_is_shown_not_a_position_in_the_list(self):
-        # Filters run before rendering, so the visible list can start at rank 4.
+    def test_the_number_is_a_position_in_the_list_not_the_batchs_rank(self):
+        """The batch ranks the whole horizon — 1169 events across 89 nights on
+        the 08-16 run — and the view shows one night of it, so stored ranks
+        arrive full of gaps: 4, 7, 9, 15, 47. The heading says one night and the
+        number must not answer a different question."""
         out = render_recommendations([_pair("a", rank=4, title="Fourth")])
 
-        assert "4. " in out
+        assert "  1. " in out
+        assert "4. " not in out
+
+    def test_numbering_runs_one_to_n_over_what_is_shown(self):
+        pairs = [
+            _pair("a", rank=4, title="First"),
+            _pair("b", rank=47, title="Second"),
+            _pair("c", rank=1093, title="Third"),
+        ]
+
+        out = render_recommendations(pairs)
+
+        assert "  1. " in out and "  2. " in out and "  3. " in out
+        assert "47." not in out and "1093." not in out
+
+    def test_the_order_is_untouched(self):
+        """A renumbering must not become a reordering. The batch's order is the
+        product; this only changes what the rows are called."""
+        pairs = [
+            _pair("a", rank=4, title="First"),
+            _pair("b", rank=47, title="Second"),
+        ]
+
+        out = render_recommendations(pairs)
+
+        assert out.index("First") < out.index("Second")
 
 
 class TestLimit:
@@ -170,6 +198,23 @@ class TestLimit:
         out = render_recommendations(self._many(3))
 
         assert "ranked lower (--all)" not in out
+
+    def test_a_cut_list_still_numbers_from_one_and_counts_what_it_cut(self):
+        """The two must not interfere: renumbering describes what is shown, the
+        count describes what is not, and neither is derived from the other."""
+        pairs = [
+            _pair("a", rank=4, title="First"),
+            _pair("b", rank=47, title="Second"),
+            _pair("c", rank=71, title="Third"),
+            _pair("d", rank=93, title="Fourth"),
+            _pair("e", rank=112, title="Fifth"),
+        ]
+
+        out = render_recommendations(pairs, limit=3)
+
+        assert "  1. " in out and "  2. " in out and "  3. " in out
+        assert "  4. " not in out
+        assert "2 more" in out
 
     def test_an_explicit_limit_is_honoured(self):
         out = render_recommendations(self._many(12), limit=2)
@@ -240,10 +285,10 @@ class TestEventLines:
 
         assert "untitled" in out.lower()
 
-    def test_rank_is_shown(self):
+    def test_a_position_is_shown(self):
         out = render_recommendations([_pair("a", rank=4)])
 
-        assert "4." in out
+        assert "1." in out
 
 
 class TestReasons:
