@@ -49,7 +49,8 @@ from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.normalization.service import NormalizationService
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.embeddings import OllamaEmbeddingProvider
-from src.scoring.preferences import PreferenceRepository
+from src.scoring.preference_revision import build_revision
+from src.scoring.preferences import PreferenceRepository, PreferenceSet, UserPreference
 from src.scoring.ranking import RankingEngine
 from src.presentation.cli import run
 from src.config import FeedConfig
@@ -69,6 +70,9 @@ from src.storage.sqlite.extraction_observations import (
 )
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.preference_revisions import (
+    SqlitePreferenceRevisionRepository,
+)
 from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 from src.storage.memory.http_cache import InMemoryHttpCache
@@ -1003,6 +1007,23 @@ HTML_FIXTURE = Path("tests/fixtures/northshorenightout.html")
 BATCH_NOW = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
 
 
+def _a_preference_revision():
+    """A revision for a batch whose preferences are not what is under test.
+
+    Real rather than a stub: `run_history.preference_revision_id` carries a
+    foreign key, so a batch can only stamp a revision it actually recorded.
+    """
+    return build_revision(
+        PreferenceSet(
+            likes=[UserPreference("like", "general", "live music")],
+            dislikes=[UserPreference("dislike", "general", "karaoke")],
+        ),
+        likes_name="likes.txt",
+        dislikes_name="dislikes.txt",
+        captured_at=BATCH_NOW,
+    )
+
+
 class _FixtureSession:
     """Serves one captured document, counting how often it is fetched."""
 
@@ -1174,6 +1195,8 @@ def test_batch_smoke(tmp_path: Path) -> None:
         extraction_observation_repository=SqliteExtractionObservationRepository(
             db_path
         ),
+        preference_revision_repository=SqlitePreferenceRevisionRepository(db_path),
+        preference_revision=_a_preference_revision(),
         config=config,
         db_path=db_path,
         logger=logger,
@@ -1217,6 +1240,8 @@ def test_batch_smoke(tmp_path: Path) -> None:
         extraction_observation_repository=SqliteExtractionObservationRepository(
             db_path
         ),
+        preference_revision_repository=SqlitePreferenceRevisionRepository(db_path),
+        preference_revision=_a_preference_revision(),
         config=config,
         db_path=db_path,
         logger=logger,

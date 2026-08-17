@@ -53,6 +53,8 @@ from src.processing.extraction_stage import ExtractionStage
 from src.processing.image_fetcher import HttpImageFetcher
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.embeddings import OllamaEmbeddingProvider
+from src.models.preference_revision import PreferenceRevision
+from src.scoring.preference_revision import build_revision
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
@@ -66,6 +68,7 @@ from src.storage.protocols import (
     CandidateRepository,
     EntityRepository,
     EventRepository,
+    PreferenceRevisionRepository,
     RankingRepository,
     RunRepository,
     ScoreRepository,
@@ -101,6 +104,12 @@ class BatchDependencies:
     dedup_decision_repository: DedupDecisionRepository
     curve_state_repository: CurveStateRepository
     extraction_observation_repository: ExtractionObservationRepository
+    preference_revision_repository: PreferenceRevisionRepository
+    #: What the preference files said when this run loaded them. Built here
+    #: because this is where they are read; `run_batch` records it rather
+    #: than rebuilding it, so the run stamps the revision it actually scored
+    #: against.
+    preference_revision: PreferenceRevision
 
 
 def build_dependencies(
@@ -323,6 +332,12 @@ def build_dependencies(
     preferences = PreferenceRepository(embedding_provider, db_path, logger).load(
         likes_path, dislikes_path
     )
+    preference_revision = build_revision(
+        preferences,
+        likes_name=likes_path.name,
+        dislikes_name=dislikes_path.name,
+        captured_at=get_now(),
+    )
 
     return BatchDependencies(
         ingestion_service=IngestionService(
@@ -376,6 +391,8 @@ def build_dependencies(
         dedup_decision_repository=storage.dedup_decisions,
         curve_state_repository=storage.curve_state,
         extraction_observation_repository=storage.extraction_observations,
+        preference_revision_repository=storage.preference_revisions,
+        preference_revision=preference_revision,
     )
 
 

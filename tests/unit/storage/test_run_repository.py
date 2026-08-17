@@ -15,21 +15,61 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from src.models.preference_revision import PreferenceLine, PreferenceRevision
 from src.storage.sqlite.connection import init_db
+from src.storage.memory.preference_revisions import InMemoryPreferenceRevisionRepository
 from src.storage.memory.runs import InMemoryRunRepository
+from src.storage.sqlite.preference_revisions import SqlitePreferenceRevisionRepository
 from src.storage.sqlite.runs import SqliteRunRepository
 
 _START = datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(params=["sqlite", "memory"])
-def repo(request, tmp_path):
-    """One repository per implementation, so every test below runs twice."""
+def backend(request, tmp_path):
+    """Both repositories over one store, so their foreign key is real.
+
+    `run_history.preference_revision_id` references `preference_revisions(id)`,
+    and SQLite enforces it — so a run's revision has to be one the revision
+    repository actually minted, not a string the test made up.
+    """
     if request.param == "sqlite":
         path = tmp_path / "runs.db"
         init_db(path)
-        return SqliteRunRepository(path)
-    return InMemoryRunRepository()
+        return SqliteRunRepository(path), SqlitePreferenceRevisionRepository(path)
+    return InMemoryRunRepository(), InMemoryPreferenceRevisionRepository()
+
+
+@pytest.fixture
+def repo(backend):
+    """One repository per implementation, so every test below runs twice."""
+    return backend[0]
+
+
+@pytest.fixture
+def revisions(backend):
+    """The revision repository over the same store as `repo`."""
+    return backend[1]
+
+
+def _a_revision(revisions) -> str:
+    """Record a revision and return an id a run may reference."""
+    return revisions.record(
+        PreferenceRevision(
+            captured_at=_START,
+            content_hash="content-hash-for-run-provenance",
+            lines=[
+                PreferenceLine(
+                    file_name="likes.txt",
+                    position=0,
+                    domain="general",
+                    preference_type="like",
+                    line_text="live music",
+                    line_hash="line-hash",
+                )
+            ],
+        )
+    )
 
 
 class TestStart:
@@ -40,6 +80,36 @@ class TestStart:
 
     def test_two_runs_never_share_an_id(self, repo):
         assert repo.start(_START) != repo.start(_START)
+
+    def test_a_run_records_which_preferences_it_scored_against(self, repo, revisions):
+        """The other half of `scoring_config`.
+
+        The constants say how the arithmetic ran; this says what it ran
+        against. Both files are gitignored and edited freely, so a score whose
+        preferences have since changed is otherwise unattributable.
+        """
+        revision_id = _a_revision(revisions)
+        repo.start(_START, preference_revision_id=revision_id)
+
+        assert repo.open_run().preference_revision_id == revision_id
+
+    def test_every_provenance_argument_the_protocol_allows_is_accepted(
+        self, repo, revisions
+    ):
+        """Both configs and the revision, together, in one call.
+
+        The in-memory repository did not accept `dedup_config` at all while the
+        protocol declared it and the batch passed it — a drift no test saw
+        because no test had ever passed one to this fake.
+        """
+        run_id = repo.start(
+            _START,
+            scoring_config='{"gate_midpoint": 0.6}',
+            dedup_config='{"decision_floor": 0.7}',
+            preference_revision_id=_a_revision(revisions),
+        )
+
+        assert run_id
 
 
 class TestOpenRun:

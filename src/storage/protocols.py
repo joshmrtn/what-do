@@ -16,6 +16,7 @@ from src.models.event import Event
 from src.models.candidate_version import CandidateVersion
 from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
+from src.models.preference_revision import PreferenceRevision
 from src.models.ranking import Ranking
 from src.models.run import RunRecord
 from src.normalization.decision_sampling import SampledDecision
@@ -89,6 +90,39 @@ class EventRepository(Protocol):
         ...
 
 
+class PreferenceRevisionRepository(Protocol):
+    """Persistence for what `likes.txt` and `dislikes.txt` said at a given run.
+
+    A score is only meaningful against the preferences it was computed from, and
+    both files are gitignored and edited freely. Recording the revision is what
+    lets a stored ranking be attributed, and what lets the read path notice that
+    the files have moved on since the batch scored against them.
+    """
+
+    def record(self, revision: PreferenceRevision) -> str:
+        """Store a revision, or recognise one already stored, returning its id.
+
+        Keyed on content, so an unedited preference file resolves to the row it
+        already has instead of writing one every night — and the row it resolves
+        to keeps its original `captured_at`.
+        """
+        ...
+
+    def get(self, revision_id: str) -> PreferenceRevision | None:
+        """One revision by id, with its lines in file order, or None."""
+        ...
+
+    def latest(self) -> PreferenceRevision | None:
+        """The most recently captured revision, or None if there are none.
+
+        What the read path compares the current files against. Only a batch or a
+        rescore writes a revision, so the newest row is what produced the newest
+        ranking — which answers the question without joining a ranking's run date
+        to a `run_history` row.
+        """
+        ...
+
+
 class RunRepository(Protocol):
     """Persistence for `run_history`, the only durable record of a batch run."""
 
@@ -97,6 +131,7 @@ class RunRepository(Protocol):
         started_at: datetime,
         scoring_config: str | None = None,
         dedup_config: str | None = None,
+        preference_revision_id: str | None = None,
     ) -> str:
         """Record that a batch has begun, returning its run id.
 

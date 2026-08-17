@@ -32,6 +32,7 @@ from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
+from src.models.preference_revision import PreferenceRevision
 from src.models.ranking import Ranking
 from src.normalization.reconcile import reconcile
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
@@ -53,6 +54,7 @@ from src.storage.protocols import (
     CandidateRepository,
     DedupDecisionRepository,
     EventRepository,
+    PreferenceRevisionRepository,
     RankingRepository,
     RunRepository,
     ScoreRepository,
@@ -133,6 +135,8 @@ def run_batch(
     dedup_decision_repository: DedupDecisionRepository,
     curve_state_repository: CurveStateRepository,
     extraction_observation_repository: ExtractionObservationRepository,
+    preference_revision_repository: PreferenceRevisionRepository,
+    preference_revision: PreferenceRevision,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
 
@@ -176,6 +180,11 @@ def run_batch(
             same terms.
         dedup_decision_repository: Where each dedup comparison is written —
             the merges and, more importantly, the rejections.
+        preference_revision_repository: Where the preference snapshot is
+            recorded, so a stored score can be attributed to what it was
+            measured against.
+        preference_revision: What the preference files said when the
+            composition root loaded them.
 
     Returns:
         BatchResult describing the outcome, per-stage counts, and any errors.
@@ -194,6 +203,14 @@ def run_batch(
     # The scoring constants ride with the run. `config.yaml` is gitignored,
     # so a score whose constants have since been tuned is otherwise
     # unexplainable — the number survives and the arithmetic does not.
+    # Recorded before the run row, because the row references it. Keyed on
+    # content, so an unedited preference file resolves to the revision it
+    # already has rather than writing one every night.
+    revision_id = (
+        None
+        if dry_run or ingest_only
+        else preference_revision_repository.record(preference_revision)
+    )
     run_id = (
         None
         if dry_run or ingest_only
@@ -201,6 +218,7 @@ def run_batch(
             now,
             scoring_config=_scoring_provenance(config),
             dedup_config=_dedup_provenance(config),
+            preference_revision_id=revision_id,
         )
     )
 
@@ -856,6 +874,8 @@ def run(
             dedup_decision_repository=dependencies.dedup_decision_repository,
             curve_state_repository=dependencies.curve_state_repository,
             extraction_observation_repository=dependencies.extraction_observation_repository,
+            preference_revision_repository=dependencies.preference_revision_repository,
+            preference_revision=dependencies.preference_revision,
             logger=logger,
             run_date=run_date,
             get_now=get_now,

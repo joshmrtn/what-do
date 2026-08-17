@@ -44,3 +44,7 @@ class RunRecord:
     #: constant is tuned — and the tag confidence curve is expected to be
     #: re-fitted as nights accumulate.
     scoring_config: str | None = None
+    #: Which `preference_revisions` row this run scored against. The other half
+    #: of the same guarantee: the constants above say how the arithmetic ran,
+    #: and this says what it ran against. None for the runs that predate it.
+    preference_revision_id: str | None = None

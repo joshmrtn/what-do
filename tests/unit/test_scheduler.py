@@ -53,7 +53,10 @@ from src.storage.memory.entities import InMemoryEntityRepository
 from src.storage.memory.rankings import InMemoryRankingRepository
 from src.storage.memory.scores import InMemoryScoreRepository
 from src.storage.sqlite.events import SqliteEventRepository
+from src.storage.sqlite.preference_revisions import SqlitePreferenceRevisionRepository
 from src.storage.sqlite.runs import SqliteRunRepository
+from src.scoring.preference_revision import build_revision
+from src.scoring.preferences import PreferenceSet, UserPreference
 from src.utils.logging import get_logger
 
 NOW = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -536,6 +539,23 @@ def _seeded_candidates(candidates) -> InMemoryCandidateRepository:
     return repo
 
 
+def _a_preference_revision():
+    """A revision for a batch whose preferences are not what is under test.
+
+    Real rather than a stub: `run_history.preference_revision_id` carries a
+    foreign key, so a batch can only stamp a revision it actually recorded.
+    """
+    return build_revision(
+        PreferenceSet(
+            likes=[UserPreference("like", "general", "live music")],
+            dislikes=[UserPreference("dislike", "general", "karaoke")],
+        ),
+        likes_name="likes.txt",
+        dislikes_name="dislikes.txt",
+        captured_at=NOW,
+    )
+
+
 def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
     """Drive run_batch, returning (result, the collaborators it used).
 
@@ -593,6 +613,13 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
     kwargs.setdefault(
         "extraction_observation_repository", SqliteExtractionObservationRepository(db)
     )
+    # Real too, and for the same reason: the run row's foreign key means a batch
+    # that recorded no revision could not stamp one, so faking this would hide
+    # the constraint rather than exercise it.
+    kwargs.setdefault(
+        "preference_revision_repository", SqlitePreferenceRevisionRepository(db)
+    )
+    kwargs.setdefault("preference_revision", _a_preference_revision())
 
     result = run_batch(
         config=_config(),
@@ -1275,6 +1302,8 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             dedup_decision_repository=SqliteDedupDecisionRepository(db),
             curve_state_repository=SqliteCurveStateRepository(db),
             extraction_observation_repository=SqliteExtractionObservationRepository(db),
+            preference_revision_repository=SqlitePreferenceRevisionRepository(db),
+            preference_revision=_a_preference_revision(),
             embedding_stage=_embedding_stage(),
             semantic_deduplicator=_DedupSpy(SemanticDeduplicationEngine()),
             similarity_stage=_similarity_stage(),
@@ -1843,3 +1872,100 @@ def test_a_displaced_event_never_rejoins_the_ranking(db):
     _, fakes, _, _ = _run(db, candidates=[_candidate("c1", title="Karaoke Night")])
 
     assert "thin" not in fakes["ranking_engine"].ranked[0]
+
+
+def test_the_run_records_the_preferences_it_scored_against(db):
+    """The other half of `scoring_config`.
+
+    `likes.txt` is gitignored and edited freely, so the constants alone cannot
+    explain a stored score: they say how the arithmetic ran, not what it ran
+    against.
+    """
+    _run(db, candidates=[_candidate("c1")])
+
+    conn = connect(db)
+    try:
+        run = conn.execute(
+            "SELECT preference_revision_id FROM run_history ORDER BY started_at DESC"
+        ).fetchone()
+        assert run is not None and run[0], "the run recorded no preference revision"
+
+        lines = conn.execute(
+            "SELECT preference_type, line_text FROM preference_lines "
+            "WHERE revision_id = ? ORDER BY file_name, position",
+            (run[0],),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert lines == [("dislike", "karaoke"), ("like", "live music")]
+
+
+def test_an_unedited_preference_file_reuses_its_revision(db):
+    """Two nights over the same files must not mint two revisions.
+
+    A row a night would grow the table forever to say "still the same", and
+    would make "did the preferences change?" answerable only by comparing
+    hashes anyway — which is what the content key already does.
+    """
+    _run(db, candidates=[_candidate("c1")])
+    _run(db, candidates=[_candidate("c1")])
+
+    conn = connect(db)
+    try:
+        revisions = conn.execute("SELECT COUNT(*) FROM preference_revisions").fetchone()
+        stamped = conn.execute(
+            "SELECT DISTINCT preference_revision_id FROM run_history"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert revisions[0] == 1
+    assert len(stamped) == 1
+
+
+def test_an_edited_preference_file_is_a_new_revision(db):
+    """And the old one survives — nothing is destroyed."""
+    _run(db, candidates=[_candidate("c1")])
+    _run(
+        db,
+        candidates=[_candidate("c1")],
+        preference_revision=build_revision(
+            PreferenceSet(
+                likes=[UserPreference("like", "general", "live jazz")],
+                dislikes=[UserPreference("dislike", "general", "karaoke")],
+            ),
+            likes_name="likes.txt",
+            dislikes_name="dislikes.txt",
+            captured_at=NOW,
+        ),
+    )
+
+    conn = connect(db)
+    try:
+        revisions = conn.execute("SELECT COUNT(*) FROM preference_revisions").fetchone()
+        stamped = conn.execute(
+            "SELECT DISTINCT preference_revision_id FROM run_history"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert revisions[0] == 2
+    assert len(stamped) == 2
+
+
+def test_a_dry_run_records_no_revision(db):
+    """A dry run persists nothing, and that includes its provenance.
+
+    It writes no `run_history` row either, so a revision written here would be
+    an orphan describing a batch that never happened.
+    """
+    _run(db, candidates=[_candidate("c1")], dry_run=True)
+
+    conn = connect(db)
+    try:
+        revisions = conn.execute("SELECT COUNT(*) FROM preference_revisions").fetchone()
+    finally:
+        conn.close()
+
+    assert revisions[0] == 0

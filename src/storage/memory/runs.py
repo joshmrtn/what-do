@@ -20,12 +20,25 @@ class InMemoryRunRepository:
         self._runs: dict[str, RunRecord] = {}
 
     def start(
-        self, started_at: datetime, scoring_config: str | None = None
+        self,
+        started_at: datetime,
+        scoring_config: str | None = None,
+        dedup_config: str | None = None,
+        preference_revision_id: str | None = None,
     ) -> str:
-        """Record that a batch has begun, returning its run id."""
+        """Record that a batch has begun, returning its run id.
+
+        `dedup_config` is accepted and not stored, matching `RunRecord`, which
+        has no field for it either. Taking the argument is what matters: without
+        it this fake refused a call the protocol allows and the SQLite
+        repository accepts.
+        """
         run_id = str(uuid.uuid4())
         self._runs[run_id] = RunRecord(
-            run_id=run_id, started_at=started_at, scoring_config=scoring_config
+            run_id=run_id,
+            started_at=started_at,
+            scoring_config=scoring_config,
+            preference_revision_id=preference_revision_id,
         )
         return run_id
 

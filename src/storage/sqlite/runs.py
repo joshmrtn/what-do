@@ -13,7 +13,7 @@ from src.storage.sqlite.connection import connect
 
 _COLUMNS = (
     "id, started_at, completed_at, duration_ms, outcome, "
-    "steps_completed, errors, skipped_sources, scoring_config"
+    "steps_completed, errors, skipped_sources, scoring_config, preference_revision_id"
 )
 
 
@@ -35,6 +35,7 @@ def _to_record(row: tuple[Any, ...]) -> RunRecord:
         errors=json.loads(row[6]) if row[6] else [],
         skipped_sources=json.loads(row[7]) if row[7] else [],
         scoring_config=row[8],
+        preference_revision_id=row[9],
     )
 
 
@@ -49,15 +50,23 @@ class SqliteRunRepository:
         started_at: datetime,
         scoring_config: str | None = None,
         dedup_config: str | None = None,
+        preference_revision_id: str | None = None,
     ) -> str:
         """Record that a batch has begun, returning its run id."""
         run_id = str(uuid.uuid4())
         conn = connect(self._db_path)
         try:
             conn.execute(
-                "INSERT INTO run_history (id, started_at, scoring_config, dedup_config) "
-                "VALUES (?, ?, ?, ?)",
-                (run_id, started_at.isoformat(), scoring_config, dedup_config),
+                "INSERT INTO run_history "
+                "(id, started_at, scoring_config, dedup_config, preference_revision_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    started_at.isoformat(),
+                    scoring_config,
+                    dedup_config,
+                    preference_revision_id,
+                ),
             )
             conn.commit()
         finally:
