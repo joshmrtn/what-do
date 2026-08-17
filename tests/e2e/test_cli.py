@@ -194,12 +194,25 @@ def _no_freshness(*args, **kwargs) -> None:
     return None
 
 
+def _no_rescore(*args, **kwargs) -> None:
+    """Leave the stored ranking alone, and open no socket deciding.
+
+    Injected by default for the same reason as `_no_freshness`. Left to its
+    default the real rescorer would run, be refused by the `no_network` fixture,
+    and be swallowed by the broad except that exists so a rescore never costs
+    the listing — so every test here would pass while exercising the failure
+    path rather than the one it names.
+    """
+    return None
+
+
 def _invoke(
     db_path: Path,
     *argv: str,
     now: datetime | None = None,
     view: ViewSettings | None = None,
     check_freshness=_no_freshness,
+    rescore=_no_rescore,
 ) -> tuple[int, str, str]:
     """Run the CLI as a user would.
 
@@ -214,6 +227,7 @@ def _invoke(
         stderr=stderr,
         load_view_settings=lambda: view if view is not None else VIEW,
         check_freshness=check_freshness,
+        rescore=rescore,
     )
     return code, stdout.getvalue(), stderr.getvalue()
 
@@ -343,7 +357,7 @@ def test_a_database_that_does_not_exist_yet_is_not_a_crash(tmp_path, monkeypatch
 
     code = run(
         [], get_now=lambda: NOW, stdout=stdout, stderr=stderr,
-        check_freshness=_no_freshness,
+        check_freshness=_no_freshness, rescore=_no_rescore,
     )
 
     assert code == 0
@@ -361,7 +375,7 @@ def test_a_zero_byte_database_file_is_treated_as_not_ready(tmp_path, monkeypatch
 
     code = run(
         [], get_now=lambda: NOW, stdout=stdout, stderr=stderr,
-        check_freshness=_no_freshness,
+        check_freshness=_no_freshness, rescore=_no_rescore,
     )
 
     assert code == 0

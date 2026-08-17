@@ -60,6 +60,7 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 import dataclasses
 
+from src.composition.pipeline import load_blocklist
 from src.composition.storage import build_batch_storage
 from src.storage.protocols import (
     CurveStateRepository,
@@ -169,7 +170,7 @@ def build_dependencies(
     # constants that did not move underneath it.
     config = _with_accepted_curve(config, storage.curve_state, logger)
     handles = _handles(storage.entities, seeds_path)
-    blocklist = _blocklist(blocklist_path)
+    blocklist = load_blocklist(blocklist_path)
 
     # Alternative routes to the same Instagram data, tried in order. Apify is
     # first because it is the only one under contract; the scrapers are the
@@ -451,13 +452,4 @@ def _handles(entities: EntityRepository, seeds_path: Path) -> list[str]:
     )
 
 
-def _blocklist(path: Path) -> list[str]:
-    """Read `blocklist.json`, treating an absent file as an empty blocklist.
 
-    A user who never wrote one is a normal deployment, not a failure. The file
-    stays the source of truth — see #16 for populating the table from it.
-    """
-    if not path.exists():
-        return []
-    entries = json.loads(path.read_text())
-    return [str(entry) for entry in entries]

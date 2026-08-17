@@ -28,6 +28,7 @@ from src.storage.protocols import (
     HttpCache,
     PreferenceRevisionRepository,
     RankingRepository,
+    RescoreRepository,
     RunRepository,
     DedupDecisionRepository,
     ScoreRepository,
@@ -45,6 +46,7 @@ from src.storage.sqlite.extraction_observations import (
 from src.storage.sqlite.preference_revisions import (
     SqlitePreferenceRevisionRepository,
 )
+from src.storage.sqlite.rescores import SqliteRescoreRepository
 from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
@@ -53,14 +55,28 @@ from src.storage.sqlite.weather_cache import SqliteWeatherCache
 
 @dataclass(frozen=True)
 class ViewStorage:
-    """What the CLI reads through. No writer, because the view never writes."""
+    """What the CLI reads and, on a rescore, writes back through.
+
+    It was read-only until the read path gained the ability to recompute a
+    stale ranking. That is still the exception rather than the rule: the view
+    writes only when it has just recomputed what it is about to show.
+    """
 
     events: EventRepository
     scores: ScoreRepository
     rankings: RankingRepository
-    #: Not a writer. The view reads the newest revision to notice that the
-    #: preference files have moved since the ranking was scored.
+    #: Read to notice that the preference files have moved since the ranking
+    #: was scored.
     preference_revisions: PreferenceRevisionRepository
+    #: Written, unlike everything above. A read-time rescore replaces a
+    #: stored ordering, and this is what records that it did.
+    rescores: RescoreRepository
+    #: Read only for `open_run`: a batch in flight is the one condition
+    #: under which the read path must not write at all.
+    runs: RunRepository
+    #: The rescore's forecast, served from cache when it is still fresh —
+    #: which is what makes a second invocation seconds later open no socket.
+    weather_cache: WeatherCache
 
 
 @dataclass(frozen=True)
@@ -94,6 +110,9 @@ def build_view_storage(db_path: Path | str, embedding_model: str) -> ViewStorage
         scores=SqliteScoreRepository(db_path),
         rankings=SqliteRankingRepository(db_path),
         preference_revisions=SqlitePreferenceRevisionRepository(db_path),
+        rescores=SqliteRescoreRepository(db_path),
+        runs=SqliteRunRepository(db_path),
+        weather_cache=SqliteWeatherCache(db_path),
     )
 
 

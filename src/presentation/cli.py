@@ -23,6 +23,7 @@ import yaml
 
 from src.config import (
     ViewConfig,
+    DEFAULT_BLOCKLIST_PATH,
     DEFAULT_DAY_STARTS_AT,
     DEFAULT_DISLIKES_PATH,
     DEFAULT_EMBEDDING_MODEL,
@@ -37,7 +38,10 @@ from src.presentation.freshness import (
     preference_state,
 )
 from src.presentation.handles import HANDLE_SIGIL, short_handle
+from src.enrichment.weather import OpenMeteoProvider
+from src.presentation.rescore import rescore_if_stale
 from src.scoring.preference_revision import hash_preference_files
+from src.utils.logging import get_logger
 from src.presentation.filters import (
     RankedEvent,
     after_sunset,
@@ -110,6 +114,53 @@ ReadinessCheck = Callable[[Path], bool]
 #: because a test substituting it should not have to own a database, a clock and
 #: two files on disk to say "nothing is stale".
 FreshnessProbe = Callable[..., str | None]
+#: Recomputes a stale listing, or returns None to leave it alone. Injected
+#: on the same terms as the loaders — a test asserting what the view renders
+#: should not have to own a forecast.
+Rescorer = Callable[..., list[RankedEvent] | None]
+
+
+def _default_rescore(
+    db_path: Path,
+    embedding_model: str,
+    *,
+    pairs: list[RankedEvent],
+    tonight: date,
+    now: datetime,
+    ttl: timedelta,
+) -> list[RankedEvent] | None:
+    """Refresh the forecast and re-run the pipeline tail, if it is worth it.
+
+    Config is loaded here rather than carried on `ViewSettings`, which holds
+    only what rendering needs. A config this cannot read is a reason to show the
+    stored ranking, not to fail: the whole contract of this call is that it may
+    never cost the listing.
+    """
+    try:
+        config = load_config()
+    except (ConfigError, OSError) as exc:
+        get_logger("rescore").warning(
+            f"rescore skipped, no usable config: {exc}",
+            component="rescore",
+            duration_ms=0,
+        )
+        return None
+
+    return rescore_if_stale(
+        pairs=pairs,
+        tonight=tonight,
+        now=now,
+        ttl=ttl,
+        config=config,
+        db_path=db_path,
+        storage=build_view_storage(db_path, embedding_model),
+        logger=get_logger("rescore"),
+        get_now=lambda: now,
+        weather_provider=OpenMeteoProvider(),
+        likes_path=DEFAULT_LIKES_PATH,
+        dislikes_path=DEFAULT_DISLIKES_PATH,
+        blocklist_path=DEFAULT_BLOCKLIST_PATH,
+    )
 
 
 def _default_freshness(
@@ -269,6 +320,7 @@ def _cmd_recommend(
     db_ready: ReadinessCheck,
     view: ViewSettings,
     check_freshness: FreshnessProbe,
+    rescore: Rescorer,
 ) -> int:
     """Render the default view: the latest run, filtered to tonight."""
     if (conflict := _conflicting_flags(args)) is not None:
@@ -374,6 +426,19 @@ def _cmd_recommend(
     # A different question from the one above, and worth asking separately: that
     # one is about a batch that never ran, this is about a batch that ran and
     # whose inputs have since moved. Both go to stderr for the same reason.
+    # Before the notice, so the notice describes what is actually on screen: a
+    # successful rescore leaves nothing stale to report.
+    refreshed = rescore(
+        db_path,
+        view.embedding_model,
+        pairs=pairs,
+        tonight=tonight,
+        now=get_now(),
+        ttl=timedelta(minutes=view.view.refresh_ttl_minutes),
+    )
+    if refreshed:
+        pairs = refreshed
+
     freshness = check_freshness(
         db_path,
         view.embedding_model,
@@ -792,6 +857,7 @@ def run(
     db_ready: ReadinessCheck = has_schema,
     load_view_settings: ViewSettingsLoader = default_view_settings,
     check_freshness: FreshnessProbe = _default_freshness,
+    rescore: Rescorer = _default_rescore,
 ) -> int:
     """Run one CLI invocation and return its exit code.
 
@@ -814,6 +880,8 @@ def run(
         check_freshness: Reports whether the forecast behind the ranking has
             aged past the read TTL, or the preference files have moved since
             it was scored. Injected on the same terms as the loaders.
+        rescore: Recomputes a stale listing against a fresh forecast, or
+            returns None to leave the stored one alone.
 
     Returns:
         0 on success, including an empty database. 1 for a usage error.
@@ -838,6 +906,7 @@ def run(
         db_ready=db_ready,
         view=load_view_settings(),
         check_freshness=check_freshness,
+        rescore=rescore,
     )
 
 

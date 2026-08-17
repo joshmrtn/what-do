@@ -26,6 +26,7 @@ from src.composition.pipeline import finish_run, scope_filter, scope_floor
 import yaml
 
 from src.config import (
+    DEFAULT_BLOCKLIST_PATH,
     DEFAULT_CONFIG_PATH,
     DEFAULT_DISLIKES_PATH,
     DEFAULT_LIKES_PATH,
@@ -72,7 +73,6 @@ from src.utils.logging import StructuredLogger, get_logger
 #: lands beside the log it belongs to.
 DEFAULT_LOG_DIR = Path("logs")
 DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
-DEFAULT_BLOCKLIST_PATH = Path("data/blocklist.json")
 
 
 def _default_now() -> datetime:

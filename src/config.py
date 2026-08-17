@@ -418,6 +418,9 @@ DEFAULT_DAY_STARTS_AT = time(4, 0)
 #: since the batch scored against them.
 DEFAULT_LIKES_PATH = Path("data/likes.txt")
 DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
+#: Venue names and handles never to surface. One source of truth, read by
+#: whichever root is about to rank.
+DEFAULT_BLOCKLIST_PATH = Path("data/blocklist.json")
 
 
 @dataclass

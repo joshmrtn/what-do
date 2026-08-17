@@ -467,6 +467,26 @@ CREATE TABLE IF NOT EXISTS rankings (
         REFERENCES event_scores(event_id, run_date) ON DELETE CASCADE
 );
 
+-- One row per read-time rescore, never an update of the last.
+--
+-- After a rescore, a run date holds numbers produced by a different forecast
+-- from the one its own row describes, and nothing else records that. A
+-- `rescored_at` column on `run_history` would answer "when last?" and destroy
+-- the answer to "how did this move, and how often?" — the same reasoning that
+-- made dedup provenance a decision log rather than a column on the survivor.
+CREATE TABLE IF NOT EXISTS rescores (
+    id                     TEXT PRIMARY KEY,
+    run_date               TEXT NOT NULL,
+    rescored_at            TEXT NOT NULL,
+    -- When the forecast it scored against was issued. NULL when no event in
+    -- the run carried one, which is an all-indoor listing rather than a
+    -- failure.
+    forecast_issued_at     TEXT,
+    preference_revision_id TEXT REFERENCES preference_revisions(id),
+    events_rescored        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rescores_run_date         ON rescores (run_date, rescored_at);
 CREATE INDEX IF NOT EXISTS idx_events_start_time        ON events (start_time);
 CREATE INDEX IF NOT EXISTS idx_events_venue_id          ON events (venue_id);
 CREATE INDEX IF NOT EXISTS idx_event_tags_tag           ON event_tags (tag);

@@ -18,6 +18,7 @@ from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.preference_revision import PreferenceRevision
 from src.models.ranking import Ranking
+from src.models.rescore import Rescore
 from src.models.run import RunRecord
 from src.normalization.decision_sampling import SampledDecision
 from src.storage.curve_state import CurveState
@@ -87,6 +88,29 @@ class EventRepository(Protocol):
         A vector is a pure function of its text and the embedding model, so a
         tag embedded on a previous night never needs embedding again.
         """
+        ...
+
+
+class RescoreRepository(Protocol):
+    """Persistence for `rescores` — read-time recomputations of a stored run.
+
+    Append-only. After a rescore, a run date holds numbers produced by a
+    different forecast from the one its own `run_history` row describes, and
+    these rows are the only record of that. A column that the next rescore
+    overwrote would answer "when last?" while destroying the answer to "how did
+    this move, and how often?".
+    """
+
+    def record(self, rescore: Rescore) -> None:
+        """Append one rescore. Never an update — the previous rows stay."""
+        ...
+
+    def latest_for(self, run_date: date) -> Rescore | None:
+        """The most recent rescore of one run, or None if it has never been."""
+        ...
+
+    def for_run(self, run_date: date) -> list[Rescore]:
+        """Every rescore of one run, newest first."""
         ...
 
 

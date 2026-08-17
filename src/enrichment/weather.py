@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Iterable
 
 import requests
 
@@ -57,6 +57,26 @@ HOURLY_VARIABLES: dict[str, str] = {
     "precipitation": "precipitation_mm",
     "wind_speed_10m": "wind_speed_mph",
 }
+
+
+def latest_forecast(events: Iterable[Any]) -> datetime | None:
+    """When the freshest forecast behind these events was issued.
+
+    The newest rather than the oldest: a listing is as current as the most
+    recent forecast it was scored against, and an event beyond the forecast
+    horizon carries an old one forever without making tonight stale.
+
+    Returns:
+        The newest `issued_at`, or None when no event carries a forecast — an
+        all-indoor listing rather than a failed one.
+    """
+    issued: list[datetime] = []
+    for event in events:
+        forecast = (getattr(event, "weather", None) or {}).get("forecast") or {}
+        stamp = forecast.get("issued_at")
+        if stamp:
+            issued.append(datetime.fromisoformat(stamp))
+    return max(issued) if issued else None
 
 
 class WeatherProvider(ABC):

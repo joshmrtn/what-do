@@ -189,6 +189,14 @@ def test_the_view_root_does_not_import_the_batch_root():
     Asserted on the loaded module graph rather than on imports, because the
     regression came in through a package `__init__`, which no import statement
     in `cli.py` would have shown.
+
+    **Narrowed when the read-time rescore landed**, and narrowed rather than
+    deleted. It used to assert `requests` was absent too, which was accurate
+    about a CLI that opened no sockets and was never the architectural rule.
+    The rescore refreshes a forecast, so `requests` arrives legitimately;
+    measured, that took CLI startup from 0.22s to 0.29s, which is the price of
+    the feature and is still snappy. What must never arrive is a *model*: the
+    Ollama client, and the extraction provider that would reach for one.
     """
     result = subprocess.run(
         [
@@ -196,7 +204,7 @@ def test_the_view_root_does_not_import_the_batch_root():
             "-c",
             "import sys, src.presentation.cli;"
             "print(any('ollama' in m for m in sys.modules));"
-            "print('requests' in sys.modules)",
+            "print('src.processing.extraction' in sys.modules)",
         ],
         capture_output=True,
         text=True,
@@ -204,9 +212,9 @@ def test_the_view_root_does_not_import_the_batch_root():
     )
 
     assert result.returncode == 0, result.stderr
-    loads_ollama, loads_requests = result.stdout.split()
+    loads_ollama, loads_extraction = result.stdout.split()
     assert loads_ollama == "False", "the CLI imports the Ollama client"
-    assert loads_requests == "False", "the CLI imports the HTTP layer"
+    assert loads_extraction == "False", "the CLI imports the extraction provider"
 
 
 #: The one module allowed to rank. Ranking is the pipeline's terminal step, and

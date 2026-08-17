@@ -12,9 +12,8 @@ rather than silently tolerating.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Iterable
 
-from src.models.event import Event
+from src.enrichment.weather import latest_forecast
 from src.models.preference_revision import PreferenceRevision
 
 #: The preference files match the revision the last ranking was scored against.
@@ -30,26 +29,6 @@ PREFERENCES_UNKNOWN = "unknown"
 #: Below this, an age reads better in minutes. "1 hours old" is the kind of
 #: wrong that makes a reader distrust the rest of the line.
 _MINUTES_BELOW = timedelta(hours=2)
-
-
-def latest_forecast(events: Iterable[Event]) -> datetime | None:
-    """When the freshest forecast behind these events was issued.
-
-    The newest rather than the oldest: the listing is as current as the most
-    recent forecast it was scored against, and an event beyond the forecast
-    horizon carries an old one forever without making tonight's stale.
-
-    Returns:
-        The newest `issued_at`, or None when no event carries a forecast —
-        which is an all-indoor listing, not a stale one.
-    """
-    issued: list[datetime] = []
-    for event in events:
-        forecast = (event.weather or {}).get("forecast") or {}
-        stamp = forecast.get("issued_at")
-        if stamp:
-            issued.append(datetime.fromisoformat(stamp))
-    return max(issued) if issued else None
 
 
 def preference_state(
@@ -117,3 +96,15 @@ def freshness_notice(
         return None
 
     return "⚠  This ranking is out of date: " + ", and ".join(lines) + "."
+
+
+#: Re-exported: it lives with the weather record whose shape it reads, and
+#: the pipeline needs it too, but this is where the view's vocabulary is.
+__all__ = [
+    "PREFERENCES_CHANGED",
+    "PREFERENCES_UNCHANGED",
+    "PREFERENCES_UNKNOWN",
+    "freshness_notice",
+    "latest_forecast",
+    "preference_state",
+]
