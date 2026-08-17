@@ -332,6 +332,20 @@ weather:
   # the forecast issued the day it was found, including on the night it happens.
   cache_ttl_hours: 12
 
+  # How far ahead the provider can actually answer. A POLITENESS BOUND, not a
+  # tuning knob: Open-Meteo's free forecast reaches about sixteen days while
+  # the ranking horizon is ninety, and a date it cannot answer returns nothing
+  # — which is not cached, so it was re-requested on every batch run and every
+  # read-time rescore. Measured: 98 dates asked, 24 answered, 74 asked again
+  # every time. Raise this only if the provider's own range grows.
+  forecast_horizon_days: 16
+
+  # The same bound for air quality, which is a separate service with a
+  # shorter range. It had neither a bound nor a persistent cache — only a
+  # per-run dict — so every distinct date in a ninety-day listing became a
+  # request to a second endpoint, on every run, remembered by nothing.
+  air_quality_horizon_days: 5
+
   # How far weather can move a score. Bad weather vetoes harder than good
   # weather promotes: a thunderstorm is close to disqualifying, while a perfect
   # night is a nudge that should not overturn a strong preference match.

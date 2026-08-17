@@ -309,7 +309,11 @@ def test_refetched_weather_replaces_the_stale_row(db_path, cfg):
     wp = _weather_provider(CLEAR_DAY)
     _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
 
-    later = NOW + timedelta(days=5)
+    # Past the 12h TTL, but *not* past the event. Advancing five days used to
+    # work here and now correctly fetches nothing: a forecast for a night that
+    # has already happened is not a thing to request, and enrichment no longer
+    # asks. See `test_forecast_horizon.py`.
+    later = NOW + timedelta(hours=13)
     _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
 
     rows = _cache_rows(db_path)
@@ -334,7 +338,8 @@ def test_stale_cache_serves_the_new_forecast_not_the_old_one(db_path, cfg):
     _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
 
     wp.fetch.return_value = fresh_day
-    later = NOW + timedelta(days=5)
+    # Past the TTL and still before the event, for the reason given above.
+    later = NOW + timedelta(hours=13)
     event = _make_service(db_path, cfg, weather=wp, now=later).enrich(
         [_make_event()], RUN_DATE
     )[0]

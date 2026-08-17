@@ -1,5 +1,6 @@
 """EnrichmentService — orchestrates weather, astronomical, movie, and synthetic enrichment."""
 
+import zoneinfo
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -130,8 +131,15 @@ class EnrichmentService:
 
         Air quality is advisory: its forecast horizon is far shorter than the
         weather forecast, so a miss is the normal case and never an error.
+
+        That shorter horizon is now enforced rather than merely described. This
+        had no bound and, unlike weather, no persistent cache either — so every
+        distinct date in a ninety-day listing was a request to a second service,
+        on every batch run and every read-time rescore, remembered by nothing.
         """
         if self._air_quality_provider is None or not self._config.weather.air_quality_enabled:
+            return None
+        if not self._within(event_date, self._config.weather.air_quality_horizon_days):
             return None
         try:
             return self._air_quality_provider.fetch(event_date, lat, lng)
@@ -186,6 +194,28 @@ class EnrichmentService:
             "observed": None,
         }
 
+    def _within(self, event_date: date, horizon_days: int) -> bool:
+        """Whether a date falls between today and a provider's own horizon.
+
+        Judged in the configured zone rather than the machine's: "today" for a
+        listing is a local wall-clock day.
+        """
+        tz = zoneinfo.ZoneInfo(self._config.location.timezone)
+        today = self._get_now().astimezone(tz).date()
+        return today <= event_date <= today + timedelta(days=horizon_days)
+
+    def _forecastable(self, event_date: date) -> bool:
+        """Whether the provider could answer for this date at all.
+
+        A politeness bound before anything else happens. The provider answers
+        about sixteen days ahead and nothing behind; the ranking horizon is
+        ninety, so most dates in a listing are questions it cannot answer. A
+        `None` reply is not cached, so each of those was re-asked on every batch
+        run and every rescore — measured at 74 pointless requests a time.
+
+        """
+        return self._within(event_date, self._config.weather.forecast_horizon_days)
+
     def _fetch_weather(
         self, event_date: date, lat: float, lng: float
     ) -> dict[str, Any] | None:
@@ -194,7 +224,15 @@ class EnrichmentService:
         A cached day is only served while it is still fresh. An event discovered
         days ahead would otherwise be scored forever against the forecast issued
         on the day it was found, including on the night it actually happens.
+
+        Beyond the provider's own horizon nothing is requested at all. Downstream
+        this is indistinguishable from the old behaviour — `weather_adjustment`
+        already reads absent weather as *unknown* rather than bad — except that
+        the request is not made.
         """
+        if not self._forecastable(event_date):
+            return None
+
         cached = self._db_weather_get(event_date, lat, lng)
         if cached is not None:
             return cached

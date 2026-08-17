@@ -260,6 +260,18 @@ class WeatherConfig:
     #: always rescores against a forecast issued that night, never one issued
     #: days earlier when the event was first discovered.
     cache_ttl_hours: float = 12.0
+    #: How far ahead the provider can actually answer. **A politeness bound, not
+    #: a tuning knob.** Open-Meteo's free forecast reaches about sixteen days;
+    #: the ranking horizon is ninety. Asking for day ninety returns nothing, and
+    #: nothing is not cached, so every such date was re-requested on every batch
+    #: run and every read-time rescore. Measured before this existed: 98 dates
+    #: requested, 24 answered, **74 asked again every single time**.
+    forecast_horizon_days: int = 16
+    #: The same bound for air quality, which is a **separate service with a
+    #: shorter range**. It had neither a bound nor a persistent cache — only a
+    #: per-run dict — so every distinct date in a ninety-day listing became a
+    #: request, every run, remembered by nothing.
+    air_quality_horizon_days: int = 5
     #: Reading name -> curve. Names must match keys in the weather dict.
     comfort: dict[str, ComfortCurve] = field(default_factory=dict)
     #: Condition -> comfort ceiling. Only negative values cap.
