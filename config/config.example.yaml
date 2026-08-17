@@ -463,3 +463,9 @@ view:
   # real hours are only inferrable from the endpoints. Nothing overrides this at
   # the call site, and it is the number most likely to want tuning.
   long_span_hours: 24
+  # How old the forecast behind a ranking may be before `what-do` calls it
+  # stale. Deliberately NOT `weather.cache_ttl_hours`, which bounds how long the
+  # *batch* may reuse a fetched forecast: two numbers, two questions. Sixty
+  # because Open-Meteo's hourly series does not move within the hour, so a
+  # shorter bound spends requests and buys nothing.
+  refresh_ttl_minutes: 60

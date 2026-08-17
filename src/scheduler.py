@@ -25,7 +25,13 @@ from src.composition.batch import BatchDependencies, build_dependencies
 from src.composition.pipeline import finish_run, scope_filter, scope_floor
 import yaml
 
-from src.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from src.config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_DISLIKES_PATH,
+    DEFAULT_LIKES_PATH,
+    AppConfig,
+    load_config,
+)
 from src.enrichment.service import EnrichmentService
 from src.ingestion.id_churn import ChurnTally
 from src.ingestion.ingestion_service import IngestionService, SourceTally
@@ -66,8 +72,6 @@ from src.utils.logging import StructuredLogger, get_logger
 #: lands beside the log it belongs to.
 DEFAULT_LOG_DIR = Path("logs")
 DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
-DEFAULT_LIKES_PATH = Path("data/likes.txt")
-DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
 DEFAULT_BLOCKLIST_PATH = Path("data/blocklist.json")
 
 

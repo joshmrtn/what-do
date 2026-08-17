@@ -24,12 +24,20 @@ import yaml
 from src.config import (
     ViewConfig,
     DEFAULT_DAY_STARTS_AT,
+    DEFAULT_DISLIKES_PATH,
     DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_LIKES_PATH,
     ConfigError,
     load_config,
 )
 from src.models.event import Event
+from src.presentation.freshness import (
+    freshness_notice,
+    latest_forecast,
+    preference_state,
+)
 from src.presentation.handles import HANDLE_SIGIL, short_handle
+from src.scoring.preference_revision import hash_preference_files
 from src.presentation.filters import (
     RankedEvent,
     after_sunset,
@@ -98,6 +106,44 @@ def _default_events(
 
 EventLoader = Callable[..., list[Event]]
 ReadinessCheck = Callable[[Path], bool]
+#: Reads how stale the listing's inputs are. One callable rather than three,
+#: because a test substituting it should not have to own a database, a clock and
+#: two files on disk to say "nothing is stale".
+FreshnessProbe = Callable[..., str | None]
+
+
+def _default_freshness(
+    db_path: Path,
+    embedding_model: str,
+    *,
+    events: list[Event],
+    now: datetime,
+    ttl: timedelta,
+    likes_path: Path,
+    dislikes_path: Path,
+) -> str | None:
+    """Whether the forecast has aged or the preference files have moved.
+
+    Reads through the repository like every other view read, and embeds
+    nothing: the whole point is that asking is cheap enough to do on every
+    invocation.
+
+    The preference paths are parameters rather than the module constants read
+    directly, so this function is reachable from a test without owning two files
+    at fixed locations. A default only production takes is untested by
+    construction, and this one would have read the developer's own `likes.txt`
+    on every run of the CLI suite.
+    """
+    revisions = build_view_storage(db_path, embedding_model).preference_revisions
+    return freshness_notice(
+        forecast_issued_at=latest_forecast(events),
+        now=now,
+        ttl=ttl,
+        preferences=preference_state(
+            hash_preference_files(likes_path, dislikes_path),
+            revisions.latest(),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -222,6 +268,7 @@ def _cmd_recommend(
     load_all_events: EventLoader,
     db_ready: ReadinessCheck,
     view: ViewSettings,
+    check_freshness: FreshnessProbe,
 ) -> int:
     """Render the default view: the latest run, filtered to tonight."""
     if (conflict := _conflicting_flags(args)) is not None:
@@ -323,6 +370,21 @@ def _cmd_recommend(
     notice = staleness_notice(pairs[0].ranking.run_date, tonight)
     if notice is not None:
         print(notice, file=stderr)
+
+    # A different question from the one above, and worth asking separately: that
+    # one is about a batch that never ran, this is about a batch that ran and
+    # whose inputs have since moved. Both go to stderr for the same reason.
+    freshness = check_freshness(
+        db_path,
+        view.embedding_model,
+        events=[pair.event for pair in pairs],
+        now=get_now(),
+        ttl=timedelta(minutes=view.view.refresh_ttl_minutes),
+        likes_path=DEFAULT_LIKES_PATH,
+        dislikes_path=DEFAULT_DISLIKES_PATH,
+    )
+    if freshness is not None:
+        print(freshness, file=stderr)
 
     if args.upcoming is not None:
         return _cmd_upcoming(
@@ -729,6 +791,7 @@ def run(
     load_all_events: EventLoader = _default_events,
     db_ready: ReadinessCheck = has_schema,
     load_view_settings: ViewSettingsLoader = default_view_settings,
+    check_freshness: FreshnessProbe = _default_freshness,
 ) -> int:
     """Run one CLI invocation and return its exit code.
 
@@ -748,6 +811,9 @@ def run(
             still depend on a real file being on disk.
         load_view_settings: Reads the timezone and rollover hour that decide
             which night is shown. Injected so tests never need a config file.
+        check_freshness: Reports whether the forecast behind the ranking has
+            aged past the read TTL, or the preference files have moved since
+            it was scored. Injected on the same terms as the loaders.
 
     Returns:
         0 on success, including an empty database. 1 for a usage error.
@@ -771,6 +837,7 @@ def run(
         load_all_events=load_all_events,
         db_ready=db_ready,
         view=load_view_settings(),
+        check_freshness=check_freshness,
     )
 
 

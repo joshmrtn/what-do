@@ -11,9 +11,15 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from pathlib import Path
 
 from src.models.preference_revision import PreferenceLine, PreferenceRevision
-from src.scoring.preferences import PreferenceSet, UserPreference
+from src.scoring.preferences import (
+    PreferenceError,
+    PreferenceSet,
+    UserPreference,
+    parse_preferences,
+)
 
 #: Separates the fields of one line, and one line from the next. Control
 #: characters rather than punctuation, because a preference line may contain any
@@ -69,6 +75,49 @@ def content_hash(lines: list[PreferenceLine]) -> str:
         for line in lines
     )
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def hash_preference_files(likes_path: Path, dislikes_path: Path) -> str:
+    """Hash the preference files as they stand, embedding nothing.
+
+    The read path's half of the comparison. It parses but never embeds, so
+    asking whether preferences have moved costs a file read rather than a model
+    call — the question must be cheap enough to ask on every invocation.
+
+    An unreadable or absent file is treated as empty rather than raised on: a
+    first run has neither, and a listing must never be lost to a question it
+    only asked out of helpfulness.
+    """
+
+    def parsed(path: Path, preference_type: str) -> list[UserPreference]:
+        try:
+            return parse_preferences(path.read_text(), preference_type)
+        except (OSError, UnicodeDecodeError, PreferenceError):
+            return []
+
+    return content_hash_of(
+        PreferenceSet(
+            likes=parsed(likes_path, "like"),
+            dislikes=parsed(dislikes_path, "dislike"),
+        ),
+        likes_name=likes_path.name,
+        dislikes_name=dislikes_path.name,
+    )
+
+
+def content_hash_of(
+    preferences: PreferenceSet, *, likes_name: str, dislikes_name: str
+) -> str:
+    """The hash alone, for a caller that only wants to compare.
+
+    The read path asks "have the files moved since the batch scored them?" and
+    has no business inventing a capture time to find out — a revision it never
+    intends to record would be a lie about when this content was first seen.
+    """
+    return content_hash(
+        _lines_of(preferences.likes, likes_name)
+        + _lines_of(preferences.dislikes, dislikes_name)
+    )
 
 
 def build_revision(

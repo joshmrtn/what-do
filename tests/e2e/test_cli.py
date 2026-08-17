@@ -21,10 +21,15 @@ from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.config import ViewConfig
-from src.presentation.cli import ViewSettings, run
+from src.presentation.cli import ViewSettings, _default_freshness, run
+from src.scoring.preference_revision import build_revision
+from src.scoring.preferences import PreferenceSet, parse_preferences
 from src.scoring.similarity import Reason
 from src.storage.sqlite.connection import init_db
 from src.storage.events import save_events
+from src.storage.sqlite.preference_revisions import (
+    SqlitePreferenceRevisionRepository,
+)
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 
@@ -178,11 +183,23 @@ def _invoke_add_source(seeds: Path, *argv: str) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
+def _no_freshness(*args, **kwargs) -> None:
+    """Report nothing stale, and read nothing off this machine to decide.
+
+    Injected by default because the real probe reads `data/likes.txt` relative
+    to the working directory. Left to its default, every test in this file would
+    consult the developer's own preferences to answer a question it is not
+    asking — the environmental dependency `de50499` removed once already.
+    """
+    return None
+
+
 def _invoke(
     db_path: Path,
     *argv: str,
     now: datetime | None = None,
     view: ViewSettings | None = None,
+    check_freshness=_no_freshness,
 ) -> tuple[int, str, str]:
     """Run the CLI as a user would.
 
@@ -196,6 +213,7 @@ def _invoke(
         stdout=stdout,
         stderr=stderr,
         load_view_settings=lambda: view if view is not None else VIEW,
+        check_freshness=check_freshness,
     )
     return code, stdout.getvalue(), stderr.getvalue()
 
@@ -323,7 +341,10 @@ def test_a_database_that_does_not_exist_yet_is_not_a_crash(tmp_path, monkeypatch
     monkeypatch.setattr("src.presentation.cli.DEFAULT_DB_PATH", missing)
     stdout, stderr = io.StringIO(), io.StringIO()
 
-    code = run([], get_now=lambda: NOW, stdout=stdout, stderr=stderr)
+    code = run(
+        [], get_now=lambda: NOW, stdout=stdout, stderr=stderr,
+        check_freshness=_no_freshness,
+    )
 
     assert code == 0
     assert "batch" in stdout.getvalue().lower()
@@ -338,7 +359,10 @@ def test_a_zero_byte_database_file_is_treated_as_not_ready(tmp_path, monkeypatch
     monkeypatch.setattr("src.presentation.cli.DEFAULT_DB_PATH", empty)
     stdout, stderr = io.StringIO(), io.StringIO()
 
-    code = run([], get_now=lambda: NOW, stdout=stdout, stderr=stderr)
+    code = run(
+        [], get_now=lambda: NOW, stdout=stdout, stderr=stderr,
+        check_freshness=_no_freshness,
+    )
 
     assert code == 0
     assert "batch" in stdout.getvalue().lower()
@@ -974,3 +998,130 @@ class TestUpcomingFilters:
 
         ranks = [int(n) for n in re.findall(r"^  (\d+)\. ", out, re.M)]
         assert ranks == sorted(ranks)
+
+
+# ----------------------------------------------------------------------
+# Freshness — the real probe, against files this test owns
+# ----------------------------------------------------------------------
+
+
+def _write_preferences(tmp_path, likes: str, dislikes: str) -> tuple[Path, Path]:
+    likes_path = tmp_path / "likes.txt"
+    dislikes_path = tmp_path / "dislikes.txt"
+    likes_path.write_text(likes)
+    dislikes_path.write_text(dislikes)
+    return likes_path, dislikes_path
+
+
+def _record_current_preferences(db_path, likes_path, dislikes_path) -> None:
+    """Record what the files say now, as a batch scoring them would."""
+    SqlitePreferenceRevisionRepository(db_path).record(
+        build_revision(
+            PreferenceSet(
+                likes=parse_preferences(likes_path.read_text(), "like"),
+                dislikes=parse_preferences(dislikes_path.read_text(), "dislike"),
+            ),
+            likes_name=likes_path.name,
+            dislikes_name=dislikes_path.name,
+            captured_at=NOW,
+        )
+    )
+
+
+def test_the_listing_says_nothing_when_preferences_have_not_moved(db_path, tmp_path):
+    likes, dislikes = _write_preferences(tmp_path, "live music\n", "karaoke\n")
+    _record_current_preferences(db_path, likes, dislikes)
+
+    _, _, err = _invoke(
+        db_path,
+        check_freshness=lambda *a, **kw: _default_freshness(
+            *a, **{**kw, "likes_path": likes, "dislikes_path": dislikes}
+        ),
+    )
+
+    assert "preferences" not in err
+
+
+def test_editing_a_preference_file_is_reported_on_the_next_listing(db_path, tmp_path):
+    """The listing on screen answers a question you have stopped asking.
+
+    The order is the product, so a ranking scored against superseded
+    preferences passing as current is the worst thing this view can do.
+    """
+    likes, dislikes = _write_preferences(tmp_path, "live music\n", "karaoke\n")
+    _record_current_preferences(db_path, likes, dislikes)
+    likes.write_text("live music\nsea shanties\n")
+
+    _, out, err = _invoke(
+        db_path,
+        check_freshness=lambda *a, **kw: _default_freshness(
+            *a, **{**kw, "likes_path": likes, "dislikes_path": dislikes}
+        ),
+    )
+
+    assert "preferences have changed" in err
+    assert "Karaoke Night" in out, "the notice must not cost the listing"
+
+
+def test_a_database_that_recorded_no_revision_says_nothing(db_path, tmp_path):
+    """Every run stored before the writer existed is in this state.
+
+    "Unknown" must not render as "changed": that would put a warning on every
+    listing until the next batch, about a thing that may not have happened.
+    """
+    likes, dislikes = _write_preferences(tmp_path, "live music\n", "karaoke\n")
+
+    _, _, err = _invoke(
+        db_path,
+        check_freshness=lambda *a, **kw: _default_freshness(
+            *a, **{**kw, "likes_path": likes, "dislikes_path": dislikes}
+        ),
+    )
+
+    assert "preferences" not in err
+
+
+def test_an_aged_forecast_is_reported_with_the_listing(db_path, tmp_path):
+    """The events on screen are what the probe judges, not an empty list.
+
+    Written because mutating the call site to pass no events left every other
+    freshness test green: the preference half needs no events at all, so it
+    cannot see whether the ranked ones ever arrive.
+    """
+    likes, dislikes = _write_preferences(tmp_path, "live music\n", "karaoke\n")
+    _record_current_preferences(db_path, likes, dislikes)
+
+    issued = NOW - timedelta(hours=14)
+    stale = _event("w1", "Harbour Fireworks", _at(21))
+    stale.weather = {
+        "sampled_hour": 21,
+        "forecast": {"issued_at": issued.isoformat(), "hour": {}, "day_series": []},
+        "observed": None,
+    }
+    save_events([stale], db_path)
+    # Appended to the run rather than saved alone: both repositories *replace*
+    # the run date they are given, so writing one row would delete the other ten
+    # and the listing assertion below would pass for the wrong reason.
+    #
+    # Both runs are read *before* either is written, because `rankings` cascades
+    # from `event_scores` — saving the scores deletes the run's placements, so
+    # reading them afterwards returns the empty set the save just created.
+    scores_repo, rankings_repo = (
+        SqliteScoreRepository(db_path),
+        SqliteRankingRepository(db_path),
+    )
+    stored_scores = scores_repo.for_run(RUN_DATE)
+    stored_rankings = rankings_repo.for_run(RUN_DATE)
+    score, ranking = _recommendation("w1", 11, -0.40)
+    scores_repo.save([*stored_scores, score])
+    rankings_repo.save([*stored_rankings, ranking])
+
+    _, out, err = _invoke(
+        db_path,
+        check_freshness=lambda *a, **kw: _default_freshness(
+            *a, **{**kw, "likes_path": likes, "dislikes_path": dislikes}
+        ),
+    )
+
+    assert "14 hours old" in err
+    assert "Karaoke Night" in out, "the notice must not cost the listing"

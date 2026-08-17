@@ -58,6 +58,9 @@ class ViewStorage:
     events: EventRepository
     scores: ScoreRepository
     rankings: RankingRepository
+    #: Not a writer. The view reads the newest revision to notice that the
+    #: preference files have moved since the ranking was scored.
+    preference_revisions: PreferenceRevisionRepository
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,7 @@ def build_view_storage(db_path: Path | str, embedding_model: str) -> ViewStorage
         events=SqliteEventRepository(db_path, embedding_model),
         scores=SqliteScoreRepository(db_path),
         rankings=SqliteRankingRepository(db_path),
+        preference_revisions=SqlitePreferenceRevisionRepository(db_path),
     )
 
 

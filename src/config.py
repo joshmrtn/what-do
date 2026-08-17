@@ -86,6 +86,17 @@ class ViewConfig:
     #: disambiguate between*. Sharing a key because two numbers coincide is how
     #: one predicate ends up quietly answering two questions.
     match_limit: int = 10
+    #: How old the forecast behind a ranking may be before the read path calls
+    #: it stale. **Not** `weather.cache_ttl_hours`, which bounds how long the
+    #: *batch* may reuse a fetched forecast: two numbers, two questions. Sixty
+    #: minutes because Open-Meteo's hourly series does not move within the hour,
+    #: so a shorter bound spends requests and buys nothing.
+    #:
+    #: A working default rather than an empty one, so that a `config.yaml`
+    #: predating this key gets the behaviour rather than silently switching it
+    #: off — which is exactly how every weather adjustment was 0.0 for twelve
+    #: days.
+    refresh_ttl_minutes: int = 60
 
 
 @dataclass
@@ -401,6 +412,12 @@ class ModelsConfig:
 #: rollover empties the evening still in progress, and someone asking at 00:30
 #: means the night they are standing in.
 DEFAULT_DAY_STARTS_AT = time(4, 0)
+
+#: Where the preference files live. Here rather than in either root because both
+#: read them now: the batch to score against, the view to notice they have moved
+#: since the batch scored against them.
+DEFAULT_LIKES_PATH = Path("data/likes.txt")
+DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
 
 
 @dataclass
