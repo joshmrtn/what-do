@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 import json
 import sqlite3
 import zoneinfo
@@ -12,12 +12,16 @@ import pytest
 from src.storage.sqlite.weather_cache import SqliteWeatherCache
 from src.config import (
     AppConfig,
+    ConfigError,
     LocationConfig,
+    NetworkConfig,
+    NetworkPolicy,
     ScrapingConfig,
     SyntheticActivityRule,
     SyntheticConditions,
     VenueDiscoveryConfig,
 )
+from src.enrichment.weather import OPEN_METEO_HOST
 from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.movies import MovieMetadataProvider
@@ -61,13 +65,38 @@ def db_path(tmp_path: Path) -> Path:
     return p
 
 
+def _network(cache_ttl: timedelta | None = timedelta(hours=12)) -> NetworkConfig:
+    """A network config declaring the one host enrichment talks to."""
+    return NetworkConfig(
+        policies={
+            "open_meteo": NetworkPolicy(
+                min_interval_seconds=0.5,
+                timeout_seconds=30.0,
+                max_attempts=3,
+                backoff_base_seconds=1.0,
+                backoff_max_seconds=60.0,
+                cache_ttl=cache_ttl,
+            )
+        },
+        hosts={OPEN_METEO_HOST: "open_meteo"},
+    )
+
+
 @pytest.fixture
 def cfg() -> AppConfig:
     return AppConfig(
         location=LocationConfig(SALEM_LAT, SALEM_LNG, "01970", 10.0, TZ),
         scraping=ScrapingConfig(),
         venue_discovery=VenueDiscoveryConfig(),
+        network=_network(),
     )
+
+
+def _ttl(cfg: AppConfig) -> timedelta:
+    """The forecast lifetime in force, read where the service reads it."""
+    ttl = cfg.network.for_host(OPEN_METEO_HOST).cache_ttl
+    assert ttl is not None
+    return ttl
 
 
 def _weather_provider(return_value=CLEAR_DAY, side_effect=None) -> WeatherProvider:
@@ -288,7 +317,7 @@ def test_cached_weather_within_ttl_is_reused(db_path, cfg):
     wp = _weather_provider(CLEAR_DAY)
     _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
 
-    later = NOW + timedelta(hours=cfg.weather.cache_ttl_hours) - timedelta(minutes=1)
+    later = NOW + _ttl(cfg) - timedelta(minutes=1)
     _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
 
     assert wp.fetch.call_count == 1
@@ -299,7 +328,7 @@ def test_cached_weather_beyond_ttl_is_refetched(db_path, cfg):
     wp = _weather_provider(CLEAR_DAY)
     _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
 
-    later = NOW + timedelta(hours=cfg.weather.cache_ttl_hours, minutes=1)
+    later = NOW + _ttl(cfg) + timedelta(minutes=1)
     _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
 
     assert wp.fetch.call_count == 2
@@ -309,11 +338,11 @@ def test_refetched_weather_replaces_the_stale_row(db_path, cfg):
     wp = _weather_provider(CLEAR_DAY)
     _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
 
-    # Past the 12h TTL, but *not* past the event. Advancing five days used to
+    # Past the TTL, but *not* past the event. Advancing five days used to
     # work here and now correctly fetches nothing: a forecast for a night that
     # has already happened is not a thing to request, and enrichment no longer
     # asks. See `test_forecast_horizon.py`.
-    later = NOW + timedelta(hours=13)
+    later = NOW + _ttl(cfg) + timedelta(hours=1)
     _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
 
     rows = _cache_rows(db_path)
@@ -339,7 +368,7 @@ def test_stale_cache_serves_the_new_forecast_not_the_old_one(db_path, cfg):
 
     wp.fetch.return_value = fresh_day
     # Past the TTL and still before the event, for the reason given above.
-    later = NOW + timedelta(hours=13)
+    later = NOW + _ttl(cfg) + timedelta(hours=1)
     event = _make_service(db_path, cfg, weather=wp, now=later).enrich(
         [_make_event()], RUN_DATE
     )[0]
@@ -347,15 +376,54 @@ def test_stale_cache_serves_the_new_forecast_not_the_old_one(db_path, cfg):
     assert event.weather["forecast"]["hour"]["condition"] == "thunderstorm"
 
 
-def test_ttl_is_read_from_config(db_path, cfg):
-    cfg.weather.cache_ttl_hours = 48
+def test_ttl_is_read_from_the_host_policy(db_path, cfg):
+    """The lifetime has one home: the policy assigned to Open-Meteo's host.
+
+    The event is days out deliberately. Anchored to tonight, the clock advances
+    past the event itself and enrichment stops fetching for a night that has
+    already happened — so the count stays at one whatever the TTL says, and the
+    test cannot tell a 48-hour lifetime from a 12-hour one.
+    """
+    cfg.network = _network(cache_ttl=timedelta(hours=48))
     wp = _weather_provider(CLEAR_DAY)
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+    event_day = date(2025, 6, 26)
+    future = _make_event(start_time=datetime(2025, 6, 26, 20, 0, tzinfo=LOCAL_TZ))
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([future], RUN_DATE)
 
     later = NOW + timedelta(hours=24)
-    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
+    _make_service(db_path, cfg, weather=wp, now=later).enrich([future], RUN_DATE)
 
-    assert wp.fetch.call_count == 1
+    # Counted for the event's own day. Enrichment also fetches the run day for
+    # synthetic activities, and that call is not what this test is about.
+    assert [c for c in wp.fetch.call_args_list if c.args[0] == event_day] == [
+        call(event_day, SALEM_LAT, SALEM_LNG)
+    ]
+
+
+def test_a_declared_never_serves_nothing_from_cache(db_path, cfg):
+    """`cache_ttl_seconds: never` means the stored row is not servable at all.
+
+    Not "a zero-length lifetime" — reading a row and rejecting it on age is a
+    different thing from a caller that has declared it caches nothing.
+    """
+    cfg.network = _network(cache_ttl=None)
+    wp = _weather_provider(CLEAR_DAY)
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+    after_first = wp.fetch.call_count
+
+    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
+
+    # The clock has not moved, so under any real lifetime the second run is
+    # served entirely from the stored row — which is what
+    # `test_cached_weather_within_ttl_is_reused` pins.
+    assert wp.fetch.call_count > after_first
+
+
+def test_an_unassigned_weather_host_is_refused_by_name(db_path, cfg):
+    """Absence is loud. A missing assignment must not read as "no caching"."""
+    cfg.network = NetworkConfig()
+    with pytest.raises(ConfigError, match=OPEN_METEO_HOST):
+        _make_service(db_path, cfg, now=NOW).enrich([_make_event()], RUN_DATE)
 
 
 # ---------------------------------------------------------------------------

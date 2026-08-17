@@ -120,6 +120,190 @@ deduplication:
   # here, so a row stays reweightable to true prevalence after this is tuned.
   decision_sample_denominator: 10
 
+# How this system behaves towards servers it does not run. Every outbound call
+# owes a cache with a considered TTL, a bound on what is even asked, and a
+# throttle. This section is the throttle, the patience around it, and the TTL.
+#
+# **There is no defaults block, deliberately.** A default is a policy nobody
+# decided, applied silently to a host nobody considered. Policies are shared —
+# ten scraped venue pages want the same restraint — but each host is assigned to
+# one BY NAME, and a host with no assignment is refused rather than guessed at.
+#
+# The bound on what is asked is not here: only the caller knows its provider's
+# horizon. See weather.forecast_horizon_days.
+#
+# **Every cache_ttl_seconds states its reasoning next to the number.** A TTL is
+# a judgement about how fast that particular source's answers go out of date,
+# and the judgement is the part worth keeping — the number alone reads as
+# arbitrary within a week, and nobody can then tell a considered value from a
+# copied one. None of them is enforced anywhere: a lifetime that is too long is
+# not an error, it just scores on staler data than the provider would have
+# given.
+network:
+  policies:
+    # Somebody's website, scraped. None publishes an allowance, so all are owed
+    # the same restraint.
+    web_listings:
+      min_interval_seconds: 2.0
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 2.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 21600      # 6h — a listing page changes slowly
+
+    # A published calendar file: one cheap conditional request against a server
+    # that expects to be polled.
+    ics_feeds:
+      min_interval_seconds: 1.0
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 2.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 21600      # 6h — a calendar is edited through the day
+                                    # and republished whole, so an evening
+                                    # correction still reaches tonight's batch.
+                                    # The per-feed min_fetch_interval_hours is
+                                    # the more specific floor and wins.
+
+    # A ticketing API reached as a page.
+    veezi:
+      min_interval_seconds: 1.0
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 2.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 21600      # 6h — showtimes move within the day as
+                                    # screenings are added or sell out, so this
+                                    # is shorter than a listing page deserves
+                                    # and long enough that a hand re-run in one
+                                    # evening does not refetch.
+
+    # Hosts that arrive from fetched data rather than from `sources:` — an image
+    # URL points at whatever CDN a venue happens to use, so they cannot be
+    # listed. Named at the call site built to use it, never a catch-all that an
+    # unassigned host falls into.
+    data_derived:
+      min_interval_seconds: 1.0
+      timeout_seconds: 15.0
+      max_attempts: 2
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 30.0
+      cache_ttl_seconds: 604800     # 7d — an image at a URL does not change
+
+    tmdb:
+      min_interval_seconds: 0.05    # publishes a generous allowance
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 604800     # 7d; negative results cached too
+
+    # One provider, two hosts. They share numbers but NOT horizons — those stay
+    # per caller, and they genuinely differ (16 days vs 5).
+    open_meteo:
+      min_interval_seconds: 0.5
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 43200      # 12h. Treat 24h as the ceiling worth
+                                    # having: above it a nightly batch can
+                                    # reuse the forecast issued the day an
+                                    # event was DISCOVERED to score the night
+                                    # it happens. Nothing enforces this and
+                                    # exceeding it is not an error — it just
+                                    # means scoring on staler data than the
+                                    # provider was willing to give.
+
+    amc:
+      min_interval_seconds: 0.5
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 21600      # 6h — same question as veezi, so the same
+                                    # answer: a schedule that changes during
+                                    # the day, read once a night.
+
+    # Metered and paid: the one place a wasted call costs money.
+    apify:
+      min_interval_seconds: 0.5
+      timeout_seconds: 60.0
+      max_attempts: 3
+      backoff_base_seconds: 2.0
+      backoff_max_seconds: 120.0
+      cache_ttl_seconds: 21600      # 6h. Longer would save money, and that is
+                                    # the wrong trade: a venue posting tonight's
+                                    # gig this afternoon is exactly what this
+                                    # source is for. 6h still means the nightly
+                                    # batch pays once and a hand re-run pays
+                                    # nothing.
+
+    # Unofficial Instagram mirrors: fragile, and rate-limited by whoever runs
+    # them today. Few attempts and a long backoff — hammering these is what gets
+    # the failover chain blocked.
+    social_mirrors:
+      min_interval_seconds: 2.0
+      timeout_seconds: 30.0
+      max_attempts: 2
+      backoff_base_seconds: 5.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 21600      # 6h, matching apify deliberately: these are
+                                    # the same question asked of a fallback, and
+                                    # a failover chain that disagreed with
+                                    # itself about freshness would return a
+                                    # different answer depending on which link
+                                    # happened to be up.
+
+    # Publishes a HARD limit of 1 request/second and blocks clients that break
+    # it. 1.5s deliberately sits outside it — being a good neighbour costs
+    # nothing here, since geocoding runs only over seed venues.
+    nominatim:
+      min_interval_seconds: 1.5
+      timeout_seconds: 30.0
+      max_attempts: 3
+      backoff_base_seconds: 2.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: 2592000    # 30d — an address's coordinates do not move
+
+    # A hosted model is a third party like any other. Ollama is exempt because
+    # it is LOCALHOST — never because it is "the model client", which is the
+    # phrasing that survives a provider swap and silently exempts a hosted API.
+    gemini:
+      min_interval_seconds: 0.5
+      timeout_seconds: 120.0
+      max_attempts: 4               # Gemini throws many transient errors
+      backoff_base_seconds: 2.0
+      backoff_max_seconds: 60.0
+      cache_ttl_seconds: never      # a prompt is not a cacheable resource, and
+                                    # extraction already skips on
+                                    # extraction_input_hash one layer up
+
+  # Every host we call, assigned by name. Adding a source means adding one line.
+  hosts:
+    7gables.org: web_listings
+    creativecollectivema.com: web_listings
+    do617.com: web_listings
+    firehouse.org: web_listings
+    northshorenightout.com: web_listings
+    thecabot.org: web_listings
+    www.moon-ns.org: web_listings
+    www.nshoremag.com: web_listings
+    www.pem.org: web_listings
+    www.salem.org: web_listings
+    calendar.google.com: ics_feeds
+    salempl.assabetinteractive.com: ics_feeds
+    ticketing.useast.veezi.com: veezi
+    api.themoviedb.org: tmdb
+    api.open-meteo.com: open_meteo
+    air-quality-api.open-meteo.com: open_meteo
+    api.amctheatres.com: amc
+    api.apify.com: apify
+    dumpor.com: social_mirrors
+    www.picuki.com: social_mirrors
+    nominatim.openstreetmap.org: nominatim
+    generativelanguage.googleapis.com: gemini
+
 # Public ICS calendars to ingest. Many venues and local aggregators publish one,
 # and it is a far better source than scraping: structured, forward-looking, and
 # free. Adding a calendar is a config entry, not a code change.
@@ -327,10 +511,9 @@ weather:
   # daily extreme.
   default_hour: 20
 
-  # How long a cached forecast may be reused before it is refetched. Keep this
-  # under 24 hours: an event discovered a week out would otherwise be scored on
-  # the forecast issued the day it was found, including on the night it happens.
-  cache_ttl_hours: 12
+  # How long a cached forecast may be reused lives with every other network
+  # lifetime, under `network.policies.open_meteo.cache_ttl_seconds`. One home:
+  # a second copy here would drift from the one the code reads.
 
   # How far ahead the provider can actually answer. A POLITENESS BOUND, not a
   # tuning knob: Open-Meteo's free forecast reaches about sixteen days while
@@ -478,8 +661,9 @@ view:
   # the call site, and it is the number most likely to want tuning.
   long_span_hours: 24
   # How old the forecast behind a ranking may be before `what-do` calls it
-  # stale. Deliberately NOT `weather.cache_ttl_hours`, which bounds how long the
-  # *batch* may reuse a fetched forecast: two numbers, two questions. Sixty
+  # stale. Deliberately NOT the `open_meteo` policy's cache_ttl_seconds, which
+  # bounds how long a fetched forecast may be reused: two numbers, two
+  # questions. Sixty
   # because Open-Meteo's hourly series does not move within the hour, so a
   # shorter bound spends requests and buys nothing.
   refresh_ttl_minutes: 60

@@ -1,10 +1,14 @@
 """Unit tests for the config completeness check."""
 
+from datetime import timedelta
+
 from src.config import (
     AppConfig,
     ComfortCurve,
     FeedConfig,
+    NetworkPolicy,
     LocationConfig,
+    NetworkConfig,
     ScoringConfig,
     ScrapingConfig,
     SourcesConfig,
@@ -50,6 +54,19 @@ def _config(**overrides) -> AppConfig:
             condition_penalty={"rain": -0.4},
         ),
         scoring=ScoringConfig(domain_map={"cinema_veezi": "movies"}),
+        network=NetworkConfig(
+            policies={
+                "tmdb": NetworkPolicy(
+                    min_interval_seconds=0.05,
+                    timeout_seconds=30.0,
+                    max_attempts=3,
+                    backoff_base_seconds=1.0,
+                    backoff_max_seconds=60.0,
+                    cache_ttl=timedelta(days=7),
+                )
+            },
+            hosts={"api.themoviedb.org": "tmdb"},
+        ),
         sources=SourcesConfig(
             ics_calendars=[feed], html_calendars=[feed], veezi_cinemas=[feed],
             cabot_listings=[feed], tribe_calendars=[feed], do617_venues=[feed],

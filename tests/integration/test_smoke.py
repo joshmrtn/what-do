@@ -23,6 +23,8 @@ from src.storage.sqlite.weather_cache import SqliteWeatherCache
 from src.storage.sqlite.entities import SqliteEntityRepository
 from src.config import (
     AppConfig,
+    NetworkConfig,
+    NetworkPolicy,
     DeduplicationConfig,
     LocationConfig,
     ScoringConfig,
@@ -32,6 +34,7 @@ from src.config import (
     VenueDiscoveryConfig,
     load_config,
 )
+from src.enrichment.weather import OPEN_METEO_HOST
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.comfort import compute_comfort
 from src.enrichment.service import EnrichmentService
@@ -100,6 +103,28 @@ def sample_config(tmp_path):
     )
     return config_file
 
+
+
+
+def _network() -> NetworkConfig:
+    """Declares the one host enrichment reads a cache lifetime for.
+
+    There is deliberately no default policy, so a config that never mentions
+    Open-Meteo is refused rather than guessed at.
+    """
+    return NetworkConfig(
+        policies={
+            "open_meteo": NetworkPolicy(
+                min_interval_seconds=0.5,
+                timeout_seconds=30.0,
+                max_attempts=3,
+                backoff_base_seconds=1.0,
+                backoff_max_seconds=60.0,
+                cache_ttl=timedelta(hours=12),
+            )
+        },
+        hosts={OPEN_METEO_HOST: "open_meteo"},
+    )
 
 def test_config_smoke(sample_config):
     """Config loads and exposes typed location data."""
@@ -395,6 +420,7 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
     )
 
     cfg = AppConfig(
+        network=_network(),
         location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
         scraping=ScrapingConfig(),
         venue_discovery=VenueDiscoveryConfig(),
@@ -616,6 +642,7 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
     }
 
     cfg = AppConfig(
+        network=_network(),
         location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
         scraping=ScrapingConfig(),
         venue_discovery=VenueDiscoveryConfig(),

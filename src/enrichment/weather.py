@@ -116,10 +116,17 @@ def sample_hour(
     return None
 
 
+#: The host Open-Meteo's forecast API is reached at, named here so a caller can
+#: look up its politeness policy — the cache lifetime among it — without owning
+#: a second copy of the address. Air quality is a *separate* host with its own
+#: horizon; see `air_quality.py`.
+OPEN_METEO_HOST = "api.open-meteo.com"
+
+
 class OpenMeteoProvider(WeatherProvider):
     """Weather provider backed by the Open-Meteo free API (no key required)."""
 
-    _BASE_URL = "https://api.open-meteo.com/v1/forecast"
+    _BASE_URL = f"https://{OPEN_METEO_HOST}/v1/forecast"
 
     def __init__(self, session: requests.Session | None = None) -> None:
         self._session = session or requests.Session()

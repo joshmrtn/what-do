@@ -17,7 +17,7 @@ from src.models.event import Event
 from src.normalization.deduplicator import merge_cluster
 
 #: Carried from a stored event onto its fresh counterpart. `weather` is
-#: deliberately absent: `weather.cache_ttl_hours` exists so a nightly batch
+#: deliberately absent: the `open_meteo` policy's `cache_ttl` is set so a batch
 #: rescores against a forecast issued that night, and a carried-forward forecast
 #: would score an event found a week out on the day it was found, forever.
 #: `setting` travels with the extraction output that produced it — without it,

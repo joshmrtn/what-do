@@ -19,12 +19,15 @@ import pytest
 
 from src.config import (
     AppConfig,
+    NetworkConfig,
+    NetworkPolicy,
     LocationConfig,
     ScoringConfig,
     ScrapingConfig,
     VenueDiscoveryConfig,
     WeatherConfig,
 )
+from src.enrichment.weather import OPEN_METEO_HOST
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.service import EnrichmentService
 from src.models.event import Event
@@ -51,8 +54,32 @@ class _CountingWeather:
         }
 
 
+
+
+def _network() -> NetworkConfig:
+    """Declares the one host enrichment reads a cache lifetime for.
+
+    There is deliberately no default policy, so a config that never mentions
+    Open-Meteo is refused rather than guessed at — which is the behaviour, and
+    means every config that enriches weather must say so.
+    """
+    return NetworkConfig(
+        policies={
+            "open_meteo": NetworkPolicy(
+                min_interval_seconds=0.5,
+                timeout_seconds=30.0,
+                max_attempts=3,
+                backoff_base_seconds=1.0,
+                backoff_max_seconds=60.0,
+                cache_ttl=timedelta(hours=12),
+            )
+        },
+        hosts={OPEN_METEO_HOST: "open_meteo"},
+    )
+
 def _config(**weather: Any) -> AppConfig:
     return AppConfig(
+        network=_network(),
         location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
         scraping=ScrapingConfig(),
         venue_discovery=VenueDiscoveryConfig(blocklist_name_match_threshold=0.80),

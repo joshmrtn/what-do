@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Callable
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import time, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -87,8 +87,8 @@ class ViewConfig:
     #: one predicate ends up quietly answering two questions.
     match_limit: int = 10
     #: How old the forecast behind a ranking may be before the read path calls
-    #: it stale. **Not** `weather.cache_ttl_hours`, which bounds how long the
-    #: *batch* may reuse a fetched forecast: two numbers, two questions. Sixty
+    #: it stale. **Not** the `open_meteo` policy's `cache_ttl`, which bounds how
+    #: long a fetched forecast may be reused: two numbers, two questions. Sixty
     #: minutes because Open-Meteo's hourly series does not move within the hour,
     #: so a shorter bound spends requests and buys nothing.
     #:
@@ -256,10 +256,6 @@ class WeatherConfig:
     max_positive_adjustment: float = 0.15
     max_negative_adjustment: float = 0.25
     air_quality_enabled: bool = True
-    #: How long a cached forecast may be served. Under 24h so a nightly batch
-    #: always rescores against a forecast issued that night, never one issued
-    #: days earlier when the event was first discovered.
-    cache_ttl_hours: float = 12.0
     #: How far ahead the provider can actually answer. **A politeness bound, not
     #: a tuning knob.** Open-Meteo's free forecast reaches about sixteen days;
     #: the ranking horizon is ninety. Asking for day ninety returns nothing, and
@@ -435,12 +431,95 @@ DEFAULT_DISLIKES_PATH = Path("data/dislikes.txt")
 DEFAULT_BLOCKLIST_PATH = Path("data/blocklist.json")
 
 
+@dataclass(frozen=True)
+class NetworkPolicy:
+    """How one category of server is treated: spacing, patience, and a lifetime.
+
+    **No field has a default.** Every provider's reasonable rate and reasonable
+    cache lifetime are different, so any number chosen centrally is impolite to
+    one and useless against another.
+
+    Policies are *shared* — ten scraped venue pages want the same restraint, and
+    saying so once is a decision rather than a default. What makes it a decision
+    is that each host is assigned to a policy **by name**: a default is applied
+    to a host nobody considered, a category to a host somebody placed in it.
+    """
+
+    #: Floor between two requests to one host. Generalises
+    #: `min_fetch_interval_hours`, which is a per-feed floor over the same idea.
+    min_interval_seconds: float
+    #: Seconds before an attempt is abandoned. Several callers pass no timeout
+    #: at all today, and `requests` with none blocks for ever.
+    timeout_seconds: float
+    #: Total attempts, not retries after the first. One means "do not retry".
+    max_attempts: int
+    backoff_base_seconds: float
+    #: Caps exponential growth so a dead host fails the stage rather than
+    #: stalling the batch for hours.
+    backoff_max_seconds: float
+    #: How long a cached response stays servable. `None` is a declared `never`,
+    #: for a caller with nothing cacheable to store — never an absent key, and
+    #: never a zero, because a sentinel drawn from inside the value domain is
+    #: the `--upcoming 0` footgun.
+    cache_ttl: timedelta | None
+
+
+@dataclass(frozen=True)
+class NetworkConfig:
+    """Named politeness policies, and the hosts assigned to each.
+
+    A host absent from `hosts` is not a host that gets a guess — it is a host we
+    have no policy for, which is invalid rather than permissive.
+    """
+
+    policies: dict[str, NetworkPolicy] = field(default_factory=dict)
+    #: Host -> policy name. Every assignment is checked against `policies` at
+    #: load, so a typo fails then rather than whenever that host is next fetched.
+    hosts: dict[str, str] = field(default_factory=dict)
+
+    def for_host(self, host: str) -> NetworkPolicy:
+        """The policy assigned to a host.
+
+        Raises:
+            ConfigError: If the host has no assignment.
+        """
+        name = self.hosts.get(host)
+        if name is None:
+            raise ConfigError(
+                f"No politeness policy assigned to host {host!r}. Add it under "
+                "network.hosts in config.yaml, naming one of the declared "
+                "policies — there is deliberately no default to fall back on."
+            )
+        return self.for_category(name)
+
+    def for_category(self, name: str) -> NetworkPolicy:
+        """A policy by name, for callers whose host is not knowable in advance.
+
+        An image URL points at whatever CDN a venue happens to use, so those
+        hosts cannot be listed. Naming the policy at the call site keeps it a
+        decision somebody made, rather than a catch-all any unassigned host
+        falls into.
+
+        Raises:
+            ConfigError: If no policy of that name is declared.
+        """
+        policy = self.policies.get(name)
+        if policy is None:
+            declared = ", ".join(sorted(self.policies)) or "none"
+            raise ConfigError(
+                f"No network policy named {name!r} is declared. "
+                f"Declared policies: {declared}."
+            )
+        return policy
+
+
 @dataclass
 class AppConfig:
     location: LocationConfig
     scraping: ScrapingConfig
     venue_discovery: VenueDiscoveryConfig
     deduplication: DeduplicationConfig = field(default_factory=DeduplicationConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
@@ -538,12 +617,6 @@ def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
 
     defaults = WeatherConfig()
 
-    cache_ttl_hours = float(raw.get("cache_ttl_hours", defaults.cache_ttl_hours))
-    if cache_ttl_hours <= 0:
-        raise ConfigError(
-            f"Invalid cache_ttl_hours {cache_ttl_hours}: must be positive"
-        )
-
     return WeatherConfig(
         provider=raw.get("provider", defaults.provider),
         default_hour=default_hour,
@@ -556,12 +629,144 @@ def _load_weather(raw: dict[str, Any]) -> WeatherConfig:
         air_quality_enabled=bool(
             (raw.get("air_quality") or {}).get("enabled", defaults.air_quality_enabled)
         ),
-        cache_ttl_hours=cache_ttl_hours,
         comfort=comfort,
         condition_penalty={
             str(k): float(v) for k, v in (raw.get("condition_penalty") or {}).items()
         },
     )
+
+
+#: Every numeric key a policy must state, and how to read it. Nothing is
+#: optional: a partial policy is the same failure as an absent one, one key in.
+_POLICY_KEYS: dict[str, Callable[[Any], Any]] = {
+    "min_interval_seconds": float,
+    "timeout_seconds": float,
+    "max_attempts": int,
+    "backoff_base_seconds": float,
+    "backoff_max_seconds": float,
+}
+
+#: The one value `cache_ttl_seconds` accepts besides a positive number. A word
+#: rather than `0`, because a sentinel drawn from inside the value domain is a
+#: collision waiting for someone to type it — `--upcoming 0` and `--limit -5`
+#: both shipped that way.
+_NEVER = "never"
+
+
+def _load_cache_ttl(raw: dict[str, Any], name: str) -> timedelta | None:
+    """Read a policy's cache lifetime: a positive number of seconds, or `never`.
+
+    Returns:
+        The lifetime, or `None` for a declared `never`.
+
+    Raises:
+        ConfigError: If absent, unreadable, or not positive.
+    """
+    key = "cache_ttl_seconds"
+    if key not in raw or raw[key] is None:
+        raise ConfigError(
+            f"Policy {name!r} declares no {key}. A cache lifetime is a decision "
+            f"every time — give a number of seconds, or {_NEVER!r} for a caller "
+            "with nothing cacheable to store."
+        )
+
+    value = raw[key]
+    if isinstance(value, str):
+        if value.strip().lower() == _NEVER:
+            return None
+        raise ConfigError(
+            f"Invalid {key} {value!r} for policy {name!r}: expected a number of "
+            f"seconds or {_NEVER!r}"
+        )
+
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(
+            f"Invalid {key} {value!r} for policy {name!r} ({error})"
+        ) from error
+
+    if seconds <= 0:
+        raise ConfigError(
+            f"Invalid {key} {value!r} for policy {name!r}: must be positive. "
+            f"To declare that nothing is cached, say {_NEVER!r} — zero would be "
+            "a sentinel inside the value domain, which is how two flags already "
+            "came to mean something nobody typed."
+        )
+
+    return timedelta(seconds=seconds)
+
+
+def _load_policy(raw: dict[str, Any], name: str) -> NetworkPolicy:
+    """Read one complete named policy.
+
+    Args:
+        raw: The policy mapping as written.
+        name: Which policy this is, named in every error — with ten declared,
+            "a key is missing" is not actionable.
+
+    Raises:
+        ConfigError: If a key is absent, unreadable, or out of range.
+    """
+    values: dict[str, Any] = {}
+    for key, read in _POLICY_KEYS.items():
+        if key not in raw or raw[key] is None:
+            raise ConfigError(
+                f"Policy {name!r} declares no {key}. Every policy is complete or "
+                "it is not a policy; there is no default to inherit."
+            )
+        try:
+            values[key] = read(raw[key])
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                f"Invalid {key} for policy {name!r}: {raw[key]!r} ({error})"
+            ) from error
+
+    policy = NetworkPolicy(**values, cache_ttl=_load_cache_ttl(raw, name))
+
+    for key in ("min_interval_seconds", "backoff_base_seconds", "backoff_max_seconds"):
+        if getattr(policy, key) < 0:
+            raise ConfigError(f"Invalid {key} for policy {name!r}: must be non-negative")
+
+    if policy.timeout_seconds <= 0:
+        raise ConfigError(
+            f"Invalid timeout_seconds {policy.timeout_seconds} for policy {name!r}: "
+            "must be positive — requests reads zero as no timeout at all"
+        )
+
+    if policy.max_attempts < 1:
+        raise ConfigError(
+            f"Invalid max_attempts {policy.max_attempts} for policy {name!r}: "
+            "must be at least one, or the call is never made"
+        )
+
+    if policy.backoff_max_seconds < policy.backoff_base_seconds:
+        raise ConfigError(
+            f"Invalid backoff_max_seconds {policy.backoff_max_seconds} for policy "
+            f"{name!r}: must not be below backoff_base_seconds "
+            f"{policy.backoff_base_seconds}"
+        )
+
+    return policy
+
+
+def _load_network(raw: dict[str, Any]) -> NetworkConfig:
+    """Build the named policies and check every host assignment against them."""
+    policies = {
+        str(name): _load_policy(entry or {}, str(name))
+        for name, entry in (raw.get("policies") or {}).items()
+    }
+    hosts = {str(host): str(name) for host, name in (raw.get("hosts") or {}).items()}
+
+    for host, name in hosts.items():
+        if name not in policies:
+            declared = ", ".join(sorted(policies)) or "none"
+            raise ConfigError(
+                f"Host {host!r} is assigned to network policy {name!r}, which is "
+                f"not declared. Declared policies: {declared}."
+            )
+
+    return NetworkConfig(policies=policies, hosts=hosts)
 
 
 def _optional_text(entry: dict[str, Any], key: str, kind: str, name: str) -> str | None:
@@ -892,6 +1097,8 @@ def load_config(
         semantic_threshold=float(dedup_data.get("semantic_threshold", 0.92)),
     )
 
+    network = _load_network(data.get("network", {}))
+
     weather = _load_weather(data.get("weather", {}))
 
     scoring_data = data.get("scoring", {})
@@ -967,6 +1174,7 @@ def load_config(
         scraping=scraping,
         venue_discovery=venue_discovery,
         deduplication=deduplication,
+        network=network,
         weather=weather,
         scoring=scoring,
         sources=_load_sources(data.get("sources") or {}),

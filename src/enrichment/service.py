@@ -10,7 +10,7 @@ from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator, AstronomicalData
 from src.enrichment.movies import MovieMetadataProvider, enrich_movie_event
 from src.enrichment.synthetic import SyntheticActivityGenerator
-from src.enrichment.weather import WeatherProvider, sample_hour
+from src.enrichment.weather import OPEN_METEO_HOST, WeatherProvider, sample_hour
 from src.models.event import Event
 from src.storage.protocols import WeatherCache
 from src.utils.logging import StructuredLogger, get_logger
@@ -262,8 +262,15 @@ class EnrichmentService:
         stale because someone forgot to look is the failure that shape removes:
         an event found a week out would otherwise score on the forecast issued
         the day it was discovered, forever.
+
+        The lifetime comes from the politeness policy assigned to Open-Meteo's
+        host, which is its one home. A declared `never` is not a zero-length
+        lifetime — it says this caller stores nothing, so there is no row worth
+        reading and the cache is skipped rather than consulted and rejected.
         """
-        ttl = timedelta(hours=self._config.weather.cache_ttl_hours)
+        ttl = self._config.network.for_host(OPEN_METEO_HOST).cache_ttl
+        if ttl is None:
+            return None
         return self._weather_cache.get(
             day=event_date,
             latitude=lat,

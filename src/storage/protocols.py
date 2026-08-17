@@ -443,8 +443,8 @@ class WeatherCache(Protocol):
 
     `get` takes the oldest stamp still worth serving rather than handing back
     whatever is stored, so a caller cannot serve a stale forecast by forgetting
-    to check its age — see `weather.cache_ttl_hours`, which must stay under 24
-    hours so a nightly batch refetches.
+    to check its age — the lifetime is the `open_meteo` policy's `cache_ttl`,
+    kept under 24 hours so a nightly batch refetches.
     """
 
     def get(

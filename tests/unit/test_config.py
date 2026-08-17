@@ -1,5 +1,5 @@
 import os
-from datetime import time
+from datetime import time, timedelta
 
 import pytest
 import yaml
@@ -561,19 +561,14 @@ def test_default_hour_outside_the_day_rejected(tmp_path, bad_hour):
         _weather_config(tmp_path, default_hour=bad_hour)
 
 
-def test_cache_ttl_hours_loads(tmp_path):
-    assert _weather_config(tmp_path, cache_ttl_hours=6).cache_ttl_hours == 6.0
+def test_a_weather_lifetime_is_not_a_weather_key(tmp_path):
+    """The forecast lifetime has one home, and it is the host's policy.
 
-
-def test_cache_ttl_hours_defaults_below_a_day(tmp_path):
-    """A nightly batch must refetch, or it scores on yesterday's forecast."""
-    assert 0 < _load(tmp_path, {}).weather.cache_ttl_hours < 24
-
-
-@pytest.mark.parametrize("bad_ttl", [0, -1])
-def test_non_positive_cache_ttl_rejected(tmp_path, bad_ttl):
-    with pytest.raises(ConfigError, match="cache_ttl_hours"):
-        _weather_config(tmp_path, cache_ttl_hours=bad_ttl)
+    A second copy under `weather:` would drift from the one the code reads, and
+    a reader looking for a lifetime must not find two.
+    """
+    weather = _weather_config(tmp_path, cache_ttl_hours=6)
+    assert not hasattr(weather, "cache_ttl_hours")
 
 
 def test_synthetic_rule_setting_loads(tmp_path):
@@ -1343,3 +1338,220 @@ class TestViewConfig:
 
         with pytest.raises(ConfigError, match="long_span_hours"):
             load_config(config_path=_write_config(tmp_path, data))
+
+
+class TestNetworkConfig:
+    """Named policies, and hosts assigned to them by name.
+
+    A **default** is applied to a host nobody considered; a **category** is
+    applied to a host somebody placed in it. The difference is the assignment,
+    and the assignment is explicit — so scraped venue pages can share one set of
+    numbers without any host quietly acquiring a policy nobody chose.
+    """
+
+    def test_a_policy_loads_every_value(self, tmp_path):
+        policy = _load(tmp_path, {"network": {
+            "policies": {"tmdb": _policy_block(
+                min_interval_seconds=0.05, timeout_seconds=45.0, max_attempts=5,
+                backoff_base_seconds=3.0, backoff_max_seconds=90.0,
+                cache_ttl_seconds=604800,
+            )},
+            "hosts": {"api.themoviedb.org": "tmdb"},
+        }}).network.for_host("api.themoviedb.org")
+
+        assert policy.min_interval_seconds == 0.05
+        assert policy.timeout_seconds == 45.0
+        assert policy.max_attempts == 5
+        assert policy.backoff_base_seconds == 3.0
+        assert policy.backoff_max_seconds == 90.0
+        assert policy.cache_ttl == timedelta(days=7)
+
+    def test_hosts_sharing_a_policy_get_the_same_numbers(self, tmp_path):
+        """The point of the grouping: ten scraped sites, one decision."""
+        network = _load(tmp_path, {"network": {
+            "policies": {"web_listings": _policy_block(min_interval_seconds=2.0)},
+            "hosts": {"thecabot.org": "web_listings",
+                      "www.pem.org": "web_listings"},
+        }}).network
+
+        assert network.for_host("thecabot.org") == network.for_host("www.pem.org")
+
+    def test_an_unassigned_host_is_refused(self, tmp_path):
+        """A host with no policy must not get a guess."""
+        network = _load(tmp_path, {"network": {
+            "policies": {"web_listings": _policy_block()},
+            "hosts": {"thecabot.org": "web_listings"},
+        }}).network
+
+        with pytest.raises(ConfigError, match="api.open-meteo.com"):
+            network.for_host("api.open-meteo.com")
+
+    def test_an_absent_network_section_refuses_every_host(self, tmp_path):
+        """Absent is not "polite by default" and not "switched off" — it is
+        unconfigured, and it says so the moment anything tries to call out."""
+        with pytest.raises(ConfigError, match="thecabot.org"):
+            _load(tmp_path, {}).network.for_host("thecabot.org")
+
+    def test_a_host_naming_an_unknown_policy_is_refused_at_load(self, tmp_path):
+        """A typo here would otherwise surface only when that host is next
+        fetched, which for a seasonal source could be months."""
+        with pytest.raises(ConfigError, match="web_listing"):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": _policy_block()},
+                "hosts": {"thecabot.org": "web_listing"},
+            }})
+
+    def test_the_unknown_policy_error_names_the_host_too(self, tmp_path):
+        with pytest.raises(ConfigError, match="thecabot.org"):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": _policy_block()},
+                "hosts": {"thecabot.org": "typo"},
+            }})
+
+    class TestACategoryReachedByName:
+        """Hosts that arrive from fetched data cannot be listed in advance.
+
+        An image URL points at whatever CDN a venue uses. The policy is named at
+        the call site built to use it, so it is still a decision somebody made —
+        what it is not is a catch-all that any unassigned host falls into.
+        """
+
+        def test_a_named_policy_is_reachable_without_a_host(self, tmp_path):
+            network = _load(tmp_path, {"network": {
+                "policies": {"data_derived": _policy_block(min_interval_seconds=3.0)},
+                "hosts": {},
+            }}).network
+
+            assert network.for_category("data_derived").min_interval_seconds == 3.0
+
+        def test_an_unknown_category_is_refused(self, tmp_path):
+            network = _load(tmp_path, {"network": {
+                "policies": {"data_derived": _policy_block()}, "hosts": {},
+            }}).network
+
+            with pytest.raises(ConfigError, match="images"):
+                network.for_category("images")
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            "min_interval_seconds",
+            "timeout_seconds",
+            "max_attempts",
+            "backoff_base_seconds",
+            "backoff_max_seconds",
+            "cache_ttl_seconds",
+        ],
+    )
+    def test_a_policy_missing_any_key_is_refused(self, tmp_path, missing):
+        """A partial policy is the same failure as an absent one, one key in."""
+        block = _policy_block()
+        del block[missing]
+
+        with pytest.raises(ConfigError, match=missing):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": block}, "hosts": {},
+            }})
+
+    def test_the_error_names_the_policy(self, tmp_path):
+        """With ten policies declared, "a key is missing" is not actionable."""
+        block = _policy_block()
+        del block["timeout_seconds"]
+
+        with pytest.raises(ConfigError, match="web_listings"):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": block}, "hosts": {},
+            }})
+
+    class TestTheCacheLifetime:
+        """The TTL is a decision every time, and it has exactly one home."""
+
+        def test_never_means_no_cache(self, tmp_path):
+            """A prompt is not a cacheable resource the way a forecast is."""
+            policy = _load(tmp_path, {"network": {
+                "policies": {"gemini": _policy_block(cache_ttl_seconds="never")},
+                "hosts": {"generativelanguage.googleapis.com": "gemini"},
+            }}).network.for_category("gemini")
+
+            assert policy.cache_ttl is None
+
+        def test_zero_is_refused_rather_than_read_as_never(self, tmp_path):
+            """A sentinel drawn from inside the value domain is the `--upcoming
+            0` and `--limit -5` footgun, and both of those shipped."""
+            with pytest.raises(ConfigError, match="never"):
+                _load(tmp_path, {"network": {
+                    "policies": {"web_listings": _policy_block(cache_ttl_seconds=0)},
+                    "hosts": {},
+                }})
+
+        def test_a_negative_lifetime_is_refused(self, tmp_path):
+            with pytest.raises(ConfigError, match="cache_ttl_seconds"):
+                _load(tmp_path, {"network": {
+                    "policies": {"web_listings": _policy_block(cache_ttl_seconds=-1)},
+                    "hosts": {},
+                }})
+
+        def test_an_unreadable_lifetime_is_refused(self, tmp_path):
+            """`forever` is not `never`, and guessing which was meant is worse
+            than refusing."""
+            with pytest.raises(ConfigError, match="cache_ttl_seconds"):
+                _load(tmp_path, {"network": {
+                    "policies": {"web_listings": _policy_block(cache_ttl_seconds="forever")},
+                    "hosts": {},
+                }})
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "min_interval_seconds",
+            "timeout_seconds",
+            "backoff_base_seconds",
+            "backoff_max_seconds",
+        ],
+    )
+    def test_a_negative_limit_is_rejected(self, tmp_path, key):
+        with pytest.raises(ConfigError, match=key):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": _policy_block(**{key: -1.0})},
+                "hosts": {},
+            }})
+
+    def test_a_zero_timeout_is_rejected(self, tmp_path):
+        """`requests` reads a zero timeout as "no timeout", which is the hang
+        this bounds — `dumpor` and `picuki` block for ever today."""
+        with pytest.raises(ConfigError, match="timeout_seconds"):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": _policy_block(timeout_seconds=0)},
+                "hosts": {},
+            }})
+
+    def test_fewer_than_one_attempt_is_rejected(self, tmp_path):
+        """Zero attempts is a source that silently never fetches."""
+        with pytest.raises(ConfigError, match="max_attempts"):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": _policy_block(max_attempts=0)},
+                "hosts": {},
+            }})
+
+    def test_a_backoff_ceiling_below_its_base_is_rejected(self, tmp_path):
+        with pytest.raises(ConfigError, match="backoff_max_seconds"):
+            _load(tmp_path, {"network": {
+                "policies": {"web_listings": _policy_block(
+                    backoff_base_seconds=10.0, backoff_max_seconds=5.0
+                )},
+                "hosts": {},
+            }})
+
+
+def _policy_block(**overrides):
+    """A complete policy block, for tests about one key at a time."""
+    block = {
+        "min_interval_seconds": 1.0,
+        "timeout_seconds": 30.0,
+        "max_attempts": 3,
+        "backoff_base_seconds": 1.0,
+        "backoff_max_seconds": 60.0,
+        "cache_ttl_seconds": 3600,
+    }
+    block.update(overrides)
+    return block

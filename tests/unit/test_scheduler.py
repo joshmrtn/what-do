@@ -15,11 +15,14 @@ from unittest.mock import MagicMock
 
 from src.config import (
     AppConfig,
+    NetworkConfig,
+    NetworkPolicy,
     DeduplicationConfig,
     LocationConfig,
     ScrapingConfig,
     VenueDiscoveryConfig,
 )
+from src.enrichment.weather import OPEN_METEO_HOST
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.ingestion.source import IngestionSource
 from src.models.event import Event
@@ -475,8 +478,32 @@ class _SpyRepository:
 # ----------------------------------------------------------------------
 
 
+
+
+def _network() -> NetworkConfig:
+    """Declares the one host enrichment reads a cache lifetime for.
+
+    There is deliberately no default policy, so a config that never mentions
+    Open-Meteo is refused rather than guessed at — which is the behaviour, and
+    means every config that enriches weather must say so.
+    """
+    return NetworkConfig(
+        policies={
+            "open_meteo": NetworkPolicy(
+                min_interval_seconds=0.5,
+                timeout_seconds=30.0,
+                max_attempts=3,
+                backoff_base_seconds=1.0,
+                backoff_max_seconds=60.0,
+                cache_ttl=timedelta(hours=12),
+            )
+        },
+        hosts={OPEN_METEO_HOST: "open_meteo"},
+    )
+
 def _config(**scraping) -> AppConfig:
     return AppConfig(
+        network=_network(),
         location=LocationConfig(42.52, -70.89, "01970", 10.0, "America/New_York"),
         scraping=ScrapingConfig(**scraping),
         venue_discovery=VenueDiscoveryConfig(),
