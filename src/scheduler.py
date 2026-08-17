@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from src.composition.batch import BatchDependencies, build_dependencies
+from src.composition.pipeline import finish_run, scope_filter, scope_floor
 import yaml
 
 from src.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
@@ -311,7 +312,7 @@ def run_batch(
             # into a batch that will discard the event it becomes. Not `now`:
             # ranking keeps an event that started at 00:30 on the run date, and
             # a 02:00 batch comparing against its own clock would drop it.
-            starting_after=_scope_floor(config, run_date),
+            starting_after=scope_floor(config, run_date),
         ),
         default=[],
     )
@@ -352,7 +353,7 @@ def run_batch(
         loser.merged_by = "reconcile"
         displaced.append(loser)
 
-    in_scope = _scope_filter(config, run_date, now)
+    in_scope = scope_filter(config, run_date, now)
     events = _carry_forward(reconciled, stored, stale_ids, in_scope)
     result.stage_counts["events"] = len(events)
 
@@ -427,20 +428,24 @@ def run_batch(
 
     events = _stage("similarity", lambda: similarity_stage.process(events), default=events)
 
-    rankable = [e for e in events if in_scope(e)]
-    result.stage_counts["ranked"] = len(rankable)
-
-    scores, rankings = _stage(
-        "ranking", lambda: ranking_engine.rank(rankable, run_date), default=([], [])
+    # Scoping, ranking and the order the two halves are written in all live in
+    # the shared terminal step, so the read-time rescore cannot drift from this
+    # one. What stays here is the batch's failure policy: `_stage` records the
+    # error and carries on with a partial run.
+    outcome = finish_run(
+        events=events,
+        run_date=run_date,
+        now=now,
+        config=config,
+        ranking_engine=ranking_engine,
+        score_repository=scores_repo,
+        ranking_repository=rankings_repo,
+        persist=not dry_run,
+        run_stage=_stage,
     )
-    result.scores = scores
-    result.rankings = rankings
-
-    # Scores first: a ranking references its score by (event_id, run_date), and
-    # the foreign key refuses the write otherwise.
-    if not dry_run and scores:
-        _stage("save_scores", lambda: scores_repo.save(scores))
-        _stage("save_rankings", lambda: rankings_repo.save(rankings))
+    result.stage_counts["ranked"] = outcome.rankable
+    result.scores = outcome.scores
+    result.rankings = outcome.rankings
 
     # Recorded before the refit reads them, so tonight's extractions are in
     # tonight's corpus. Append-only and keyed on the instant, so a retried run
@@ -591,53 +596,6 @@ def _scoring_provenance(config: AppConfig) -> str:
     `config.yaml` never mentioned.
     """
     return json.dumps(asdict(config.scoring), sort_keys=True, default=str)
-
-
-def _scope_floor(config: AppConfig, run_date: date) -> datetime:
-    """The instant before which an event is over: local midnight of the run date.
-
-    Shared by `_scope_filter` and the candidate window, and shared **only** here.
-    The two ask different questions — one *"is this worth ranking?"*, the other
-    *"is this record still live?"* — but a finished event is both unrankable and
-    stale, so this one fact answers both, and writing it twice is how the two
-    drift apart.
-
-    Their *ceilings* are deliberately not shared: a horizon expresses how far
-    ahead we care to look, which says nothing about whether a record is current,
-    and `for_window` is the only path a stored candidate has back into a batch.
-
-    Local, not UTC: an event at 11pm local is tomorrow in UTC, and a floor
-    derived from that would drop exactly the evening events we rank.
-    """
-    tz = zoneinfo.ZoneInfo(config.location.timezone)
-    return datetime.combine(run_date, time.min, tzinfo=tz)
-
-
-def _scope_filter(
-    config: AppConfig, run_date: date, now: datetime
-) -> Callable[[Event], bool]:
-    """Build the predicate for whether an event is worth ranking this run.
-
-    Ranking everything ever stored grows without bound; ranking only tonight
-    discards the lookahead the calendar feeds exist for. Undated events are kept
-    on discovery age instead, because the CLI has a labelled section for them
-    and dropping one would lose a real event to a failed extraction.
-    """
-    horizon = run_date + timedelta(days=config.scraping.horizon_days)
-    lookback_cutoff = now - timedelta(days=config.scraping.lookback_days)
-    tz = zoneinfo.ZoneInfo(config.location.timezone)
-    floor = _scope_floor(config, run_date)
-
-    def in_scope(event: Event) -> bool:
-        if event.start_time is None:
-            return event.created_at >= lookback_cutoff
-        if event.start_time < floor:
-            return False
-        # Local date, not UTC: an event at 11pm local is tomorrow in UTC, and
-        # filtering on that would misfile exactly the evening events we rank.
-        return event.start_time.astimezone(tz).date() <= horizon
-
-    return in_scope
 
 
 def _build_parser() -> argparse.ArgumentParser:

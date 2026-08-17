@@ -207,3 +207,74 @@ def test_the_view_root_does_not_import_the_batch_root():
     loads_ollama, loads_requests = result.stdout.split()
     assert loads_ollama == "False", "the CLI imports the Ollama client"
     assert loads_requests == "False", "the CLI imports the HTTP layer"
+
+
+#: The one module allowed to rank. Ranking is the pipeline's terminal step, and
+#: two roots each calling it would have to agree — forever, with nothing
+#: checking — about the scope filter, the argument order and the order the two
+#: halves are written in.
+_RANKERS = {"composition/pipeline.py"}
+
+#: Where the scope predicate is defined. It used to live in `scheduler.py`, the
+#: batch root, which left the view two bad options: import the batch root, or
+#: restate the predicate. The second is the "a double may record but it may not
+#: reimplement" rule in structural form.
+_SCOPE_OWNERS = {"composition/pipeline.py"}
+
+
+def _modules_calling(method: str) -> set[str]:
+    """Modules containing a call to `<anything>.<method>(...)`."""
+    found: set[str] = set()
+    for path in SRC.rglob("*.py"):
+        relative = path.relative_to(SRC).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == method:
+                found.add(relative)
+    return found
+
+
+def _modules_defining(*names: str) -> set[str]:
+    """Modules defining a top-level function with any of these names."""
+    wanted = set(names)
+    found: set[str] = set()
+    for path in SRC.rglob("*.py"):
+        relative = path.relative_to(SRC).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                found.add(relative)
+    return found
+
+
+def test_only_the_pipeline_ranks():
+    """A second `.rank(...)` call site fails here rather than drifting quietly.
+
+    The read-time rescore re-runs the tail hours after the batch did. If it
+    called the engine itself, the two would share four things by convention —
+    the scope predicate, the run date, the argument order, and scores being
+    written before rankings because the foreign key refuses the reverse. The
+    fourth is the one that fails loudly; the first three fail as a wrong
+    ordering nobody can see.
+    """
+    assert _modules_calling("rank") == _RANKERS
+
+
+def test_the_scope_predicate_lives_outside_both_roots():
+    """`scope_filter` answers "is this worth ranking?" for whoever is ranking.
+
+    Defined in the batch root, it forced the view to import the batch root —
+    which `test_the_view_root_does_not_import_the_batch_root` forbids for
+    measured reasons — or to write the predicate a second time.
+    """
+    assert _modules_defining("scope_filter", "scope_floor") == _SCOPE_OWNERS
+
+
+def test_no_scope_predicate_survives_in_the_scheduler():
+    """The underscore-prefixed originals are gone, not shadowed.
+
+    A private copy left behind in `scheduler.py` would satisfy the check above
+    while the batch quietly went on using its own.
+    """
+    assert _modules_defining("_scope_filter", "_scope_floor") == set()
