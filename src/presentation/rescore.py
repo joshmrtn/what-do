@@ -128,7 +128,7 @@ def rescore_if_stale(
         refreshed = load_ranked_events(
             storage.events, storage.scores, storage.rankings, run_date=run_date
         )
-        _record(storage, run_date, refreshed, now)
+        _record(storage, run_date, refreshed, now, pipeline.preference_revision)
         return refreshed
     except Exception as exc:  # noqa: BLE001 — a rescore must never cost the listing
         logger.warning(
@@ -144,6 +144,7 @@ def _record(
     run_date: date,
     refreshed: list[RankedEvent],
     now: datetime,
+    revision: PreferenceRevision,
 ) -> None:
     """Write down that this run's ordering is no longer the batch's.
 
@@ -151,14 +152,12 @@ def _record(
     forecast its own `run_history` row does not describe, and nothing anywhere
     says so.
     """
-    revision: PreferenceRevision | None = storage.preference_revisions.latest()
-    # Re-recording is how the id is recovered: the write is keyed on content, so
-    # it resolves to the existing row rather than creating one. And the content
-    # cannot be new here — a preference line without a cached vector would have
-    # raised out of `build_rescore_pipeline` long before this point.
-    revision_id = (
-        None if revision is None else storage.preference_revisions.record(revision)
-    )
+    # The revision the rescore itself loaded, not `latest()`. That one answers
+    # "what did the last batch score against", which is a different question and
+    # is absent until a batch has run — and after a preference edit it is the
+    # wrong answer rather than a missing one. Keyed on content, so an unedited
+    # file resolves to the row it already has.
+    revision_id = storage.preference_revisions.record(revision)
     storage.rescores.record(
         Rescore(
             run_date=run_date,

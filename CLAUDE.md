@@ -29,14 +29,28 @@ for the full specification.
 
 ## Key architecture decisions
 
-**Background-first.** All heavy work (LLM, embeddings, scraping, enrichment) happens in the
-overnight batch. The CLI reads precomputed data from SQLite, but **may make network calls for
-fresher data when appropriate** — a weather forecast, for instance. **The CLI shall make no LLM
-calls during interactive use.**
+**Background-first.** **LLM extraction** happens in the overnight batch, and that is the whole of
+the rule. The CLI reads precomputed data from SQLite and is free to do real work on top of it:
+network calls for fresher data, embeddings, enrichment, scoring, ranking.
 
-The distilled point is that `what-do` must be **fast and snappy**. That is why LLM calls are out
-and a cached weather fetch is in: minutes versus milliseconds. "No network at query time" was
-never the rule — it was an over-tightening, corrected 2026-08-09 and again 2026-08-16.
+> **The one prohibition: the CLI shall make no LLM calls during interactive use.**
+> Nothing else is forbidden. Embeddings are **explicitly allowed** — a
+> `nomic-embed-text` call is about a second, and re-embedding a handful of edited
+> preference lines to see how they reshuffle tonight is the *point*, not a
+> violation.
+
+The distilled point is that `what-do` must be **fast and snappy**, and **extraction is the only
+stage that is not** — minutes an event against milliseconds for everything else. Every attempt to
+generalise that into a broader ban has been wrong, and there have now been three:
+
+| over-tightening | corrected |
+|---|---|
+| "no network at query time" | 2026-08-09, and again 2026-08-16 |
+| "embeddings are heavy work, so they belong to the batch" | 2026-08-17 — *this list itself said so, and it was wrong* |
+| "an embedding is a model call, so it is an LLM call" | 2026-08-17 |
+
+**Do not add to the prohibition.** If something at query time feels too slow, measure it. The test
+is seconds versus minutes, not whether a model is involved.
 
 **LLMs are extraction tools only.** LLM Pass 1 extracts structured data (title, time, tags,
 summary) from messy event text. Final ranking is deterministic — LLMs do not determine order.

@@ -7,6 +7,7 @@ constrain is what a `what-do` invocation actually does.
 
 from __future__ import annotations
 
+import io
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 import pytest
 
 from src.composition.storage import build_view_storage
+from src.config import load_config
 from src.config import (
     AppConfig,
     ComfortCurve,
@@ -29,14 +31,25 @@ from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
 from src.models.tag import Tag
+from src.composition.pipeline import RescoreUnavailable, run_view_tail
 from src.presentation.rescore import rescore_if_stale
+from src.scoring.embedding_stage import EmbeddingStage
+from src.scoring.embeddings import EmbeddingError
+from src.scoring.preferences import PreferenceSet
+from src.scoring.ranking import RankingEngine
+from src.scoring.similarity_stage import SimilarityStage
+from src.storage.memory.events import InMemoryEventRepository
+from src.storage.memory.rankings import InMemoryRankingRepository
+from src.storage.memory.scores import InMemoryScoreRepository
 from src.scoring.embedding_stage import embedding_input_hash
+from src.scoring.embeddings import OllamaEmbeddingProvider
 from src.scoring.similarity import Reason, SimilarityResult
 from src.utils.vectors import encode_vector
 from src.storage.events import save_events
 from src.storage.queries import load_ranked_events
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from src.utils.ollama_client import OllamaClient
 
 TZ = timezone(timedelta(hours=-4))
 RUN_DATE = date(2026, 8, 17)
@@ -330,106 +343,90 @@ def test_a_ranking_from_another_night_is_not_touched(db_path):
     assert weather.calls == 0, "it fetched before deciding it had nothing to do"
 
 
-def test_an_event_needing_a_vector_abandons_the_whole_rescore(db_path):
-    """The seal is the refusing provider *plus* this check.
+@pytest.mark.integration
+def test_an_event_missing_a_vector_is_embedded_rather_than_refused(real_db_path):
+    """Embedding at read time is allowed, so a gap is filled rather than fatal.
 
-    `EmbeddingStage` degrades per event by design — it marks the event and
-    carries on, so one bad event never costs a batch the rest. On the read path
-    that is exactly wrong: the event scores zero on its semantic half and the
-    rescore writes that zero over a good stored score.
+    This test previously asserted the opposite, because the read path held a
+    provider that refused to embed anything. That enforced a rule that was never
+    the rule: `CLAUDE.md` forbids **LLM** calls at query time, and an embedding
+    is about a second. Corrected 2026-08-17.
     """
-    storage = build_view_storage(db_path, "nomic-embed-text")
+    storage = build_view_storage(real_db_path, "nomic-embed-text")
     stored = {event.event_id: event for event in storage.events.load_all()}
     scores = storage.scores.for_run(RUN_DATE)
     rankings = storage.rankings.for_run(RUN_DATE)
 
     naked = stored["outdoor"]
-    naked.replace_tags([Tag(text="fireworks")])  # drops the vectors with them
-    # Saved *before* the placements are put back, because `INSERT OR REPLACE
-    # INTO events` is a delete and an insert: `event_scores` cascades away and
-    # takes `rankings` with it. Written the other way round, this setup removed
-    # the very event it meant to break and the rescore saw a healthy run.
+    naked.replace_tags([Tag(text="harbour fireworks")])  # drops the vectors
+    # Saved before the placements are put back: `INSERT OR REPLACE INTO events`
+    # is a delete and an insert, so `event_scores` cascades away and takes
+    # `rankings` with it.
     storage.events.save([naked])
     storage.scores.save(scores)
     storage.rankings.save(rankings)
 
-    assert _rescore(db_path, _FixedWeather(_hour(66.0, "clear"))) is None
+    refreshed = _rescore(real_db_path, _FixedWeather(_hour(66.0, "clear")))
 
-    after = {r.event_id: r for r in storage.rankings.for_run(RUN_DATE)}
-    assert after["indoor"].rank == 1, "the stored ranking was overwritten"
-    assert after["outdoor"].weather_adjustment == 0.0
+    assert refreshed is not None, "an unembedded event abandoned the rescore"
+    reloaded = {e.event_id: e for e in storage.events.load_all()}
+    assert reloaded["outdoor"].tag_embeddings, "the missing vector was not computed"
 
 
-def test_a_synthetic_activity_whose_rule_no_longer_fires_disappears(db_path):
-    """Regenerated, not carried — which is the point of re-running enrichment.
+def test_an_embedding_that_genuinely_fails_abandons_the_rescore():
+    """The seal still exists; only its meaning changed.
 
-    Synthetic rules are conditioned on the weather, so a refreshed forecast can
-    make an evening walk stop qualifying. Carrying the stored row forward would
-    keep it in the listing on a night it no longer belongs in, which is the
-    class of staleness this whole path exists to remove.
+    It no longer means "a model was refused" — it means the model could not be
+    reached. `EmbeddingStage` degrades per event by design, so without this the
+    event scores zero on its semantic half and that zero is written over a good
+    stored score.
     """
-    walk = _event("synthetic:evening_walk:2026-08-17", "Evening walk", "outdoor", 0.45)
-    walk.source_type = "synthetic"
-    save_events([walk], db_path)
 
-    storage = build_view_storage(db_path, "nomic-embed-text")
-    scores = storage.scores.for_run(RUN_DATE)
-    rankings = storage.rankings.for_run(RUN_DATE)
-    storage.scores.save(
-        [
-            *scores,
-            EventScore(
-                event_id=walk.event_id,
-                run_date=RUN_DATE,
-                base_score=0.45,
-                tag_confidence=1.0,
-                match="yes",
-                reasons=[],
+    class _BrokenEmbedder:
+        def embed(self, text: str) -> list[float]:
+            raise EmbeddingError("ollama unreachable")
+
+    event = _event("outdoor", "Harbour Fireworks", "outdoor", 0.50)
+    event.replace_tags([Tag(text="fireworks")])  # drops the vectors with them
+
+    with pytest.raises(RescoreUnavailable):
+        run_view_tail(
+            events=[event],
+            run_date=RUN_DATE,
+            now=NOW,
+            config=_config(),
+            enrichment_service=_PassThroughEnrichment(),
+            embedding_stage=EmbeddingStage(
+                _BrokenEmbedder(), get_logger("t", stream=io.StringIO())
             ),
-        ]
-    )
-    storage.rankings.save(
-        [
-            *rankings,
-            Ranking(
-                event_id=walk.event_id,
-                run_date=RUN_DATE,
-                weather_adjustment=0.0,
-                final_score=0.45,
-                rank=3,
-            ),
-        ]
-    )
-
-    # No synthetic rules are configured, so enrichment regenerates none.
-    refreshed = _rescore(db_path, _FixedWeather(_hour(66.0, "clear")))
-
-    assert refreshed is not None
-    assert walk.event_id not in [pair.event.event_id for pair in refreshed]
+            similarity_stage=SimilarityStage(PreferenceSet(), _config().scoring),
+            ranking_engine=RankingEngine(_config()),
+            event_repository=InMemoryEventRepository(),
+            score_repository=InMemoryScoreRepository(),
+            ranking_repository=InMemoryRankingRepository(),
+            forecast_fresh_since=NOW - TTL,
+        )
 
 
-def test_an_event_with_no_tags_does_not_abandon_the_rescore(db_path):
-    """A skip is not a failure. Nothing was needed, so nothing was refused.
+class _PassThroughEnrichment:
+    """Leaves the events as they are, with their forecast already fresh.
 
-    Measured on the live corpus: 365 of 1935 events carry no tags, 347 of them
-    in the ranked set. Treating a skip as a failure abandoned every rescore that
-    would ever be attempted — found by running the real CLI, not by a test.
+    A boundary stand-in, not a reimplementation: this test is about the embedding
+    seal, and real enrichment would reach the network to reach it.
     """
-    storage = build_view_storage(db_path, "nomic-embed-text")
-    stored = {event.event_id: event for event in storage.events.load_all()}
-    scores = storage.scores.for_run(RUN_DATE)
-    rankings = storage.rankings.for_run(RUN_DATE)
 
-    bare = stored["indoor"]
-    bare.replace_tags([])
-    bare.replace_summary(None)
-    storage.events.save([bare])
-    storage.scores.save(scores)
-    storage.rankings.save(rankings)
-
-    refreshed = _rescore(db_path, _FixedWeather(_hour(66.0, "clear")))
-
-    assert refreshed is not None, "a tagless event abandoned the whole rescore"
+    def enrich(self, events: list[Event], run_date: date) -> list[Event]:
+        for event in events:
+            event.weather = {
+                "sampled_hour": 20,
+                "forecast": {
+                    "issued_at": NOW.isoformat(),
+                    "hour": _hour(66.0, "clear"),
+                    "day_series": [],
+                },
+                "observed": None,
+            }
+        return events
 
 
 def test_a_regenerated_event_reuses_the_vectors_of_an_identical_stored_one(db_path):
@@ -549,3 +546,166 @@ def test_a_regenerated_synthetic_does_not_abandon_the_rescore(db_path):
 
     assert refreshed is not None, "a regenerated walk abandoned the rescore"
     assert walk.event_id in [pair.event.event_id for pair in refreshed]
+
+
+def _real_embedder():
+    """The provider the batch uses, for a test that needs real vectors.
+
+    Fake vectors cannot serve here. Preference lines are embedded for real by
+    the read path, so an event carrying a hand-written 3-element vector fails on
+    `Cannot compare vectors of different length: 3 != 768` — which is how the
+    first cut of these tests failed, in the fixture rather than the code.
+    """
+    config = load_config(Path("config/config.yaml"))
+    return OllamaEmbeddingProvider(
+        OllamaClient(
+            config.ollama_host,
+            timeout=config.models.request_timeout_seconds,
+            component="embedding",
+        ),
+        model=config.models.embeddings,
+    )
+
+
+def _really_embedded(event: Event, embedder) -> Event:
+    """Give an event vectors from the real model, as a completed batch would."""
+    event.attach_tag_embeddings(
+        [encode_vector(embedder.embed(tag.text)) for tag in event.tags]
+    )
+    if event.summary:
+        event.summary_embedding = encode_vector(embedder.embed(event.summary))
+    event.embedding_input_hash = embedding_input_hash(event)
+    return event
+
+
+@pytest.fixture
+def real_db_path(tmp_path: Path) -> Path:
+    """The same two events, embedded by the real model."""
+    embedder = _real_embedder()
+    path = tmp_path / "event_hub.db"
+    init_db(path)
+
+    outdoor = _really_embedded(
+        _event("outdoor", "Harbour Fireworks", "outdoor", 0.50), embedder
+    )
+    outdoor.replace_tags([Tag(text="fireworks")])
+    outdoor.replace_summary("An outdoor fireworks display over the harbour")
+    _really_embedded(outdoor, embedder)
+
+    indoor = _really_embedded(
+        _event("indoor", "Cellar Jazz", "indoor", 0.52), embedder
+    )
+    indoor.replace_tags([Tag(text="jazz")])
+    indoor.replace_summary("A live jazz quartet in a basement club")
+    _really_embedded(indoor, embedder)
+
+    save_events([outdoor, indoor], path)
+
+    storage = build_view_storage(path, "nomic-embed-text")
+    storage.scores.save(
+        [
+            EventScore(
+                event_id=event_id,
+                run_date=RUN_DATE,
+                base_score=base,
+                tag_confidence=1.0,
+                match="yes",
+                reasons=[],
+            )
+            for event_id, base in (("outdoor", 0.50), ("indoor", 0.52))
+        ]
+    )
+    storage.rankings.save(
+        [
+            Ranking(
+                event_id="indoor",
+                run_date=RUN_DATE,
+                weather_adjustment=0.0,
+                final_score=0.52,
+                rank=1,
+            ),
+            Ranking(
+                event_id="outdoor",
+                run_date=RUN_DATE,
+                weather_adjustment=0.0,
+                final_score=0.50,
+                rank=2,
+            ),
+        ]
+    )
+    return path
+
+
+def _rescore_with_preferences(db_path: Path, tmp_path: Path, likes: str, dislikes: str):
+    likes_path = tmp_path / "likes.txt"
+    dislikes_path = tmp_path / "dislikes.txt"
+    likes_path.write_text(likes)
+    dislikes_path.write_text(dislikes)
+
+    storage = build_view_storage(db_path, "nomic-embed-text")
+    refreshed = rescore_if_stale(
+        pairs=load_ranked_events(storage.events, storage.scores, storage.rankings),
+        tonight=RUN_DATE,
+        now=NOW,
+        ttl=TTL,
+        config=_config(),
+        db_path=db_path,
+        storage=storage,
+        logger=get_logger("rescore_test", stream=io.StringIO()),
+        get_now=lambda: NOW,
+        weather_provider=_FixedWeather(_hour(66.0, "clear")),
+        likes_path=likes_path,
+        dislikes_path=dislikes_path,
+        blocklist_path=tmp_path / "blocklist.json",
+    )
+    return refreshed, storage
+
+
+@pytest.mark.integration
+def test_an_edited_preference_file_rescores_at_read_time(real_db_path, tmp_path):
+    """The feature this path exists for, alongside the forecast.
+
+    Editing `likes.txt` and running `what-do` must show the new ordering rather
+    than waiting for the overnight batch. A changed line has no cached vector, so
+    this embeds one — about a second, which is the whole argument. Reading the
+    "no LLM at query time" rule as a ban on embeddings was an over-tightening,
+    corrected 2026-08-17: the rule names LLM calls and nothing else.
+    """
+    refreshed, storage = _rescore_with_preferences(
+        real_db_path, tmp_path, "live jazz in a basement club\n", "fireworks\n"
+    )
+
+    assert refreshed is not None, "the rescore was abandoned over a preference edit"
+    scores = {s.event_id: s for s in storage.scores.for_run(RUN_DATE)}
+    assert scores["indoor"].base_score > scores["outdoor"].base_score, (
+        "the semantic half did not move, so the preference edit did not reach scoring"
+    )
+
+
+@pytest.mark.integration
+def test_reversing_the_preferences_reverses_the_order(real_db_path, tmp_path):
+    """The mutation-proof for the test above: the same machinery, opposite input.
+
+    Without it, "indoor scores higher" could be a property of the fixture rather
+    than of the preferences that were just typed.
+    """
+    refreshed, storage = _rescore_with_preferences(
+        real_db_path, tmp_path, "outdoor fireworks over the water\n", "jazz\n"
+    )
+
+    assert refreshed is not None
+    scores = {s.event_id: s for s in storage.scores.for_run(RUN_DATE)}
+    assert scores["outdoor"].base_score > scores["indoor"].base_score
+
+
+@pytest.mark.integration
+def test_the_preferences_a_rescore_used_are_recorded(real_db_path, tmp_path):
+    """So `--explain` can attribute the numbers to a preference set."""
+    _, storage = _rescore_with_preferences(
+        real_db_path, tmp_path, "live jazz\n", "fireworks\n"
+    )
+
+    recorded = storage.rescores.latest_for(RUN_DATE)
+
+    assert recorded is not None
+    assert recorded.preference_revision_id is not None

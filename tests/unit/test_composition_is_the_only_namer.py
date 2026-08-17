@@ -176,35 +176,32 @@ def test_no_new_module_takes_a_raw_connection():
 
 
 def test_the_view_root_does_not_import_the_batch_root():
-    """The query path must not meet the LLM client it is forbidden to use.
+    """The query path must not become the batch by accident.
 
-    `CLAUDE.md`: "The CLI shall make no LLM calls during interactive use."
-    Network is expressly allowed — the rule is about a model's *latency*, not
-    about sockets. Importing is not calling, but it is
-    the wrong direction, and it is measurable: a convenience re-export in
-    `composition/__init__.py` briefly made importing `composition.storage`
-    execute `batch`, taking the CLI from 41 loaded modules to 105 — every
-    adapter and the Ollama client — while every test stayed green.
+    Measurable, and it happened: a convenience re-export in
+    `composition/__init__.py` made importing `composition.storage` execute
+    `batch`, taking the CLI from 41 loaded modules to 105 — every ingestion
+    adapter — while every test stayed green. Asserted on the loaded module graph
+    rather than on imports, because that regression came in through a package
+    `__init__` and no import statement in `cli.py` would have shown it.
 
-    Asserted on the loaded module graph rather than on imports, because the
-    regression came in through a package `__init__`, which no import statement
-    in `cli.py` would have shown.
+    **Narrowed twice, and both narrowings were corrections rather than
+    concessions.** It once asserted `requests` was absent, and then that the
+    Ollama client was: accurate about a CLI that only read rows, and never the
+    architectural rule. `CLAUDE.md` forbids **LLM calls** at query time and
+    nothing else, so a forecast and an embedding are both permitted — the read
+    path makes real ones.
 
-    **Narrowed when the read-time rescore landed**, and narrowed rather than
-    deleted. It used to assert `requests` was absent too, which was accurate
-    about a CLI that opened no sockets and was never the architectural rule.
-    The rescore refreshes a forecast, so `requests` arrives legitimately;
-    measured, that took CLI startup from 0.22s to 0.29s, which is the price of
-    the feature and is still snappy. What must never arrive is a *model*: the
-    Ollama client, and the extraction provider that would reach for one.
+    What remains is the thing that is actually forbidden: **extraction**, at
+    minutes an event, and the ingestion adapters that have no business here.
     """
     result = subprocess.run(
         [
             sys.executable,
             "-c",
             "import sys, src.presentation.cli;"
-            "print(any('ollama' in m for m in sys.modules));"
-            "print('src.processing.extraction' in sys.modules)",
+            "print('src.processing.extraction' in sys.modules);"
+            "print('src.ingestion.social.apify' in sys.modules)",
         ],
         capture_output=True,
         text=True,
@@ -212,9 +209,9 @@ def test_the_view_root_does_not_import_the_batch_root():
     )
 
     assert result.returncode == 0, result.stderr
-    loads_ollama, loads_extraction = result.stdout.split()
-    assert loads_ollama == "False", "the CLI imports the Ollama client"
+    loads_extraction, loads_adapters = result.stdout.split()
     assert loads_extraction == "False", "the CLI imports the extraction provider"
+    assert loads_adapters == "False", "the CLI imports the ingestion adapters"
 
 
 #: The one module allowed to rank. Ranking is the pipeline's terminal step, and

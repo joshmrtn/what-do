@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Callable, TextIO
+from typing import IO, Any, Callable, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -39,10 +39,11 @@ from src.presentation.freshness import (
     preference_state,
 )
 from src.presentation.handles import HANDLE_SIGIL, short_handle
+from src.presentation.progress import is_interactive, spinner
 from src.enrichment.weather import OpenMeteoProvider
 from src.presentation.rescore import rescore_if_stale
 from src.scoring.preference_revision import hash_preference_files
-from src.utils.logging import get_logger
+from src.utils.logging import StructuredLogger, get_logger
 from src.presentation.filters import (
     RankedEvent,
     after_sunset,
@@ -146,6 +147,23 @@ def _default_rescore_record(
     return build_view_storage(db_path, embedding_model).rescores.latest_for(run_date)
 
 
+def _view_logger(stream: IO[str] | None = None) -> StructuredLogger:
+    """The read path's logger: stderr, and quiet unless something went wrong.
+
+    Two deliberate departures from `get_logger`'s defaults, both learned the
+    hard way when a rescore put `reusing 1750 tag vector(s) from earlier runs`
+    above the first recommendation:
+
+    * **stderr, not stdout.** Stdout is the listing, and a reader may pipe it.
+      Every other warning this CLI emits already goes to stderr.
+    * **WARNING, not INFO.** A stage's progress chatter is written for whoever
+      reads an eight-hour batch log. At query time the reader asked what to do
+      tonight; anything that is not an answer to that, or a reason the answer is
+      imperfect, is noise.
+    """
+    return get_logger("view", stream=stream or sys.stderr, level="WARNING")
+
+
 def _default_rescore(
     db_path: Path,
     embedding_model: str,
@@ -165,7 +183,7 @@ def _default_rescore(
     try:
         config = load_config()
     except (ConfigError, OSError) as exc:
-        get_logger("rescore").warning(
+        _view_logger().warning(
             f"rescore skipped, no usable config: {exc}",
             component="rescore",
             duration_ms=0,
@@ -180,7 +198,7 @@ def _default_rescore(
         config=config,
         db_path=db_path,
         storage=build_view_storage(db_path, embedding_model),
-        logger=get_logger("rescore"),
+        logger=_view_logger(),
         get_now=lambda: now,
         weather_provider=OpenMeteoProvider(),
         likes_path=DEFAULT_LIKES_PATH,
@@ -456,14 +474,23 @@ def _cmd_recommend(
     # whose inputs have since moved. Both go to stderr for the same reason.
     # Before the notice, so the notice describes what is actually on screen: a
     # successful rescore leaves nothing stale to report.
-    refreshed = rescore(
-        db_path,
-        view.embedding_model,
-        pairs=pairs,
-        tonight=tonight,
-        now=get_now(),
-        ttl=timedelta(minutes=view.view.refresh_ttl_minutes),
-    )
+    # The one part of a `what-do` that is not instant: a forecast fetch and a
+    # re-run of the pipeline tail, measured at ~20s on a cold cache. Silence for
+    # that long reads as a hung command, so it gets a spinner — on stderr, and
+    # only when a person is watching.
+    with spinner(
+        "refreshing tonight's forecast",
+        stream=stderr,
+        enabled=is_interactive(stderr),
+    ):
+        refreshed = rescore(
+            db_path,
+            view.embedding_model,
+            pairs=pairs,
+            tonight=tonight,
+            now=get_now(),
+            ttl=timedelta(minutes=view.view.refresh_ttl_minutes),
+        )
     if refreshed:
         pairs = refreshed
 

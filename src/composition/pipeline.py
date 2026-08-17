@@ -45,16 +45,15 @@ StageRunner = Callable[..., Any]
 class RescoreUnavailable(RuntimeError):
     """Raised when a read-time rescore cannot produce an honest ordering.
 
-    The failure that makes this necessary: `EmbeddingStage` treats a failed
-    embedding as *per-event, non-fatal* — it marks the event and moves on,
-    because one bad event must not cost a batch the other nine hundred. On the
-    read path that degradation is exactly wrong. The refusing provider fires,
-    the event scores zero on the semantic half, and the rescore writes that
-    zero over a perfectly good stored score.
+    `EmbeddingStage` treats a failed embedding as *per-event, non-fatal* — it
+    marks the event and moves on, because one bad event must not cost a batch the
+    other nine hundred. On the read path that degradation is exactly wrong: the
+    event scores zero on its semantic half and the rescore writes that zero over
+    a perfectly good stored score.
 
-    So the seal is not the refusing provider alone. It is the refusing provider
-    *plus* this: if anything on this path needed a vector, the whole rescore is
-    abandoned and the stored ranking stands.
+    So a rescore that could not embed something abandons the whole attempt and
+    leaves the stored ranking standing. Reaching this now means the model was
+    genuinely unavailable, not that asking was forbidden.
     """
 
 
@@ -352,7 +351,7 @@ def run_view_tail(
     ]
     if unembeddable:
         raise RescoreUnavailable(
-            f"{len(unembeddable)} event(s) need embedding, which is a model call: "
+            f"could not embed {len(unembeddable)} event(s): "
             f"{', '.join(sorted(unembeddable)[:3])}"
         )
 

@@ -90,33 +90,3 @@ class OllamaEmbeddingProvider:
             )
 
         return vector
-
-
-class RefusingEmbeddingProvider:
-    """An embedding provider that raises rather than calling a model.
-
-    What the read path holds. `CLAUDE.md`: "The CLI shall make no LLM calls
-    during interactive use." Network is expressly permitted — a forecast is
-    milliseconds — but a model is not, and an embedding *is* a model call.
-
-    Nothing on the read path should need one. Tags change only through
-    extraction, which the read path does not run, so `embedding_input_hash` is
-    invariant and `EmbeddingStage` skips every event by its own rule; preference
-    lines come from a cache keyed on their text. So this is not a limitation
-    bolted on — it is the assertion that the assumption holds, and the one place
-    it can fail loudly instead of quietly taking minutes.
-
-    The caller's job is to treat the failure as "fall back to what is stored",
-    never as an error worth losing the listing over.
-    """
-
-    def embed(self, text: str) -> list[float]:
-        """Always raises. See the class docstring.
-
-        Raises:
-            EmbeddingError: Always.
-        """
-        raise EmbeddingError(
-            "the read path may not call an embedding model; "
-            "this needs a batch run to embed"
-        )
