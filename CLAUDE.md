@@ -167,7 +167,34 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
 ## Working agreements
 
 1. **TDD always.** Write failing tests first. Never implement without a red test.
-2. **No network calls in tests.** All external services injected as dependencies so tests
+2. **Be polite to third parties. Non-negotiable.** Requirements §9.3: *"The system shall
+   enforce configurable request limits for external providers. The system shall support retry
+   and backoff strategies."* Every outbound call to something we do not run owes three things,
+   and none of them is optional:
+
+   - **A cache with a considered TTL.** Not "a cache eventually" — the TTL is a decision made
+     when the call site is written, and written down where it lives.
+   - **A bound on what is even asked.** Never request what the provider cannot answer. A
+     forecast beyond its horizon returns nothing, and **nothing is not cached**, so the request
+     repeats for ever. Measured: 98 dates asked, 24 answered, 74 re-asked on every run, nightly.
+   - **A throttle.** Requests spread rather than fired in a burst.
+
+   **This is the rule regardless of whether the batch or the CLI is calling.** The read path
+   being allowed to use the network is not a licence to use it carelessly; if anything it is
+   the stricter case, because a person can invoke it in a loop.
+
+   > **Current state, so this is not read as a description of reality.** It is an obligation,
+   > and today the codebase mostly does not meet it. Eleven modules make HTTP calls and exactly
+   > one is polite — `ingestion/calendars/fetching.py`, via `HttpCache` and
+   > `min_fetch_interval_hours`. There is **no throttling, no backoff and no transport retry
+   > anywhere**; weather is cached by its caller, air quality is bounded but still uncached, and
+   > the rest have neither. Issue **#10** owns closing this, and the shape it wants is **one
+   > shared network adapter every caller goes through** — enforced structurally, the way
+   > `composition/storage.py` made repositories un-bypassable, rather than remembered at each
+   > new call site. A rule that has to be remembered at every new call site is a rule that will
+   > be forgotten, and this one already was.
+
+3. **No network calls in tests.** All external services injected as dependencies so tests
    substitute fakes. Violation = bug. The `external` tier is the only exception:
    it is excluded from every default run and may never gate a commit.
 
@@ -190,12 +217,12 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
    suite** instead — one parametrised set of assertions run against every implementation, as
    `InMemory*Repository` has. That is why the repositories have never drifted and the stage
    fakes have.
-3. **Injectable time.** Never call `datetime.now()` directly. Pass a `get_now` callable as
+4. **Injectable time.** Never call `datetime.now()` directly. Pass a `get_now` callable as
    a parameter to anything time-sensitive. Critical for testing time filters and lookback windows.
-4. **Phase gates.** No phase begins until all previous phase tests are green AND the smoke
+5. **Phase gates.** No phase begins until all previous phase tests are green AND the smoke
    test passes. See `docs/implementation-plan.md` for smoke test per phase.
-5. **No hardcoded geography, credentials, or magic numbers.** Everything configurable.
-6. **A config key is two files.** `config/config.example.yaml` is tracked; `config/config.yaml`
+6. **No hardcoded geography, credentials, or magic numbers.** Everything configurable.
+7. **A config key is two files.** `config/config.example.yaml` is tracked; `config/config.yaml`
    is gitignored and is what actually runs. Adding or changing a key in the example updates
    documentation and nothing else — the live file is untouched, `git status` stays clean, and
    the suite passes either way, because every test builds its own config.
