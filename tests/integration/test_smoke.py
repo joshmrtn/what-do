@@ -848,9 +848,8 @@ def test_ranking_smoke(tmp_path: Path) -> None:
 def test_cli_smoke(tmp_path: Path) -> None:
     """Ranking -> persist -> CLI render, over ten events across two days.
 
-    Not marked slow: the CLI's whole premise is that query time needs no model
-    and no network, so a smoke test that needed either would be testing the
-    wrong system. Similarity is attached directly here for the same reason —
+    Not marked slow: the CLI's whole premise is that query time needs no model,
+    so a smoke test that needed one would be testing the wrong system. Similarity is attached directly here for the same reason —
     `RankingEngine` consumes it rather than re-scoring, and Phase 7's smoke
     already covers producing it.
     """

@@ -1,8 +1,10 @@
 """CLI entry points for the what-do application.
 
-Reads precomputed rows and renders them. No network, no LLM, no scoring and no
-reordering happen here — the batch already decided, and this is the view onto
-that decision.
+Reads precomputed rows and renders them. No LLM, no scoring and no reordering
+happen here — the batch already decided, and this is the view onto that
+decision. Query time may reach the network for something cheap and perishable;
+it may never reach a model, because that is the difference between milliseconds
+and minutes.
 """
 
 from __future__ import annotations

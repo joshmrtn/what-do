@@ -6,8 +6,8 @@ A local-first recommendation engine that answers "what should we do tonight?"
 
 Discovers local events from social media, movie theaters, and venue calendars. Runs an
 overnight batch job to scrape, normalize, enrich, and score everything against your
-personal preferences. When you ask, it responds instantly from precomputed data — no
-network calls, no waiting.
+personal preferences. When you ask, it responds instantly from precomputed data, refreshing
+only what is cheap and perishable — no model calls, no waiting.
 
 ## How it works
 

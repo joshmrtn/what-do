@@ -7,7 +7,7 @@ activities from public social media sources (Instagram, Facebook) and movie/thea
 
 Runs as an overnight batch job on an always-on VM. Builds and maintains a SQLite database of
 enriched, deduplicated, scored events. The CLI answers "what should we do tonight?" instantly
-using only precomputed data — no network calls at query time.
+from precomputed data, making no LLM calls at query time.
 
 See `docs/requirements.md`, `docs/high-level-design.md`, and `docs/implementation-plan.md`
 for the full specification.
@@ -30,8 +30,13 @@ for the full specification.
 ## Key architecture decisions
 
 **Background-first.** All heavy work (LLM, embeddings, scraping, enrichment) happens in the
-overnight batch. The CLI reads only precomputed data from SQLite. No LLM or network calls
-during interactive use.
+overnight batch. The CLI reads precomputed data from SQLite, but **may make network calls for
+fresher data when appropriate** — a weather forecast, for instance. **The CLI shall make no LLM
+calls during interactive use.**
+
+The distilled point is that `what-do` must be **fast and snappy**. That is why LLM calls are out
+and a cached weather fetch is in: minutes versus milliseconds. "No network at query time" was
+never the rule — it was an over-tightening, corrected 2026-08-09 and again 2026-08-16.
 
 **LLMs are extraction tools only.** LLM Pass 1 extracts structured data (title, time, tags,
 summary) from messy event text. Final ranking is deterministic — LLMs do not determine order.
@@ -54,6 +59,13 @@ the main activity. Local `gemma4:e4b` judges this better than Gemini flash.
 **Domain-scoped preferences.** `likes.txt` and `dislikes.txt` support section headers:
 `[general]`, `[movies]`, `[restaurants]`. Domain preferences only apply to events with a
 matching `source_type`. Lines before the first header are `[general]`.
+
+**Two deliberate non-features.** Neither is a trap; both are choices, recorded here so they
+are not re-litigated. **The blocklist has one source of truth** — `data/blocklist.json`. The
+composition root reads it once and hands it to ingestion and ranking; there is deliberately no
+DB table and no column, because a second copy would drift (#16, and `venue_discovery.py` says
+so where a column would otherwise go). **LLM Pass 2 is deferred to post-v1**, with its slot
+reserved between steps 11 and 13.
 
 **Set operations vs per-event.** Dedup passes need all events in memory. Everything else
 (normalization, enrichment, LLM, embedding, similarity, scoring) is per-event and can stream.
@@ -291,9 +303,33 @@ Types: `feat`, `fix`, `chore`, `test`, `refactor`, `docs`, `ci`
 One logical change per commit. Tests and implementation for the same unit go in one commit.
 Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`.
 
+**Commit as you land each atomic change — never split retroactively.** Do one unit of work,
+commit it, do the next, commit that. Atomic commits are a goal, but **not at the cost of
+retroactive stash-gymnastics**: blazing through a whole plan and then carving it into eight
+commits — stashing parts, re-running the suite against each slice to check it stands alone —
+wastes time and tokens and produces history no better than committing honestly as you went.
+
+> If the work is already done as one lump, **commit the whole darn thing**. One
+> not-strictly-atomic commit beats a theatrical split.
+
 ---
 
 ## Key footguns — read before touching anything
+
+**What belongs here.** A footgun is something that will **trip you up regardless of how this
+codebase develops** — a quirk of a library or a format we have committed to, an arithmetic
+trap, a testing shape that passes while checking nothing. The test: *would this still be true
+if we rewrote the module tomorrow?* `sqlite3.connect` creating a zero-byte file, rapidfuzz not
+folding case, `ALTER TABLE RENAME` rewriting `REFERENCES` clauses — all still true, because
+they are facts about SQLite and rapidfuzz, not about us.
+
+**What does not belong.** *Decisions* ("we deferred X to post-v1"), *current state*, and
+anything a future refactor could quietly invalidate. Those drift, and a stale row here is
+worse than no row: it is read as authority and followed unquestioningly. Decisions go under
+**Key architecture decisions** or `docs/decisions.md`; work goes in the roadmap.
+
+**This table is already long — be selective.** Adding a row should be rare and earned, and a
+row whose truth depends on our own code staying put is the wrong kind.
 
 | Footgun | Fix |
 |---|---|
@@ -308,8 +344,6 @@ Breaking changes get a `!` after the type: `feat!: change EventCandidate schema`
 | A tag vector stored per event | A vector is a pure function of `(tag text, model)`. Storing it per event-tag pairing costs 4× the space and re-embeds tags seen on previous nights. The *weight* is per event; the vector is not |
 | LLM Pass 1 bypass | If `event.tags` already populated, skip extraction. No special flag. Handles synthetic events |
 | Synthetic activities | Enter pipeline as pre-structured `Events` (not `EventCandidates`), after dedup, before Stage 1 |
-| Blocklist source of truth | `data/blocklist.json` is the *only* source. The composition root reads it once and hands it to ingestion and ranking; there is no DB table, by decision (#16) |
-| LLM Pass 2 | Deferred to post-v1. Slot reserved between steps 11 and 13. Do not implement in v1 |
 | Async in v1 | v1 is deliberately single-threaded. No asyncio. Parallelism is post-v1 only |
 | `base × match_multiplier` on a negative score | Inverts intent — `no` at 0.5 turns -0.40 into -0.20, *rewarding* the clearest rejections. Divide instead when the base is negative |
 | Tag weights used as averaging weights | Normalises the weight away — suppression silently does nothing. Weight must multiply the contribution: `c = w × similarity` |

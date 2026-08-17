@@ -43,9 +43,12 @@ TOMORROW = date(2025, 6, 22)
 def no_network(monkeypatch):
     """Fail loudly if the CLI opens a socket.
 
-    The whole design rests on query time being local-only. A regression that
-    reintroduced a network call would otherwise show up as nothing worse than a
-    slow command.
+    Pins what the CLI does *today*, which is nothing over the network — an
+    accidental call would otherwise show up as nothing worse than a slow
+    command. It is not the architectural rule: that one forbids **LLM** calls
+    at query time and expressly permits cheap, cached network reads. When a
+    deliberate one lands this guard narrows to the model boundary rather than
+    being deleted.
     """
 
     def _refuse(*args, **kwargs):

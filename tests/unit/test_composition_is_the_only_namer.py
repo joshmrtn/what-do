@@ -178,8 +178,9 @@ def test_no_new_module_takes_a_raw_connection():
 def test_the_view_root_does_not_import_the_batch_root():
     """The query path must not meet the LLM client it is forbidden to use.
 
-    `CLAUDE.md`: "The CLI reads only precomputed data from SQLite. No LLM or
-    network calls during interactive use." Importing is not calling, but it is
+    `CLAUDE.md`: "The CLI shall make no LLM calls during interactive use."
+    Network is expressly allowed — the rule is about a model's *latency*, not
+    about sockets. Importing is not calling, but it is
     the wrong direction, and it is measurable: a convenience re-export in
     `composition/__init__.py` briefly made importing `composition.storage`
     execute `batch`, taking the CLI from 41 loaded modules to 105 — every

@@ -1093,8 +1093,8 @@ Seed management:
 Performance:
 
 - `what-do` returns in under 1 second (timed assertion)
-- no network calls made during any CLI invocation (verified with mock/intercept)
-- no LLM calls made during any CLI invocation
+- no LLM calls made during any CLI invocation (verified with mock/intercept)
+- any network call at query time is cheap, cached and optional — never a model
 
 ---
 
