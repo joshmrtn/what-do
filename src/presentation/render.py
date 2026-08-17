@@ -20,6 +20,7 @@ from datetime import date, datetime
 from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
+from src.models.rescore import Rescore
 from src.presentation.handles import HANDLE_SIGIL, short_handle
 from src.models.timing import ALL_DAY, UNKNOWN
 from src.models.ranked_event import RankedEvent
@@ -221,6 +222,7 @@ def render_explanation(
     ranking: Ranking | None,
     *,
     total: int,
+    rescore: Rescore | None = None,
     color: bool = False,
 ) -> str:
     """Account for one event's placement, in full.
@@ -243,6 +245,10 @@ def render_explanation(
         total: How many events the run ranked, for the `rank N of M` line.
             Required rather than defaulted: a default would let a call site
             state a denominator it never actually had.
+        rescore: The most recent read-time recomputation of this run, or
+            None where the batch's own ordering still stands. Without it
+            the numbers below are unattributable — the run's stored
+            provenance describes a computation that has been replaced.
         color: Emit ANSI styling.
     """
     lines: list[str] = []
@@ -269,6 +275,15 @@ def render_explanation(
         lines.append(f"  rank     {ranking.rank} of {total}")
         lines.append(f"  score    {_score_arithmetic(score, ranking)}")
 
+    # After the numbers and before everything else, because it says which
+    # computation produced them. `run_history` describes the batch's, and once a
+    # rescore has run that is no longer what the reader is looking at.
+    if rescore is not None:
+        lines.append(f"  rescored {_rescore_note(rescore)}")
+
+    if rescore is not None:
+        lines.append(f"  rescored {_rescore_note(rescore)}")
+
     if (mark := _supersession_of(event)) is not None:
         lines.append(f"  merge    {mark}")
 
@@ -294,6 +309,22 @@ def render_explanation(
             lines.append(_explanation_row(reason, weights))
 
     return _join(lines)
+
+
+def _rescore_note(rescore: Rescore) -> str:
+    """When the ordering was recomputed, and what forecast it used.
+
+    The forecast is the interesting half: it is *why* the numbers moved, and
+    stating it beside them is what stops a reader comparing this score against
+    a `run_history` row that describes a different computation.
+    """
+    when = rescore.rescored_at.strftime("%H:%M")
+    if rescore.forecast_issued_at is None:
+        # A night with nothing outdoors on it rescores and gains no adjustment.
+        # Still worth reporting: the ordering is no longer the batch's.
+        return f"at {when}, no forecast applied"
+    issued = rescore.forecast_issued_at.strftime("%H:%M")
+    return f"at {when}, on the forecast issued {issued}"
 
 
 def _score_arithmetic(score: EventScore, ranking: Ranking) -> str:

@@ -32,6 +32,7 @@ from src.config import (
     load_config,
 )
 from src.models.event import Event
+from src.models.rescore import Rescore
 from src.presentation.freshness import (
     freshness_notice,
     latest_forecast,
@@ -118,6 +119,18 @@ FreshnessProbe = Callable[..., str | None]
 #: on the same terms as the loaders — a test asserting what the view renders
 #: should not have to own a forecast.
 Rescorer = Callable[..., list[RankedEvent] | None]
+#: Reads the most recent recomputation of a run, for `--explain`.
+RescoreLoader = Callable[..., Rescore | None]
+
+
+def _default_rescore_record(
+    db_path: Path, embedding_model: str, *, run_date: date
+) -> Rescore | None:
+    """The latest read-time recomputation of one run, or None.
+
+    Through the repository like every other view read.
+    """
+    return build_view_storage(db_path, embedding_model).rescores.latest_for(run_date)
 
 
 def _default_rescore(
@@ -321,6 +334,7 @@ def _cmd_recommend(
     view: ViewSettings,
     check_freshness: FreshnessProbe,
     rescore: Rescorer,
+    load_rescore: RescoreLoader,
 ) -> int:
     """Render the default view: the latest run, filtered to tonight."""
     if (conflict := _conflicting_flags(args)) is not None:
@@ -390,6 +404,7 @@ def _cmd_recommend(
             stdout=stdout,
             stderr=stderr,
             view=view,
+            load_rescore=load_rescore,
         )
 
     try:
@@ -705,6 +720,7 @@ def _cmd_explain(
     stdout: TextIO,
     stderr: TextIO,
     view: ViewSettings,
+    load_rescore: RescoreLoader,
 ) -> int:
     """Account for one event, named by rank or by part of its title.
 
@@ -722,7 +738,19 @@ def _cmd_explain(
     if len(found) == 1:
         print(
             render_explanation(
-                found[0].event, found[0].score, found[0].ranking, total=len(pairs)
+                found[0].event,
+                found[0].score,
+                found[0].ranking,
+                total=len(pairs),
+                # Read, never triggered. `--explain` reports the most recent
+                # scoring decision; refreshing here would mean the reader saw
+                # one computation in the listing and is shown another when
+                # they ask about a row in it.
+                rescore=load_rescore(
+                    db_path,
+                    view.embedding_model,
+                    run_date=found[0].ranking.run_date,
+                ),
             ),
             file=stdout,
             end="",
@@ -858,6 +886,7 @@ def run(
     load_view_settings: ViewSettingsLoader = default_view_settings,
     check_freshness: FreshnessProbe = _default_freshness,
     rescore: Rescorer = _default_rescore,
+    load_rescore: RescoreLoader = _default_rescore_record,
 ) -> int:
     """Run one CLI invocation and return its exit code.
 
@@ -882,6 +911,8 @@ def run(
             it was scored. Injected on the same terms as the loaders.
         rescore: Recomputes a stale listing against a fresh forecast, or
             returns None to leave the stored one alone.
+        load_rescore: Reads whether a run has already been recomputed, for
+            `--explain`. Reading only — `--explain` never triggers one.
 
     Returns:
         0 on success, including an empty database. 1 for a usage error.
@@ -907,6 +938,7 @@ def run(
         view=load_view_settings(),
         check_freshness=check_freshness,
         rescore=rescore,
+        load_rescore=load_rescore,
     )
 
 

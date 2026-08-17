@@ -20,6 +20,7 @@ import yaml
 from src.models.event import Event
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
+from src.models.rescore import Rescore
 from src.config import ViewConfig
 from src.presentation.cli import ViewSettings, _default_freshness, run
 from src.scoring.preference_revision import build_revision
@@ -31,6 +32,7 @@ from src.storage.sqlite.preference_revisions import (
     SqlitePreferenceRevisionRepository,
 )
 from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.rescores import SqliteRescoreRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 
 TZ = timezone(timedelta(hours=-4))
@@ -1139,3 +1141,48 @@ def test_an_aged_forecast_is_reported_with_the_listing(db_path, tmp_path):
 
     assert "14 hours old" in err
     assert "Karaoke Night" in out, "the notice must not cost the listing"
+
+
+def test_explain_reports_that_the_ranking_was_recomputed(db_path):
+    """The numbers on the page belong to a computation the reader can name.
+
+    Once a rescore has run, `run_history` describes an ordering that has been
+    replaced — so without this line the arithmetic is unattributable.
+    """
+    SqliteRescoreRepository(db_path).record(
+        Rescore(
+            run_date=RUN_DATE,
+            rescored_at=datetime(2025, 6, 21, 18, 30, tzinfo=TZ),
+            events_rescored=10,
+            forecast_issued_at=datetime(2025, 6, 21, 18, 25, tzinfo=TZ),
+        )
+    )
+
+    _, out, _ = _invoke(db_path, "--explain", "Karaoke")
+
+    assert "rescored" in out
+    assert "18:30" in out
+    assert "18:25" in out
+
+
+def test_explain_says_nothing_about_a_ranking_the_batch_still_owns(db_path):
+    _, out, _ = _invoke(db_path, "--explain", "Karaoke")
+
+    assert "rescored" not in out
+
+
+def test_explain_never_triggers_a_rescore(db_path):
+    """It reports the most recent scoring decision; it does not make one.
+
+    A refresh here would show the reader one computation in the listing and a
+    different one when they asked about a row of it.
+    """
+    calls: list[str] = []
+
+    def _counting_rescore(*args, **kwargs):
+        calls.append("rescore")
+        return None
+
+    _invoke(db_path, "--explain", "Karaoke", rescore=_counting_rescore)
+
+    assert calls == []
