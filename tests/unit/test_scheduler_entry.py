@@ -13,6 +13,7 @@ from src.ingestion.id_churn import ChurnTally
 from src.ingestion.ingestion_service import RawCandidateRecord
 from src.models.event_candidate import EventCandidate
 from src.scheduler import BatchResult, run
+from src.config_check import WARNING, Finding as ConfigFinding
 from src.storage.schema_check import Finding, check_database
 from src.storage.sqlite.connection import init_db
 
@@ -73,7 +74,7 @@ def _fake_build(**kwargs):
 def invoke(tmp_path):
     """Drive run() with every real construction seam replaced."""
 
-    def _invoke(argv, result=None, build=None, raw=None, check_schema=None):
+    def _invoke(argv, result=None, build=None, raw=None, check_schema=None, check_config=None):
         batch = _Recorder(result, raw=raw)
         config_calls: list = []
 
@@ -98,6 +99,7 @@ def invoke(tmp_path):
             run_batch_fn=batch,
             init_db_fn=lambda path: None,
             check_schema_fn=check_schema or (lambda path: []),
+            check_config_fn=check_config or (lambda config, path: []),
         )
         return code, batch, stdout.getvalue(), config_calls
 
@@ -138,6 +140,11 @@ def _invoke_with_transcript(argv, tmp_path, factory):
         # Stubbed alongside `init_db_fn`: this helper never creates the database
         # it names, and the real check opens it read-only.
         check_schema_fn=lambda path: [],
+        # This harness hands `run` a bare object() as config, so the real
+        # checker would walk a non-dataclass. Injected rather than made
+        # tolerant: a checker that shrugs at the wrong type would shrug at a
+        # real one too.
+        check_config_fn=lambda config, path: [],
         transcript_factory=factory,
     )
     return built
@@ -470,3 +477,47 @@ class TestTheSchemaGate:
         init_db(db)
 
         assert check_database(db) == []
+
+
+class TestConfigCheckIsReported:
+    """A feature switched off in config should say so in the run summary.
+
+    The 2026-08-16 defect ran for twelve days: `weather.comfort` was empty, so
+    every weather adjustment was 0.0 on every ranking ever stored, and nothing
+    anywhere said a word. This is where it would have said one.
+    """
+
+    def test_the_findings_reach_the_summary(self, invoke):
+        finding = ConfigFinding(WARNING, "weather.comfort", "empty ({}) — does nothing")
+
+        code, _, out, _ = invoke([], check_config=lambda config, path: [finding])
+
+        assert code == 0
+        assert "weather.comfort" in out
+
+    def test_a_switched_off_feature_never_fails_the_run(self, invoke):
+        """Non-fatal by design: a fresh clone configures almost nothing and must
+        still produce a batch. The schema check is the one that may refuse."""
+        findings = [ConfigFinding(WARNING, f"a.b{n}", "empty") for n in range(5)]
+
+        code, _, _, _ = invoke([], check_config=lambda config, path: findings)
+
+        assert code == 0
+
+    def test_nothing_is_said_when_nothing_is_off(self, invoke):
+        _, _, out, _ = invoke([], check_config=lambda config, path: [])
+
+        assert "switched off" not in out
+
+    def test_the_seam_is_given_the_config_path(self, invoke, tmp_path):
+        """Both halves go through one seam, so a test injecting it reaches the
+        section check too — un-injected, that half read the machine's own
+        config.yaml in every test that did not pass --config."""
+        seen: list[Path] = []
+
+        invoke(
+            ["--config", str(tmp_path / "given.yaml")],
+            check_config=lambda config, path: seen.append(path) or [],
+        )
+
+        assert seen == [tmp_path / "given.yaml"]

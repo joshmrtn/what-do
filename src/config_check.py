@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+
+import yaml
 from typing import Any
 
 from src.config import AppConfig
@@ -142,3 +144,31 @@ def _is_section(field: dataclasses.Field[Any]) -> bool:
         return field.default is dataclasses.MISSING
     produced = factory()
     return dataclasses.is_dataclass(produced) or isinstance(produced, list)
+
+
+def check_config_file(config: Any, path: Any) -> list[Finding]:
+    """Both checks, as the batch wants them: switched-off features and absent sections.
+
+    One function rather than two seams. The batch injects this whole thing in
+    tests, and a second, un-injected half would read the machine's real
+    `config.yaml` in every test that did not pass `--config` — which is the
+    environmental dependency `de50499` removed from the config tests once
+    already.
+
+    An unreadable file yields no section findings: the loader has already failed
+    loudly by the time anything reaches here, and a second complaint about the
+    same file is noise.
+
+    Args:
+        config: The loaded `AppConfig`.
+        path: Where the raw YAML lives.
+
+    Returns:
+        Switched-off features first, then absent sections.
+    """
+    try:
+        with open(path) as handle:
+            raw = yaml.safe_load(handle)
+    except (OSError, yaml.YAMLError):
+        return check_config(config)
+    return check_config(config) + check_sections(raw)

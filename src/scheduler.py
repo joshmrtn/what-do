@@ -22,7 +22,9 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from src.composition.batch import BatchDependencies, build_dependencies
-from src.config import AppConfig, load_config
+import yaml
+
+from src.config import DEFAULT_CONFIG_PATH, AppConfig, load_config
 from src.enrichment.service import EnrichmentService
 from src.ingestion.id_churn import ChurnTally
 from src.ingestion.ingestion_service import IngestionService, SourceTally
@@ -38,6 +40,7 @@ from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.ranking import RankingEngine
 from src.scoring.refit import run_refit
 from src.scoring.similarity_stage import SimilarityStage
+from src.config_check import Finding as ConfigFinding, check_config_file
 from src.storage.schema_check import Finding, check_database, format_findings
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, init_db
 from src.normalization.decision_sampling import select_for_storage
@@ -793,6 +796,7 @@ def run(
     run_batch_fn: Callable[..., BatchResult] = run_batch,
     init_db_fn: Callable[[Path], None] = init_db,
     check_schema_fn: Callable[[Path], list[Finding]] = check_database,
+    check_config_fn: Callable[[AppConfig, Path], list[ConfigFinding]] = check_config_file,
     transcript_factory: Callable[..., Any] = LLMTranscript,
 ) -> int:
     """Entry point for `what-do-run-batch`.
@@ -809,6 +813,8 @@ def run(
         check_schema_fn: Injected for testing. Defaults to the real check,
             which is asserted separately against a database on disk — a seam
             only tests ever reach is a seam production never exercises.
+        check_config_fn: Injected for testing, on the same terms. Reports
+            features left switched off; never fails the run.
         transcript_factory: Builds the LLM transcript. Injected so a test can
             assert the file chosen without one being opened.
 
@@ -912,4 +918,25 @@ def run(
             transcript.close()
 
     print(_summarise(result), file=stdout)
+    # After the summary, and never fatal. A fresh clone configures almost
+    # nothing and must still produce a batch — the schema check is the one that
+    # refuses. This only answers "did tonight run with a feature switched off",
+    # which went unasked for twelve days while every weather adjustment was 0.0.
+    config_path = Path(args.config) if args.config else DEFAULT_CONFIG_PATH
+    for line in _config_check_lines(check_config_fn(config, config_path)):
+        print(line, file=stdout)
     return 1 if result.outcome == "failed" else 0
+
+
+def _config_check_lines(findings: list[ConfigFinding]) -> list[str]:
+    """The switched-off features, or nothing at all when there are none."""
+    if not findings:
+        return []
+    width = max(len(finding.path) for finding in findings)
+    return [
+        "  config:",
+        *[
+            f"    {finding.level:<7} {finding.path.ljust(width)}  {finding.detail}"
+            for finding in findings
+        ],
+    ]

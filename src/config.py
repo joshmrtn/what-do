@@ -421,6 +421,12 @@ class AppConfig:
     gemini_model: str = "gemini-flash-latest"
 
 
+#: Where the live config lives when no path is given. Exported because the
+#: batch reads the same file a second time — only the raw YAML can tell an
+#: absent section from a defaulted one — and two copies of the literal would be
+#: two things to keep in step.
+DEFAULT_CONFIG_PATH = Path("config/config.yaml")
+
 #: The only values `Event.setting` may take.
 SETTINGS = ("indoor", "outdoor", "unknown")
 
@@ -773,7 +779,7 @@ def load_config(
         load_dotenv()
 
     if config_path is None:
-        config_path = Path("config/config.yaml")
+        config_path = DEFAULT_CONFIG_PATH
 
     with open(config_path) as f:
         data = yaml.safe_load(f) or {}

@@ -13,7 +13,13 @@ from src.config import (
     VenueDiscoveryConfig,
     WeatherConfig,
 )
-from src.config_check import INFO, WARNING, check_config, check_sections
+from src.config_check import (
+    INFO,
+    WARNING,
+    check_config,
+    check_config_file,
+    check_sections,
+)
 
 
 def _config(**overrides) -> AppConfig:
@@ -197,3 +203,36 @@ class TestAbsentSections:
 
         assert "view" in paths and "weather" in paths
         assert "synthetic_activities" in paths
+
+
+class TestBothChecksTogether:
+    """What the batch actually calls: one function, both questions.
+
+    Two seams meant the section half read the machine's real `config.yaml` in
+    every scheduler test that did not pass `--config` — the environmental
+    dependency `de50499` removed from the config tests once already.
+    """
+
+    def test_it_reports_absent_sections_from_the_file(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("location: {}\n")
+
+        findings = check_config_file(_config(), path)
+
+        assert "view" in [f.path for f in findings]
+
+    def test_it_reports_switched_off_features_from_the_config(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("location: {}\n")
+
+        findings = check_config_file(_config(scoring=ScoringConfig()), path)
+
+        assert "scoring.domain_map" in [f.path for f in findings]
+
+    def test_an_unreadable_file_still_reports_the_loaded_config(self, tmp_path):
+        """The loader has already failed loudly about the file by the time
+        anything reaches here; a second complaint is noise. What was loaded is
+        still worth checking."""
+        findings = check_config_file(_config(scoring=ScoringConfig()), tmp_path / "gone.yaml")
+
+        assert [f.path for f in findings] == ["scoring.domain_map"]
