@@ -13,7 +13,7 @@ import argparse
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, tzinfo
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -67,8 +67,21 @@ _DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
 _NO_DATABASE_MESSAGE = "No database yet — run the overnight batch to build one."
 _NO_RECOMMENDATIONS_MESSAGE = "No recommendations yet — run the overnight batch to populate them."
 
-PairLoader = Callable[..., list[RankedEvent]]
+def _default_now() -> datetime:
+    """The clock the CLI runs on when nothing injects one.
 
+    Timezone-aware deliberately, and this is the second time that has had to be
+    said. `datetime.now` returns a naive time, while every timestamp the view
+    compares it against — a forecast's `issued_at`, an open run's `started_at` —
+    is aware, so the bare default raised `can't subtract offset-naive and
+    offset-aware datetimes` on the first real invocation. Every test injected an
+    aware clock, so production was the only naive path and the suite stayed
+    green: exactly the shape that killed the first live fetch.
+    """
+    return datetime.now(timezone.utc)
+
+
+PairLoader = Callable[..., list[RankedEvent]]
 
 def _default_pairs(
     db_path: Path,
@@ -877,7 +890,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def run(
     argv: list[str] | None = None,
     *,
-    get_now: Callable[[], datetime] = datetime.now,
+    get_now: Callable[[], datetime] = _default_now,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     load_pairs: PairLoader = _default_pairs,

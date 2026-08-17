@@ -5,6 +5,7 @@ renderer. Only the clock is injected, because "today" has to be fixed for the
 fixtures to mean anything.
 """
 
+import inspect
 import io
 import re
 import socket
@@ -33,6 +34,7 @@ from src.storage.sqlite.preference_revisions import (
 )
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.rescores import SqliteRescoreRepository
+from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 
 TZ = timezone(timedelta(hours=-4))
@@ -1186,3 +1188,20 @@ def test_explain_never_triggers_a_rescore(db_path):
     _invoke(db_path, "--explain", "Karaoke", rescore=_counting_rescore)
 
     assert calls == []
+
+
+def test_the_clock_the_cli_actually_runs_on_is_timezone_aware():
+    """Asserted on the default itself, because nothing else can see it.
+
+    Every test in this file injects an aware clock, so `datetime.now` — naive —
+    was reachable only in production. The first real invocation died with
+    `can't subtract offset-naive and offset-aware datetimes` comparing it to a
+    stored `started_at`. That is the footgun the table already names, in a
+    second place, and an end-to-end test cannot catch it: injecting a clock to
+    exercise the default is a contradiction, and not injecting one means the
+    test is about whatever machine it runs on.
+    """
+    default = inspect.signature(run).parameters["get_now"].default
+
+    assert default is not datetime.now, "the CLI's default clock is naive again"
+    assert default().tzinfo is not None

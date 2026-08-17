@@ -20,6 +20,8 @@ from src.config import (
     LocationConfig,
     ScoringConfig,
     ScrapingConfig,
+    SyntheticActivityRule,
+    SyntheticConditions,
     VenueDiscoveryConfig,
     WeatherConfig,
 )
@@ -205,6 +207,7 @@ def _rescore(
     *,
     now: datetime = NOW,
     tonight: date = RUN_DATE,
+    config: AppConfig | None = None,
 ) -> Any:
     storage = build_view_storage(db_path, "nomic-embed-text")
     pairs = load_ranked_events(storage.events, storage.scores, storage.rankings)
@@ -213,7 +216,7 @@ def _rescore(
         tonight=tonight,
         now=now,
         ttl=TTL,
-        config=_config(),
+        config=config if config is not None else _config(),
         db_path=db_path,
         storage=storage,
         logger=get_logger("rescore_test"),
@@ -403,3 +406,146 @@ def test_a_synthetic_activity_whose_rule_no_longer_fires_disappears(db_path):
 
     assert refreshed is not None
     assert walk.event_id not in [pair.event.event_id for pair in refreshed]
+
+
+def test_an_event_with_no_tags_does_not_abandon_the_rescore(db_path):
+    """A skip is not a failure. Nothing was needed, so nothing was refused.
+
+    Measured on the live corpus: 365 of 1935 events carry no tags, 347 of them
+    in the ranked set. Treating a skip as a failure abandoned every rescore that
+    would ever be attempted — found by running the real CLI, not by a test.
+    """
+    storage = build_view_storage(db_path, "nomic-embed-text")
+    stored = {event.event_id: event for event in storage.events.load_all()}
+    scores = storage.scores.for_run(RUN_DATE)
+    rankings = storage.rankings.for_run(RUN_DATE)
+
+    bare = stored["indoor"]
+    bare.replace_tags([])
+    bare.replace_summary(None)
+    storage.events.save([bare])
+    storage.scores.save(scores)
+    storage.rankings.save(rankings)
+
+    refreshed = _rescore(db_path, _FixedWeather(_hour(66.0, "clear")))
+
+    assert refreshed is not None, "a tagless event abandoned the whole rescore"
+
+
+def test_a_regenerated_event_reuses_the_vectors_of_an_identical_stored_one(db_path):
+    """Synthetic text is authored, so tonight's copy is byte-identical.
+
+    Embedding it would be a model call the read path may not make, and without
+    the reuse a single evening walk abandoned every rescore — which is exactly
+    the night a weather rescore is for.
+    """
+    from src.composition.pipeline import _carry_embeddings
+
+    storage = build_view_storage(db_path, "nomic-embed-text")
+    stored = storage.events.load_all()
+    original = next(event for event in stored if event.event_id == "outdoor")
+
+    # What enrichment hands back: same content, no vectors, no hash.
+    regenerated = _event("outdoor", "Harbour Fireworks", "outdoor", 0.50)
+    regenerated.replace_tags(list(original.tags))
+    regenerated.replace_summary(original.summary)
+    assert regenerated.tag_embeddings == []
+
+    _carry_embeddings(stored, [regenerated])
+
+    assert regenerated.tag_embeddings == original.tag_embeddings
+    assert regenerated.summary_embedding == original.summary_embedding
+    assert regenerated.embedding_input_hash == original.embedding_input_hash
+
+
+def test_vectors_are_not_carried_onto_different_content(db_path):
+    """Keyed on the text the vectors are a function of, never on the id.
+
+    Carrying a vector onto changed text would score an event against something
+    it does not say — silently, and with every downstream number looking fine.
+    """
+    from src.composition.pipeline import _carry_embeddings
+
+    storage = build_view_storage(db_path, "nomic-embed-text")
+    stored = storage.events.load_all()
+
+    changed = _event("outdoor", "Harbour Fireworks", "outdoor", 0.50)
+    changed.replace_tags([Tag(text="something else entirely")])
+
+    _carry_embeddings(stored, [changed])
+
+    assert changed.tag_embeddings == []
+
+
+_WALK = SyntheticActivityRule(
+    name="evening walk",
+    conditions=SyntheticConditions(min_temp_f=55.0, weather=["clear"]),
+    tags=["outdoor", "walking", "low_key"],
+    summary="A pleasant evening walk",
+    setting="outdoor",
+)
+
+
+def _with_walk() -> AppConfig:
+    config = _config()
+    config.synthetic_activities = [_WALK]
+    return config
+
+
+def _stored_walk() -> Event:
+    """The walk as a completed batch left it, vectors and all."""
+    walk = _event(f"synthetic:evening_walk:{RUN_DATE}", "Evening walk", "outdoor", 0.45)
+    walk.source_type = "synthetic"
+    walk.replace_tags([Tag(text=text) for text in _WALK.tags])
+    walk.replace_summary(_WALK.summary)
+    walk.attach_tag_embeddings([encode_vector([0.1, 0.2, 0.3])] * len(_WALK.tags))
+    walk.summary_embedding = encode_vector([0.4, 0.5, 0.6])
+    walk.embedding_input_hash = embedding_input_hash(walk)
+    return walk
+
+
+def test_a_regenerated_synthetic_does_not_abandon_the_rescore(db_path):
+    """The night a weather rescore is *for* is the night a walk qualifies.
+
+    Enrichment mints the walk fresh, with authored text and no vectors, and
+    embedding it is a model call the read path may not make. Without the reuse
+    this one event abandoned every rescore — which is what the live run showed.
+    """
+    walk = _stored_walk()
+    save_events([walk], db_path)
+
+    storage = build_view_storage(db_path, "nomic-embed-text")
+    scores = storage.scores.for_run(RUN_DATE)
+    rankings = storage.rankings.for_run(RUN_DATE)
+    storage.scores.save(
+        [
+            *scores,
+            EventScore(
+                event_id=walk.event_id,
+                run_date=RUN_DATE,
+                base_score=0.45,
+                tag_confidence=1.0,
+                match="yes",
+                reasons=[],
+            ),
+        ]
+    )
+    storage.rankings.save(
+        [
+            *rankings,
+            Ranking(
+                event_id=walk.event_id,
+                run_date=RUN_DATE,
+                weather_adjustment=0.0,
+                final_score=0.45,
+                rank=3,
+            ),
+        ]
+    )
+
+    refreshed = _rescore(
+        db_path, _FixedWeather(_hour(66.0, "clear")), config=_with_walk()
+    )
+
+    assert refreshed is not None, "a regenerated walk abandoned the rescore"
+    assert walk.event_id in [pair.event.event_id for pair in refreshed]

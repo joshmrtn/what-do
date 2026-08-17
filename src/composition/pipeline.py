@@ -213,6 +213,46 @@ def finish_run(
     return RankingOutcome(scores=scores, rankings=rankings, rankable=len(rankable))
 
 
+def _carry_embeddings(stored: list[Event], enriched: list[Event]) -> None:
+    """Give a regenerated event the vectors an identical stored one already has.
+
+    Keyed on content — the tag texts and the summary — rather than on the event
+    id, because that is what the vectors are a function of. The stated invariant
+    is that a vector is a pure function of its text and the model, so identical
+    text can only produce identical vectors and this reuses rather than assumes.
+
+    It exists for synthetic activities. Their text is authored in `config.yaml`,
+    so the event regenerated tonight is byte-identical to the row dropped a
+    moment ago — measured, every stored `evening_walk` across four dates carries
+    one `embedding_input_hash`. Without this the read path is unusable on
+    exactly the nights it matters: a single regenerated walk was the only thing
+    standing between a working rescore and an abandoned one, because asking for
+    its summary vector is a model call.
+
+    The hash travels with the vectors deliberately. Attaching the vectors alone
+    leaves `embedding_input_hash` unset, so `EmbeddingStage` does not recognise
+    the event as already embedded and re-embeds it anyway.
+    """
+
+    def key(event: Event) -> tuple[tuple[str, ...], str | None]:
+        return tuple(tag.text for tag in event.tags), event.summary
+
+    held = {
+        key(event): event
+        for event in stored
+        if event.tag_embeddings and event.embedding_input_hash is not None
+    }
+    for event in enriched:
+        if event.tag_embeddings:
+            continue
+        source = held.get(key(event))
+        if source is None or len(source.tag_embeddings) != len(event.tags):
+            continue
+        event.attach_tag_embeddings(list(source.tag_embeddings))
+        event.summary_embedding = source.summary_embedding
+        event.embedding_input_hash = source.embedding_input_hash
+
+
 def run_view_tail(
     *,
     events: list[Event],
@@ -281,6 +321,7 @@ def run_view_tail(
     enriched = run_stage(
         "enrichment", lambda: enrichment_service.enrich(carried, run_date), carried
     )
+    _carry_embeddings(events, enriched)
 
     # A failed forecast fetch is *logged and swallowed* by enrichment, which is
     # right for a batch — one bad night must not stop a run — and wrong here.
@@ -298,10 +339,16 @@ def run_view_tail(
     # an event whose vectors are missing scores zero on the semantic half and
     # that zero is written over a good stored score — the rescore actively
     # making the listing worse, silently.
+    # `embedding_failed` only. `embedding_skipped` means the event carries no
+    # tags at all, so there was nothing to embed and nothing a model would have
+    # been asked for — it scores zero on the semantic half before and after.
+    # Measured on the live corpus: 365 of 1935 events have no tags, 347 of them
+    # in the ranked set, so treating a skip as a failure abandoned every rescore
+    # that would ever be attempted.
     unembeddable = [
         event.event_id
         for event in embedded
-        if event.metadata.get("embedding_failed") or event.metadata.get("embedding_skipped")
+        if event.metadata.get("embedding_failed")
     ]
     if unembeddable:
         raise RescoreUnavailable(

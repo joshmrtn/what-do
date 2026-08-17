@@ -40,6 +40,7 @@ from src.scoring.embeddings import RefusingEmbeddingProvider
 from src.scoring.preferences import PreferenceRepository
 from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
+from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
 
 
@@ -118,7 +119,17 @@ def build_rescore_pipeline(
         # extraction, which is not on this path, so `embedding_input_hash` is
         # invariant and every event hits the skip. The refusing provider is what
         # turns that reasoning into an assertion.
-        embedding_stage=EmbeddingStage(RefusingEmbeddingProvider(), logger),
+        embedding_stage=EmbeddingStage(
+            RefusingEmbeddingProvider(),
+            logger,
+            # The batch passes this and so must the view. A vector is a pure
+            # function of its text and the model, so a regenerated synthetic
+            # activity's authored tags were embedded on some previous night
+            # and need no model now — without the memo the refusing provider
+            # fires and every rescore is abandoned the moment a synthetic
+            # activity qualifies.
+            preload=lambda: load_tag_embeddings(db_path, config.models.embeddings),
+        ),
         similarity_stage=SimilarityStage(preferences, config.scoring),
         ranking_engine=RankingEngine(
             config, load_blocklist(blocklist_path), logger
