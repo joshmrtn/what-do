@@ -93,6 +93,23 @@ NEVER_FETCHED = {
 #: hosts arrive from fetched data. Imported from the call site that names each.
 CALL_SITE_POLICIES = (DATA_DERIVED_POLICY,)
 
+#: Collections whose **empty state is the working one**, with the reason each is
+#: not a switched-off feature. Short by design, on the same terms as
+#: `NEVER_FETCHED`: an entry here is a finding this check agrees not to make.
+#:
+#: The rule everywhere else is that an empty collection means the feature does
+#: nothing — `weather.comfort` empty meant no comfort curves loaded and every
+#: adjustment was 0.0. An entry belongs here only when the *opposite* is true:
+#: the feature is fully operative with nothing configured, and populating it is
+#: the exception rather than the point.
+WORKING_WHEN_EMPTY = {
+    # Every source defaults to `auto` — measure the publisher's ids, latch to
+    # content if they churn. That is the feature, and it needs no assignments;
+    # an entry only pins a source out of the measurement. A config naming none
+    # is the ordinary case, not one somebody forgot to fill in.
+    "sources.identity": "unassigned means auto, which is the working default",
+}
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -132,7 +149,7 @@ def _walk(node: Any, *, prefix: str) -> list[Finding]:
         # collection, so the two branches cannot both apply.
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             findings.extend(_walk(value, prefix=f"{path}."))
-        elif isinstance(value, (dict, list)) and not value:
+        elif isinstance(value, (dict, list)) and not value and path not in WORKING_WHEN_EMPTY:
             findings.append(
                 Finding(
                     level=WARNING,

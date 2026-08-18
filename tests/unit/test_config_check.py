@@ -165,6 +165,24 @@ def test_a_scalar_default_is_never_a_finding():
     assert _paths(findings) == []
 
 
+def test_no_identity_assignments_is_not_a_finding():
+    """Empty here means every source is `auto`, which is the working default —
+    not a feature that is off. The one exemption to "every empty collection is
+    reported", and it earns it by being the only collection whose empty state is
+    the intended one."""
+    findings = check_config(_config(sources=SourcesConfig()))
+
+    assert "sources.identity" not in _paths(findings)
+
+
+def test_the_identity_exemption_does_not_cover_its_neighbours():
+    """An exemption that swallowed the rest of `sources` would hide a genuinely
+    empty feed list, which is the shape that means a source silently never runs."""
+    findings = check_config(_config(sources=SourcesConfig()))
+
+    assert "sources.ics_calendars" in _paths(findings)
+
+
 def test_nested_paths_are_dotted():
     findings = check_config(_config(weather=WeatherConfig()))
 

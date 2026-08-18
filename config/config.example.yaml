@@ -332,6 +332,23 @@ network:
 # wrong link is worse than none. An event that has its own URL always shows that
 # instead, unlabelled, because it opens the event rather than the site.
 sources:
+  # Whether a source's publisher may be trusted to identify its own listings.
+  #
+  #   auto      (default, and the reason this block is usually empty) — use the
+  #             publisher's id, and latch permanently to content if measured
+  #             churn shows it identifies nothing.
+  #   publisher — pinned. The latch may never override it. Churn is still
+  #             measured and announced, so a wrong pin is visible rather than
+  #             silent.
+  #   content   — derived from (title, venue, start) from the outset.
+  #
+  # Keyed by `source` (the feed), never `source_type` (the category, which can
+  # cover feeds with opposite behaviour). Naming a source that does not exist is
+  # not an error: the social adapters name a source per account handle,
+  # discovered at runtime.
+  identity: {}
+    # northshorenightout: content
+
   ics_calendars: []
     # - name: example_calendar
     #   url: "https://calendar.google.com/calendar/ical/<id>/public/basic.ics"

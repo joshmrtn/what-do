@@ -9,6 +9,9 @@ from dataclasses import dataclass
 import src.config as config_module
 from src.config import (
     DEFAULT_HORIZON_DAYS,
+    IDENTITY_AUTO,
+    IDENTITY_CONTENT,
+    IDENTITY_PUBLISHER,
     ConfigError,
     FeedConfig,
     SourcesConfig,
@@ -670,6 +673,83 @@ def test_negative_fetch_interval_rejected(tmp_path):
         _load(tmp_path, {
             "sources": {"ics_calendars": [_calendar(min_fetch_interval_hours=-1)]}
         })
+
+
+def test_identity_absent_yields_no_assignments(tmp_path):
+    """Every source is `auto` until somebody says otherwise, so silence is empty."""
+    cfg = _load(tmp_path, {"sources": {"ics_calendars": [_calendar()]}})
+
+    assert cfg.sources.identity == {}
+
+
+def test_identity_defaults_to_auto_for_an_unnamed_source(tmp_path):
+    cfg = _load(tmp_path, {"sources": {"ics_calendars": [_calendar()]}})
+
+    assert cfg.sources.identity_for("northshorenightout") == IDENTITY_AUTO
+
+
+def test_identity_reads_an_assignment(tmp_path):
+    cfg = _load(tmp_path, {
+        "sources": {
+            "ics_calendars": [_calendar()],
+            "identity": {"northshorenightout": "content"},
+        }
+    })
+
+    assert cfg.sources.identity_for("northshorenightout") == IDENTITY_CONTENT
+
+
+def test_identity_pins_a_source_to_its_publisher_id(tmp_path):
+    cfg = _load(tmp_path, {
+        "sources": {
+            "ics_calendars": [_calendar()],
+            "identity": {"northshorenightout": "publisher"},
+        }
+    })
+
+    assert cfg.sources.identity_for("northshorenightout") == IDENTITY_PUBLISHER
+
+
+def test_identity_assignment_does_not_leak_to_other_sources(tmp_path):
+    """The assignment is per source, so naming one says nothing about the rest."""
+    cfg = _load(tmp_path, {
+        "sources": {
+            "ics_calendars": [_calendar()],
+            "identity": {"northshorenightout": "content"},
+        }
+    })
+
+    assert cfg.sources.identity_for("capeanncinema") == IDENTITY_AUTO
+
+
+def test_unknown_identity_value_rejected(tmp_path):
+    """A typo would silently leave a churning source on its publisher's ids."""
+    with pytest.raises(ConfigError, match="identity"):
+        _load(tmp_path, {
+            "sources": {"identity": {"northshorenightout": "conten"}}
+        })
+
+
+def test_unknown_identity_value_names_the_source_and_the_value(tmp_path):
+    with pytest.raises(ConfigError, match="northshorenightout.*'conten'"):
+        _load(tmp_path, {
+            "sources": {"identity": {"northshorenightout": "conten"}}
+        })
+
+
+def test_identity_block_that_is_not_a_mapping_rejected(tmp_path):
+    with pytest.raises(ConfigError, match="identity"):
+        _load(tmp_path, {"sources": {"identity": ["northshorenightout"]}})
+
+
+def test_identity_survives_an_unrecognised_source_name(tmp_path):
+    """Source names are not a closed set — `apify` names a source per handle,
+    discovered at runtime — so an unmatched key is not an error."""
+    cfg = _load(tmp_path, {
+        "sources": {"identity": {"some_instagram_handle": "publisher"}}
+    })
+
+    assert cfg.sources.identity_for("some_instagram_handle") == IDENTITY_PUBLISHER
 
 
 def test_multiple_calendars_load_in_order(tmp_path):

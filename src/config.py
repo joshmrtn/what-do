@@ -156,6 +156,16 @@ class FeedConfig:
     site_url: str | None = None
 
 
+#: Trust the publisher's identifier until measured churn proves it worthless.
+IDENTITY_AUTO = "auto"
+#: Pinned to the publisher's identifier. The churn latch may never override it.
+IDENTITY_PUBLISHER = "publisher"
+#: Derived from the listing's own content, whatever the publisher calls it.
+IDENTITY_CONTENT = "content"
+
+IDENTITY_VALUES = (IDENTITY_AUTO, IDENTITY_PUBLISHER, IDENTITY_CONTENT)
+
+
 @dataclass
 class SourcesConfig:
     """Declared event sources that are configured rather than coded.
@@ -185,6 +195,24 @@ class SourcesConfig:
     #: Pages publishing schema.org events as JSON-LD — the richest markup a
     #: site can offer, stating offsets and cancellations outright.
     jsonld_pages: list[FeedConfig] = field(default_factory=list)
+    #: Per source, whether its publisher's identifier may be used as the
+    #: candidate id. Keyed by `source` — the feed — never `source_type`, which
+    #: is a category and covers feeds with opposite behaviour (#34).
+    #:
+    #: A dict rather than a list, deliberately: `all_feeds` extends over every
+    #: list attribute, so a tenth list here would silently join it.
+    identity: dict[str, str] = field(default_factory=dict)
+
+    def identity_for(self, source: str) -> str:
+        """The identity policy for one source, defaulting to `auto`.
+
+        Unassigned means `auto` because the safe answer is to measure. This is
+        the opposite of `network.hosts`, where an unassigned host is a
+        `ConfigError` — politeness toward a third party must never be applied by
+        accident, whereas trusting an id until it is shown to be untrustworthy
+        costs nothing and self-corrects.
+        """
+        return self.identity.get(source, IDENTITY_AUTO)
 
     def all_feeds(self) -> list[FeedConfig]:
         """Every declared feed, across all parser groups, in declaration order."""
@@ -879,7 +907,40 @@ def _load_sources(raw: dict[str, Any]) -> SourcesConfig:
         moon_feeds=_load_feeds(raw.get("moon_feeds"), "MOON feed"),
         assabet_feeds=_load_feeds(raw.get("assabet_feeds"), "Assabet feed"),
         jsonld_pages=_load_feeds(raw.get("jsonld_pages"), "JSON-LD page"),
+        identity=_load_identity(raw.get("identity")),
     )
+
+
+def _load_identity(raw: Any) -> dict[str, str]:
+    """Read the per-source identity assignments, rejecting an unknown policy.
+
+    Source names are deliberately **not** validated against the declared feeds.
+    They are not a closed set: the social adapters name a source per account
+    handle, discovered at runtime, so an unmatched key here is a source we have
+    not met yet rather than a typo. The *value* is validated, because a
+    misspelling there would quietly leave a churning source on its publisher's
+    ids — the failure this key exists to prevent.
+    """
+    if raw is None:
+        return {}
+
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"sources.identity must be a mapping of source name to one of "
+            f"{', '.join(IDENTITY_VALUES)}; got {type(raw).__name__}"
+        )
+
+    assignments: dict[str, str] = {}
+    for source, value in raw.items():
+        policy = str(value)
+        if policy not in IDENTITY_VALUES:
+            raise ConfigError(
+                f"sources.identity for '{source}' is '{policy}', which is not "
+                f"one of: {', '.join(IDENTITY_VALUES)}"
+            )
+        assignments[str(source)] = policy
+
+    return assignments
 
 
 def _load_models(raw: dict[str, Any]) -> ModelsConfig:
