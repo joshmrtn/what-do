@@ -5,7 +5,65 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 
+from src.normalization.deduplicator import canonical_title, canonical_venue
+
 _DIGEST_LENGTH = 16
+
+#: A listing's identity independent of whatever id the publisher attached to it.
+ContentKey = tuple[str, str, str, str]
+
+
+def content_identity(
+    *,
+    source: str,
+    title: str | None,
+    venue: str | None,
+    start: datetime | None,
+) -> ContentKey:
+    """What identifies a listing, rather than the publisher's handle on it.
+
+    **One rule, two callers.** `id_churn` uses this to decide whether a listing
+    has been seen before; a source latched to content ids derives the id from
+    it. A second copy of the rule would diverge silently and perfectly — the
+    detector reporting 0% churn while the ids churned, because each answers with
+    its own key.
+
+    Scoped to the **feed**, not the category: a calendar feed and a listing page
+    legitimately cover the same event, so a key spanning `source_type` would let
+    one feed's stored row make the other's first publication look already known.
+
+    Canonical on both text fields, because a re-cased republish would otherwise
+    read as a brand new listing — the same reason dedup compares on a canonical
+    key rather than raw strings.
+
+    Carries the **start**: every occurrence of a recurring programme shares a
+    title and venue, so a key without it collapses a whole season into one
+    listing.
+    """
+    return (
+        source,
+        canonical_title(title or ""),
+        canonical_venue(venue or ""),
+        start.isoformat() if start else "",
+    )
+
+
+def derive_content_id(
+    *,
+    source: str,
+    title: str | None,
+    venue: str | None,
+    start: datetime | None,
+) -> str:
+    """A candidate id derived from the listing itself, not from its publisher.
+
+    For a source whose identifiers have been shown not to identify anything.
+    Keyed on `content_identity`, so it collapses exactly the listings the churn
+    detector counts as one.
+    """
+    return derive_candidate_id(source, *content_identity(
+        source=source, title=title, venue=venue, start=start
+    ))
 
 
 def derive_candidate_id(source_type: str, *parts: object) -> str:

@@ -14,11 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.ingestion.candidate_id import ContentKey, content_identity
 from src.models.event_candidate import EventCandidate
-from src.normalization.deduplicator import canonical_title, canonical_venue
-
-#: A listing's identity independent of whatever id the publisher attached to it.
-ContentKey = tuple[str, str, str, str]
 
 
 @dataclass(frozen=True)
@@ -45,26 +42,18 @@ class ChurnTally:
 
 
 def content_key(candidate: EventCandidate) -> ContentKey:
-    """What identifies the listing itself, rather than the publisher's handle on it.
+    """This candidate's listing identity, as `content_identity` defines it.
 
-    Scoped to the **feed**, not the category: a calendar feed and a listing page
-    legitimately cover the same event, so a key spanning `source_type` would let
-    one feed's stored row make the other's first publication look already known,
-    and its correct, stable, genuinely new id would be counted as churn.
-
-    Canonical on both text fields, because a re-cased republish would otherwise
-    read as a brand new listing and hide the very churn this measures — the same
-    reason dedup compares on a canonical key rather than raw strings.
-
-    Carries the **start**: every occurrence of a recurring programme shares a
-    title and venue, so a key without it collapses a whole season into one
-    listing and reports the season as churn.
+    A thin adapter from a built candidate onto the shared rule, which the
+    adapters must also reach *before* a candidate exists. The rule itself lives
+    with the id derivation, so the measurement and the id it may cause cannot
+    drift apart — see `content_identity` for why that matters.
     """
-    return (
-        candidate.source,
-        canonical_title(candidate.title or ""),
-        canonical_venue(candidate.venue or ""),
-        candidate.start_time.isoformat() if candidate.start_time else "",
+    return content_identity(
+        source=candidate.source,
+        title=candidate.title,
+        venue=candidate.venue,
+        start=candidate.start_time,
     )
 
 
