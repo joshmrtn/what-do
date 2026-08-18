@@ -1,0 +1,331 @@
+"""The one part of politeness that really is about HTTP.
+
+`RequestPolicy` deliberately inspects no URL and knows no transport, so that a
+vendor SDK goes through it unchanged. Three things do not survive that
+abstraction, and they live here:
+
+* **which failures are worth another attempt** — a status code, for `requests`;
+* **what the server said with `Retry-After`** — it named a number, so we use its
+  number rather than our own schedule;
+* **the conditional request** — replaying `ETag` and `Last-Modified` so a server
+  can answer `304` and send no body at all, which is the politest outcome
+  available short of not asking.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from typing import Callable
+from urllib.parse import urlsplit
+
+import requests
+
+from src.network.policy import RequestPolicy
+from src.network.protocols import (
+    DO_NOT_RETRY,
+    RETRY_WITH_BACKOFF,
+    RetryAdvice,
+    TransientCheck,
+)
+from src.config import NetworkConfig
+from src.storage.http_cache import CachedResponse
+from src.storage.protocols import HttpCache
+from src.utils.logging import StructuredLogger
+
+#: Identifies the project rather than impersonating a browser.
+USER_AGENT = "what-do/1.0 (local event aggregator; nightly batch)"
+
+#: Statuses that mean "not now" rather than "no". 429 is the server asking for
+#: room; 5xx is it failing in a way that may not repeat. Everything else in the
+#: 4xx range describes the request itself and will fail identically next time.
+_RETRYABLE_STATUSES = frozenset({429})
+
+
+def requests_transient_check(*, get_now: Callable[[], datetime]) -> TransientCheck:
+    """A transient-failure predicate for `requests`.
+
+    Args:
+        get_now: Injected clock, needed because `Retry-After` may be an HTTP
+            date rather than a count of seconds. Required rather than defaulted:
+            a default only production reaches is untested by construction.
+
+    Returns:
+        A check reading `requests`' exceptions and any `Retry-After` on them.
+    """
+
+    def check(error: BaseException) -> RetryAdvice:
+        if isinstance(error, requests.HTTPError):
+            return _advice_for_http_error(error, get_now)
+        if isinstance(error, (requests.Timeout, requests.ConnectionError)):
+            return RETRY_WITH_BACKOFF
+        # Anything else is not this transport's failure — most likely ours, and
+        # a bug fails identically however politely it is repeated.
+        return DO_NOT_RETRY
+
+    return check
+
+
+def _advice_for_http_error(
+    error: requests.HTTPError, get_now: Callable[[], datetime]
+) -> RetryAdvice:
+    """Advice for a status code, and the server's own opinion on when.
+
+    An error carrying no response has no status to judge, so it is not retried:
+    without one there is nothing to call transient and guessing would retry the
+    unretryable.
+    """
+    response = error.response
+    if response is None:
+        return DO_NOT_RETRY
+
+    status = response.status_code
+    if status not in _RETRYABLE_STATUSES and status < 500:
+        return DO_NOT_RETRY
+
+    return RetryAdvice(
+        retry=True,
+        retry_after_seconds=_retry_after_seconds(response.headers.get("Retry-After"), get_now),
+    )
+
+
+def _retry_after_seconds(
+    header: str | None, get_now: Callable[[], datetime]
+) -> float | None:
+    """Read `Retry-After` in either legal form, or None for no opinion.
+
+    Delta-seconds and an HTTP date are both valid (RFC 9110). Ignoring the date
+    form would mean backing off two seconds against a server that asked for an
+    hour, which is the impoliteness this module exists to prevent. Anything
+    unparseable is treated as no opinion rather than as a reason to stop
+    retrying — the status already said the attempt was worth repeating.
+
+    Never negative: a stale date means "now", and a negative wait is not a wait.
+    """
+    if header is None:
+        return None
+
+    raw = header.strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+
+    try:
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+
+    if when.tzinfo is None:
+        return None
+
+    return max(0.0, (when - get_now()).total_seconds())
+
+
+@dataclass(frozen=True)
+class HttpDocument:
+    """A fetched body with whatever validators the server offered.
+
+    The validators travel *with* the body rather than being written separately,
+    because the policy caches whatever `perform` returned. Splitting them would
+    leave the cache holding a body whose ETag was stored by a different code
+    path — and then a 304 would revalidate against the wrong version.
+    """
+
+    body: str
+    etag: str | None
+    last_modified: str | None
+
+
+class UrlCache:
+    """A `CacheStrategy[HttpDocument]` bound to one URL.
+
+    The freshness bound is handed in at construction rather than checked by the
+    caller afterwards, so a stale read has no API. That is the same shape
+    `WeatherCache.get(..., fresh_since=...)` uses, and for the same reason: a
+    rule remembered at every call site is a rule that will be forgotten.
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        http_cache: HttpCache,
+        get_now: Callable[[], datetime],
+        ttl: timedelta | None,
+    ) -> None:
+        """
+        Args:
+            url: The key. A document is identified by where it came from.
+            http_cache: Persistent store, so politeness survives a restart.
+            get_now: Injected clock.
+            ttl: Lifetime from the host's policy. `None` is a declared `never`.
+        """
+        self._url = url
+        self._http_cache = http_cache
+        self._get_now = get_now
+        self._ttl = ttl
+
+    def get(self) -> HttpDocument | None:
+        """The stored document while it is still fresh, otherwise None."""
+        entry = self.stored()
+        if entry is None or self._ttl is None:
+            return None
+        if self._get_now() - _as_aware(entry.fetched_at) >= self._ttl:
+            return None
+        return HttpDocument(
+            body=entry.body, etag=entry.etag, last_modified=entry.last_modified
+        )
+
+    def put(self, value: HttpDocument) -> None:
+        """Store the document, stamped from the injected clock."""
+        if self._ttl is None:
+            return
+        self._http_cache.put(
+            self._url,
+            body=value.body,
+            etag=value.etag,
+            last_modified=value.last_modified,
+            fetched_at=self._get_now(),
+        )
+
+    def stored(self) -> CachedResponse | None:
+        """What is held for this URL regardless of age, for its validators.
+
+        Deliberately separate from `get`. Staleness is a reason to *revalidate*,
+        which needs the ETag of the copy we hold — a stale entry that forgot its
+        validators would force a full download where a 304 would have done.
+
+        A declared `never` returns nothing here either: it keeps nothing, and so
+        it also gives up conditional requests. That makes `never` the wrong
+        choice for a document fetch, and a considered one for a prompt.
+        """
+        if self._ttl is None:
+            return None
+        return self._http_cache.get(self._url)
+
+
+class HttpFetcher:
+    """One polite conditional GET, for every caller that speaks HTTP."""
+
+    def __init__(
+        self,
+        *,
+        session: requests.Session,
+        network: NetworkConfig,
+        policy: RequestPolicy,
+        http_cache: HttpCache,
+        get_now: Callable[[], datetime],
+        logger: StructuredLogger | None = None,
+    ) -> None:
+        """
+        Args:
+            session: Injected HTTP session, so tests never reach the network.
+                The transport is the boundary, so a structural fake belongs
+                here — this is the one seam a double may legitimately stand in
+                for.
+            network: Read for the lifetime of what this caller stores. The key
+                is the caller's; the lifetime is config's.
+            policy: Throttle, retry and timeout.
+            http_cache: Where bodies and validators are kept.
+            get_now: Injected clock.
+            logger: Structured logger. Optional.
+        """
+        self._session = session
+        self._network = network
+        self._policy = policy
+        self._http_cache = http_cache
+        self._get_now = get_now
+        self._logger = logger
+        self._is_transient = requests_transient_check(get_now=get_now)
+
+    def get(self, url: str, *, label: str, policy: str | None = None) -> str:
+        """Fetch a document, skipping the network whenever politeness allows.
+
+        Args:
+            url: Document to fetch. Its host decides the policy, unless one is
+                named.
+            label: Source name, for log messages.
+            policy: Names a policy directly, for a host that arrived from
+                fetched data rather than from config.
+
+        Returns:
+            The body, from cache when refetching would be impolite.
+
+        Raises:
+            ConfigError: If the host has no assigned policy.
+            ValueError: If the server answers 304 with nothing stored to serve.
+        """
+        host = _host_of(url)
+        limits = (
+            self._network.for_category(policy)
+            if policy is not None
+            else self._network.for_host(host)
+        )
+        cache = UrlCache(
+            url=url,
+            http_cache=self._http_cache,
+            get_now=self._get_now,
+            ttl=limits.cache_ttl,
+        )
+
+        document = self._policy.call(
+            host=host,
+            perform=lambda timeout: self._perform(url, cache.stored(), timeout),
+            is_transient=self._is_transient,
+            cache=cache,
+            label=label,
+            policy=policy,
+        )
+        return document.body
+
+    def _perform(
+        self, url: str, stored: CachedResponse | None, timeout: float
+    ) -> HttpDocument:
+        """One attempt: a conditional request, and what its answer means."""
+        headers = {"User-Agent": USER_AGENT}
+        if stored is not None:
+            if stored.etag:
+                headers["If-None-Match"] = stored.etag
+            if stored.last_modified:
+                headers["If-Modified-Since"] = stored.last_modified
+
+        response = self._session.get(url, headers=headers, timeout=timeout)
+        response.raise_for_status()
+
+        if response.status_code == 304:
+            if stored is None:
+                raise ValueError(
+                    f"{url} answered 304 with nothing stored to serve. Returning "
+                    "the empty body would cache it as the truth."
+                )
+            return HttpDocument(
+                body=stored.body,
+                etag=stored.etag,
+                last_modified=stored.last_modified,
+            )
+
+        return HttpDocument(
+            body=response.text,
+            etag=response.headers.get("ETag"),
+            last_modified=response.headers.get("Last-Modified"),
+        )
+
+
+def _host_of(url: str) -> str:
+    """The host a URL points at, which is what a policy is assigned to."""
+    host = urlsplit(url).hostname
+    if host is None:
+        raise ValueError(f"Cannot tell which host {url!r} addresses")
+    return host
+
+
+def _as_aware(value: datetime) -> datetime:
+    """Read a bare stamp as UTC, leaving one that states its zone alone.
+
+    Our own writes are aware, but a row left by an older naive clock would
+    otherwise raise on comparison — and since every source fetches through here,
+    one legacy row would fail all of them at once.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
