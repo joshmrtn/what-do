@@ -3,6 +3,7 @@
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
 import requests
 
 from src.enrichment.air_quality import (
@@ -10,6 +11,7 @@ from src.enrichment.air_quality import (
     AirQualityProvider,
     OpenMeteoAirQualityProvider,
 )
+from src.config import ConfigError
 from src.storage.memory.day_cache import InMemoryDayCache
 from tests.support.network import fetcher_policy
 
@@ -18,13 +20,17 @@ _LAT, _LNG = 42.52, -70.89
 _NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
 
 
-def _provider(session) -> OpenMeteoAirQualityProvider:
-    """The real provider over a faked session; only the transport stands in."""
+def _provider(
+    session, *, urls: str = f"https://{AIR_QUALITY_HOST}/v1/air-quality"
+) -> OpenMeteoAirQualityProvider:
+    """The real provider over a faked session; only the transport stands in.
+
+    `urls` is what the policy has a host assignment for. Pointing it elsewhere is
+    how a test reaches the unassigned-host path.
+    """
     return OpenMeteoAirQualityProvider(
         session=session,
-        policy=fetcher_policy(
-            urls=f"https://{AIR_QUALITY_HOST}/v1/air-quality", now=_NOW
-        ),
+        policy=fetcher_policy(urls=urls, now=_NOW),
         air_quality_cache=InMemoryDayCache(),
         cache_ttl=timedelta(hours=12),
         get_now=lambda: _NOW,
@@ -105,3 +111,12 @@ def test_missing_reading_for_an_hour_becomes_none():
     payload["hourly"]["us_aqi"][3] = None
     day = _fetch(_mock_session(payload))
     assert day["hours"][3]["us_aqi"] is None
+
+
+def test_an_unassigned_host_is_raised_not_reported_as_no_readings():
+    """Same swallow as the forecast: `ConfigError` is a `ValueError`, so an
+    unconfigured host would look exactly like a station with nothing to say."""
+    provider = _provider(_mock_session(), urls="https://not-air-quality.test/x")
+
+    with pytest.raises(ConfigError):
+        provider.fetch(_FETCH_DATE, _LAT, _LNG)

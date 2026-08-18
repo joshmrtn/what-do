@@ -13,6 +13,7 @@ from src.enrichment.weather import (
     map_wmo_code,
     sample_hour,
 )
+from src.config import ConfigError
 from src.storage.memory.day_cache import InMemoryDayCache
 from tests.support.network import fetcher_policy
 
@@ -71,15 +72,20 @@ _LAT, _LNG = 42.52, -70.89
 _NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
 
 
-def _provider(session) -> OpenMeteoProvider:
+def _provider(session, *, urls: str = f"https://{OPEN_METEO_HOST}/v1/forecast") -> OpenMeteoProvider:
     """The real provider over a faked session.
 
     Its caching, throttling and retry are the policy's now, so a test about the
     *request* wires the real policy and stands in only for the transport.
+
+    Args:
+        session: The faked transport.
+        urls: What the policy has a host assignment for. Pointing it somewhere
+            else is how a test reaches the unassigned-host path.
     """
     return OpenMeteoProvider(
         session=session,
-        policy=fetcher_policy(urls=f"https://{OPEN_METEO_HOST}/v1/forecast", now=_NOW),
+        policy=fetcher_policy(urls=urls, now=_NOW),
         weather_cache=InMemoryDayCache(),
         cache_ttl=timedelta(hours=12),
         get_now=lambda: _NOW,
@@ -281,3 +287,19 @@ def test_sample_hour_returns_none_when_the_hour_is_absent():
 
 def test_sample_hour_returns_none_for_an_empty_day():
     assert sample_hour({"date": "2025-06-21", "hours": []}, None, default_hour=20) is None
+
+
+def test_an_unassigned_host_is_raised_not_reported_as_no_readings():
+    """`ConfigError` subclasses `ValueError`, and the catch below names
+    `ValueError` — so an unconfigured host would return `None`, enrichment would
+    record an absence, and the run would report success having silently scored
+    every event with no weather at all.
+
+    That is the failure the narrow catch was written to prevent: what it
+    tolerates is the provider being unreachable, unhappy or malformed; what it
+    must let through is us being wrong.
+    """
+    provider = _provider(_mock_session(), urls="https://not-open-meteo.test/x")
+
+    with pytest.raises(ConfigError):
+        provider.fetch(_FETCH_DATE, _LAT, _LNG)

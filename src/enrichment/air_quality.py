@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import requests
 
+from src.config import ConfigError
 from src.enrichment.day_cache import DayReadingsCache
 from src.network.http import requests_transient_check
 from src.network.policy import RequestPolicy
@@ -102,6 +103,13 @@ class OpenMeteoAirQualityProvider(AirQualityProvider):
                 ),
                 label="air_quality",
             )
+        except ConfigError:
+            # `ConfigError` is a `ValueError`, so the narrow catch below would
+            # swallow an unassigned host as an absence — and an absence here is
+            # indistinguishable from a provider that had nothing to say. That is
+            # the swallow this catch was narrowed to prevent, arriving by
+            # inheritance instead of by breadth.
+            raise
         except (requests.RequestException, ValueError, KeyError):
             return None
 

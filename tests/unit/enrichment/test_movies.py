@@ -12,6 +12,7 @@ from src.enrichment.movies import (
     TMDbProvider,
     enrich_movie_event,
 )
+from src.config import ConfigError
 from src.storage.memory.movie_cache import InMemoryMovieCache
 from tests.support.network import fetcher_policy
 from src.models.event import Event
@@ -26,12 +27,16 @@ NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
 _TMDB_NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 
 
-def _tmdb_provider(session) -> TMDbProvider:
-    """The real provider over a faked session; only the transport stands in."""
+def _tmdb_provider(session, *, urls: str = f"https://{TMDB_HOST}/3") -> TMDbProvider:
+    """The real provider over a faked session; only the transport stands in.
+
+    `urls` is what the policy has a host assignment for. Pointing it elsewhere is
+    how a test reaches the unassigned-host path.
+    """
     return TMDbProvider(
         "testkey",
         session=session,
-        policy=fetcher_policy(urls=f"https://{TMDB_HOST}/3", now=_TMDB_NOW),
+        policy=fetcher_policy(urls=urls, now=_TMDB_NOW),
         movie_cache=InMemoryMovieCache(),
         cache_ttl=timedelta(days=7),
         get_now=lambda: _TMDB_NOW,
@@ -297,3 +302,13 @@ def test_tmdb_provider_missing_runtime_returns_none_for_that_field():
     provider = _tmdb_provider(session)
     result = provider.fetch("A Drama", year=None)
     assert result["runtime_minutes"] is None
+
+
+def test_an_unassigned_host_is_raised_not_reported_as_an_unknown_film():
+    """`ConfigError` is a `ValueError`, so an unconfigured host would be caught
+    by the narrow catch and reported as a film nobody has heard of — which is
+    exactly what that catch's own docstring says it must not do."""
+    provider = _tmdb_provider(MagicMock(), urls="https://not-tmdb.test/3")
+
+    with pytest.raises(ConfigError):
+        provider.fetch("Jaws", 1975)
