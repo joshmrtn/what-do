@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.ingestion.candidate_id import ContentKey, content_identity
+from src.ingestion.candidate_id import (
+    ContentKey,
+    content_identity,
+    identifies_a_listing,
+)
 from src.models.event_candidate import EventCandidate
 
 
@@ -80,7 +84,15 @@ def churn_by_source(
         One tally per feed (`source`) present in `fetched`.
     """
     known_ids = {candidate.id for candidate in stored}
-    known_keys = {content_key(candidate) for candidate in stored}
+    # Only keys that discriminate. A candidate carrying neither a title nor a
+    # start — every social post — collapses onto one key per account, so leaving
+    # it here would make each genuinely new post match a stored "listing" and
+    # report a healthy feed at ~100% churn.
+    known_keys = {
+        key
+        for key in (content_key(candidate) for candidate in stored)
+        if identifies_a_listing(key)
+    }
 
     seen_before: dict[str, int] = {}
     churned: dict[str, int] = {}
@@ -90,7 +102,8 @@ def churn_by_source(
         seen_before.setdefault(source, 0)
         churned.setdefault(source, 0)
 
-        if content_key(candidate) not in known_keys:
+        key = content_key(candidate)
+        if not identifies_a_listing(key) or key not in known_keys:
             continue
 
         seen_before[source] += 1

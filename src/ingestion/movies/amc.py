@@ -8,6 +8,8 @@ from typing import Any, Callable
 import requests
 
 from src.network.http import requests_transient_check
+from src.ingestion.candidate_id import derive_content_id
+from src.ingestion.identity import ContentIdRule
 from src.network.policy import RequestPolicy
 from src.network.protocols import NullCache
 
@@ -42,6 +44,8 @@ class AmcAdapter(IngestionSource):
         session: requests.Session,
         policy: RequestPolicy,
         get_now: Callable[[], datetime] = datetime.now,
+        *,
+        uses_content_id: ContentIdRule,
     ) -> None:
         """
         Args:
@@ -52,12 +56,17 @@ class AmcAdapter(IngestionSource):
                 rather than through `HttpFetcher`, because this is a **POST**
                 and a conditional GET cannot express it.
             get_now: Injected clock.
+            uses_content_id: Whether AMC's showtime ids may be used as the
+                candidate id. Required, so the composition root cannot forget
+                to forward it.
         """
         self._api_key = api_key
         self._postal_code = postal_code
         self._session = session
         self._policy = policy
         self._get_now = get_now
+        # Required and keyword-only, so the composition root cannot forget it.
+        self._uses_content_id = uses_content_id
         self._is_transient = requests_transient_check(get_now=get_now)
 
     def fetch(self) -> list[EventCandidate]:
@@ -109,7 +118,7 @@ class AmcAdapter(IngestionSource):
             else None
         )
         return EventCandidate(
-            id=self._derive_id(movie, show),
+            id=self._derive_id(movie, show, start),
             source="amc",
             source_type=AMC,
             title=movie.get("name"),
@@ -121,8 +130,24 @@ class AmcAdapter(IngestionSource):
             discovered_at=self._get_now(),
         )
 
-    def _derive_id(self, movie: dict[str, Any], show: dict[str, Any]) -> str:
-        """Build a stable id so a nightly refetch updates the showtime's row."""
+    def _derive_id(
+        self, movie: dict[str, Any], show: dict[str, Any], start: datetime | None
+    ) -> str:
+        """Build a stable id so a nightly refetch updates the showtime's row.
+
+        The fallback answers *"AMC published no showtime id"*; the content rule
+        answers *"its showtime ids identify nothing"*. Different questions, so
+        the fallback keeps its own material and the latched path takes the
+        shared listing key.
+        """
+        if self._uses_content_id("amc"):
+            return derive_content_id(
+                source="amc",
+                title=movie.get("name"),
+                venue=show.get("theatre", {}).get("name"),
+                start=start,
+            )
+
         showtime_id = show.get("id")
         if showtime_id:
             return derive_candidate_id("amc", showtime_id)

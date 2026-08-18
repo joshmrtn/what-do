@@ -48,6 +48,22 @@ def content_identity(
     )
 
 
+def identifies_a_listing(key: ContentKey) -> bool:
+    """Whether this key says enough to tell one listing from another.
+
+    A venue alone does not. A social post carries neither a title nor a start —
+    extraction derives those later — so every post from one account collapses
+    onto `(handle, "", location, "")`. Treated as a listing key that would read
+    as total churn on a healthy source, and would key an entire account's feed
+    onto one id if anything acted on it.
+
+    A title *or* a start is enough: plenty of feeds publish a date they cannot
+    pin to an hour, and plenty publish a title with no time at all.
+    """
+    _, title, _, start = key
+    return bool(title or start)
+
+
 def derive_content_id(
     *,
     source: str,

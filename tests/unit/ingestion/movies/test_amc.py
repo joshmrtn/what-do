@@ -37,7 +37,7 @@ _AMC_RESPONSE = {
 }
 
 
-def _make_adapter(response=None):
+def _make_adapter(response=None, content_ids=False):
 
     mock_session = MagicMock()
     mock_session.post.return_value.json.return_value = response or _AMC_RESPONSE
@@ -49,6 +49,7 @@ def _make_adapter(response=None):
         session=mock_session,
         policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
+        uses_content_id=lambda source: content_ids,
     )
 
 
@@ -95,6 +96,7 @@ def test_raises_on_http_error():
         session=mock_session,
         policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
+        uses_content_id=lambda source: False,
     )
     with pytest.raises(Exception):
         adapter.fetch()
@@ -129,6 +131,7 @@ def test_id_is_stable_across_runs_on_different_days():
         session=mock_session,
         policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=later),
         get_now=lambda: later,
+        uses_content_id=lambda source: False,
     ).fetch()[0]
 
     assert first.id == second.id
@@ -149,3 +152,29 @@ def test_falls_back_to_stable_id_without_a_showtime_id():
     base = _AMC_RESPONSE["data"]["getMoviesAndShowtimes"][0]["showtimes"][0]
     response = _response_with_showtimes([{k: v for k, v in base.items() if k != "id"}])
     assert _make_adapter(response).fetch()[0].id == _make_adapter(response).fetch()[0].id
+
+
+class TestWhenTheShowtimeIdsAreNotTrusted:
+    """A showtime is a listing — a film, at a theatre, at a time — so the shared
+    listing key describes it exactly, and AMC can latch like any other source.
+    """
+
+    def test_a_re_minted_showtime_id_yields_the_same_id(self):
+        first = _make_adapter(content_ids=True).fetch()[0]
+
+        renumbered = _response_with_showtimes([
+            {
+                "showDateTimeUtc": SHOWTIME.isoformat(),
+                "theatre": {"name": "AMC Methuen 20"},
+                "id": "amc_show_999",
+            }
+        ])
+        later = _make_adapter(response=renumbered, content_ids=True).fetch()[0]
+
+        assert first.id == later.id
+
+    def test_the_showtime_id_is_not_in_the_id_at_all(self):
+        publisher_keyed = _make_adapter().fetch()[0]
+        content_keyed = _make_adapter(content_ids=True).fetch()[0]
+
+        assert publisher_keyed.id != content_keyed.id

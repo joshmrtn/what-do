@@ -222,6 +222,7 @@ def build_dependencies(
                 session=requests.Session(),
                 policy=request_policy,
                 get_now=get_now,
+                uses_content_id=uses_content_id,
             )
         )
     for feed in config.sources.ics_calendars:

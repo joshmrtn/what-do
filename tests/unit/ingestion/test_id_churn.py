@@ -148,3 +148,71 @@ def test_the_key_holds_the_start_so_a_series_is_not_one_listing():
     second = _candidate("uid-2", start_time=START.replace(day=29))
 
     assert content_key(first) != content_key(second)
+
+
+class TestACandidateThatCannotBeIdentifiedByContent:
+    """The measurement asks *"have we seen this listing before?"* and answers it
+    with `(source, title, venue, start)`. A social post carries neither a title
+    nor a start — extraction derives those later — so every post from one
+    account collapses onto a single key.
+
+    Left unguarded that reads as ~100% churn on a perfectly healthy source,
+    because each genuinely new post arrives under an id we have not seen while
+    matching a key we have. A latch acting on that would re-key an entire
+    account's feed onto one id: the measurement's own failure mode, doing the
+    damage it exists to prevent.
+    """
+
+    def _post(self, cid: str, **overrides: object) -> EventCandidate:
+        fields: dict = {
+            "source": "somevenue",
+            "source_type": "apify",
+            "title": None,
+            "start_time": None,
+            "venue": "Somewhere",
+        }
+        fields.update(overrides)
+        return _candidate(cid, **fields)
+
+    def test_it_is_outside_the_measurement_entirely(self):
+        result = churn_by_source(
+            [self._post("post-2")], stored=[self._post("post-1")]
+        )
+
+        assert result["somevenue"].seen_before == 0
+
+    def test_the_rate_is_unknown_rather_than_perfect(self):
+        """`None` says we cannot tell, which is the truth. Zero would read as
+        "these ids are stable" and 1.0 would arm a latch on nothing."""
+        result = churn_by_source(
+            [self._post("post-2")], stored=[self._post("post-1")]
+        )
+
+        assert result["somevenue"].rate is None
+
+    def test_a_title_alone_is_enough_to_be_measurable(self):
+        """A listing with a title but no published time is still identifiable —
+        plenty of feeds publish a date they cannot pin to an hour."""
+        result = churn_by_source(
+            [self._post("post-2", title="Quiz Night")],
+            stored=[self._post("post-1", title="Quiz Night")],
+        )
+
+        assert result["somevenue"].rate == 1.0
+
+    def test_a_start_alone_is_enough_to_be_measurable(self):
+        result = churn_by_source(
+            [self._post("post-2", start_time=START)],
+            stored=[self._post("post-1", start_time=START)],
+        )
+
+        assert result["somevenue"].rate == 1.0
+
+    def test_it_does_not_silence_the_sources_around_it(self):
+        """One unmeasurable feed must not take a measurable one with it."""
+        result = churn_by_source(
+            [self._post("post-2"), _candidate("uid-new")],
+            stored=[self._post("post-1"), _candidate("uid-old")],
+        )
+
+        assert result["nsno_ics"].rate == 1.0
