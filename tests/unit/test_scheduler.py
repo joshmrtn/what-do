@@ -22,6 +22,7 @@ from src.config import (
     ScrapingConfig,
     VenueDiscoveryConfig,
 )
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.ingestion.source import IngestionSource
@@ -46,7 +47,7 @@ from src.scoring.ranking import RankingEngine
 from src.scoring.similarity_stage import SimilarityStage
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.weather import WeatherProvider
-from src.storage.memory.weather_cache import InMemoryWeatherCache
+from src.storage.memory.day_cache import InMemoryDayCache
 from src.storage.sqlite.connection import init_db
 from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
@@ -497,7 +498,7 @@ def _network() -> NetworkConfig:
                 cache_ttl=timedelta(hours=12),
             )
         },
-        hosts={OPEN_METEO_HOST: "open_meteo"},
+        hosts={OPEN_METEO_HOST: "open_meteo", AIR_QUALITY_HOST: "open_meteo"},
     )
 
 def _config(**scraping) -> AppConfig:

@@ -1,4 +1,10 @@
-"""SQLite-backed weather cache."""
+"""SQLite-backed cache of one day's readings for one place.
+
+Two providers key their answers identically — a forecast and an air-quality
+reading are both "what this service said about this day, here" — so they share
+an implementation and differ only in the table they write. A second copy of
+this class would drift from the first, silently, because nothing compares them.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +17,20 @@ from typing import Any
 from src.storage.sqlite.connection import connect
 
 
-class SqliteWeatherCache:
-    """Reads and writes `weather_cache`."""
+class SqliteDayCache:
+    """Reads and writes one day-and-place cache table."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Path | str, *, table: str) -> None:
+        """
+        Args:
+            db_path: Database file.
+            table: Which cache to read and write. Required rather than
+                defaulted: a default would silently point a second provider at
+                the first one's rows, and the `UNIQUE (date, latitude,
+                longitude)` constraint means they would overwrite each other.
+        """
         self._db_path = db_path
+        self._table = _checked_table(table)
 
     def get(
         self,
@@ -35,7 +50,7 @@ class SqliteWeatherCache:
         conn = connect(self._db_path)
         try:
             row = conn.execute(
-                "SELECT data, fetched_at FROM weather_cache "
+                f"SELECT data, fetched_at FROM {self._table} "
                 "WHERE date=? AND latitude=? AND longitude=?",
                 (day.isoformat(), latitude, longitude),
             ).fetchone()
@@ -60,7 +75,7 @@ class SqliteWeatherCache:
         conn = connect(self._db_path)
         try:
             conn.execute(
-                "INSERT OR REPLACE INTO weather_cache "
+                f"INSERT OR REPLACE INTO {self._table} "
                 "(id, date, latitude, longitude, data, fetched_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -95,3 +110,18 @@ def _is_fresh(fetched_at: str, fresh_since: datetime) -> bool:
         stamped = stamped.replace(tzinfo=fresh_since.tzinfo)
 
     return stamped >= fresh_since
+
+
+#: The tables this class may address. An allowlist rather than a check for
+#: dangerous characters: the table name is interpolated into SQL, so the only
+#: safe rule is that it was one of ours to begin with.
+_TABLES = frozenset({"weather_cache", "air_quality_cache"})
+
+
+def _checked_table(table: str) -> str:
+    """The table name, or a refusal naming what is allowed."""
+    if table not in _TABLES:
+        raise ValueError(
+            f"Unknown day cache table {table!r}; expected one of {sorted(_TABLES)}"
+        )
+    return table

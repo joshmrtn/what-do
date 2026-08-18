@@ -26,12 +26,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from src.composition.network import (
+    build_air_quality_provider,
     build_http_fetcher,
     build_request_policy,
     build_weather_provider,
 )
 from src.config import AppConfig
-from src.enrichment.air_quality import OpenMeteoAirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.movies import TMDbProvider
 from src.enrichment.service import EnrichmentService
@@ -379,7 +379,13 @@ def build_dependencies(
             synthetic_rules=config.synthetic_activities,
             config=config,
             db_path=db_path,
-            air_quality_provider=OpenMeteoAirQualityProvider(),
+            air_quality_provider=build_air_quality_provider(
+                config,
+                air_quality_cache=storage.air_quality_cache,
+                get_now=get_now,
+                policy=request_policy,
+                logger=logger,
+            ),
             get_now=get_now,
             logger=logger,
         ),

@@ -20,8 +20,9 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 import requests
 
-from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider, WeatherDayCache
-from src.storage.memory.weather_cache import InMemoryWeatherCache
+from src.enrichment.day_cache import DayReadingsCache
+from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider
+from src.storage.memory.day_cache import InMemoryDayCache
 from tests.support.network import fetcher_policy
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
@@ -75,7 +76,7 @@ def _provider(
     return OpenMeteoProvider(
         session=session,
         policy=fetcher_policy(urls=URL, sleeps=sleeps, now=now),
-        weather_cache=cache if cache is not None else InMemoryWeatherCache(),
+        weather_cache=cache if cache is not None else InMemoryDayCache(),
         cache_ttl=cache_ttl,
         get_now=lambda: now,
     )
@@ -139,7 +140,7 @@ def test_a_bad_request_is_not_retried():
 
 
 def test_a_second_fetch_of_one_day_is_served_from_the_cache():
-    store = InMemoryWeatherCache()
+    store = InMemoryDayCache()
     session = _FakeSession(_response())
     _provider(session, cache=store).fetch(DAY, LAT, LNG)
     _provider(session, cache=store).fetch(DAY, LAT, LNG)
@@ -148,7 +149,7 @@ def test_a_second_fetch_of_one_day_is_served_from_the_cache():
 
 
 def test_a_different_day_is_a_different_key():
-    store = InMemoryWeatherCache()
+    store = InMemoryDayCache()
     session = _FakeSession(_response(), _response())
     _provider(session, cache=store).fetch(DAY, LAT, LNG)
     _provider(session, cache=store).fetch(date(2026, 8, 21), LAT, LNG)
@@ -159,7 +160,7 @@ def test_a_different_day_is_a_different_key():
 def test_a_forecast_past_its_lifetime_is_refetched():
     """An event found a week out must not score on the forecast issued the day
     it was discovered."""
-    store = InMemoryWeatherCache()
+    store = InMemoryDayCache()
     session = _FakeSession(_response(), _response())
     _provider(session, cache=store, now=NOW).fetch(DAY, LAT, LNG)
 
@@ -170,7 +171,7 @@ def test_a_forecast_past_its_lifetime_is_refetched():
 
 
 def test_a_declared_never_caches_nothing():
-    store = InMemoryWeatherCache()
+    store = InMemoryDayCache()
     session = _FakeSession(_response(), _response())
     _provider(session, cache=store, cache_ttl=None).fetch(DAY, LAT, LNG)
     _provider(session, cache=store, cache_ttl=None).fetch(DAY, LAT, LNG)
@@ -180,7 +181,7 @@ def test_a_declared_never_caches_nothing():
 
 def test_a_failed_fetch_is_not_stored_as_a_forecast():
     """Caching a miss here would serve "no weather" for the whole lifetime."""
-    store = InMemoryWeatherCache()
+    store = InMemoryDayCache()
     _provider(_FakeSession(_response(status=400)), cache=store).fetch(DAY, LAT, LNG)
 
     session = _FakeSession(_response())
@@ -193,8 +194,8 @@ def test_a_failed_fetch_is_not_stored_as_a_forecast():
 
 
 def test_the_strategy_stamps_from_the_injected_clock():
-    store = InMemoryWeatherCache()
-    strategy = WeatherDayCache(
+    store = InMemoryDayCache()
+    strategy = DayReadingsCache(
         store,
         day=DAY,
         latitude=LAT,

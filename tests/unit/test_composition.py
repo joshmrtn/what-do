@@ -28,6 +28,7 @@ from src.ingestion.calendars.moon_source import MoonRssSource
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.utils.logging import get_logger
 from tests.support.network import network_for
@@ -48,7 +49,12 @@ def _config(**overrides) -> AppConfig:
         # Composition resolves the weather host's policy, so a config that
         # never mentions Open-Meteo is refused here rather than on the first
         # fetch of a nightly run. That is the design: absence is loud.
-        "network": network_for(f"https://{OPEN_METEO_HOST}/v1/forecast"),
+        "network": network_for(
+            [
+                f"https://{OPEN_METEO_HOST}/v1/forecast",
+                f"https://{AIR_QUALITY_HOST}/v1/air-quality",
+            ]
+        ),
     }
     fields.update(overrides)
     return AppConfig(**fields)

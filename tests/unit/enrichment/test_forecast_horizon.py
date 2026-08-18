@@ -27,11 +27,12 @@ from src.config import (
     VenueDiscoveryConfig,
     WeatherConfig,
 )
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.service import EnrichmentService
 from src.models.event import Event
-from src.storage.memory.weather_cache import InMemoryWeatherCache
+from src.storage.memory.day_cache import InMemoryDayCache
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 
@@ -74,7 +75,7 @@ def _network() -> NetworkConfig:
                 cache_ttl=timedelta(hours=12),
             )
         },
-        hosts={OPEN_METEO_HOST: "open_meteo"},
+        hosts={OPEN_METEO_HOST: "open_meteo", AIR_QUALITY_HOST: "open_meteo"},
     )
 
 def _config(**weather: Any) -> AppConfig:

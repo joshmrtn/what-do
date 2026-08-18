@@ -143,7 +143,7 @@ class UrlCache:
 
     The freshness bound is handed in at construction rather than checked by the
     caller afterwards, so a stale read has no API. That is the same shape
-    `WeatherCache.get(..., fresh_since=...)` uses, and for the same reason: a
+    `DayCache.get(..., fresh_since=...)` uses, and for the same reason: a
     rule remembered at every call site is a rule that will be forgotten.
     """
 

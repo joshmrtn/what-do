@@ -19,7 +19,7 @@ import zoneinfo
 import pytest
 import yaml
 
-from src.storage.sqlite.weather_cache import SqliteWeatherCache
+from src.storage.sqlite.day_cache import SqliteDayCache
 from src.storage.sqlite.entities import SqliteEntityRepository
 from src.config import (
     AppConfig,
@@ -34,6 +34,7 @@ from src.config import (
     VenueDiscoveryConfig,
     load_config,
 )
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.comfort import compute_comfort
@@ -124,7 +125,7 @@ def _network() -> NetworkConfig:
                 cache_ttl=timedelta(hours=12),
             )
         },
-        hosts={OPEN_METEO_HOST: "open_meteo"},
+        hosts={OPEN_METEO_HOST: "open_meteo", AIR_QUALITY_HOST: "open_meteo"},
     )
 
 def test_config_smoke(sample_config):

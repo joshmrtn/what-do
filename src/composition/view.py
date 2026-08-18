@@ -32,7 +32,7 @@ from src.config import (
     DEFAULT_LIKES_PATH,
     AppConfig,
 )
-from src.enrichment.air_quality import OpenMeteoAirQualityProvider
+from src.composition.network import build_air_quality_provider
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import WeatherProvider
@@ -136,7 +136,12 @@ def build_rescore_pipeline(
             synthetic_rules=config.synthetic_activities,
             config=config,
             db_path=db_path,
-            air_quality_provider=OpenMeteoAirQualityProvider(),
+            air_quality_provider=build_air_quality_provider(
+                config,
+                air_quality_cache=storage.air_quality_cache,
+                get_now=get_now,
+                logger=logger,
+            ),
             get_now=get_now,
             logger=logger,
         ),

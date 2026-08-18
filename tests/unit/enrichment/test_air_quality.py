@@ -1,12 +1,34 @@
 """Unit tests for the Open-Meteo air quality provider."""
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
-from src.enrichment.air_quality import AirQualityProvider, OpenMeteoAirQualityProvider
+import requests
+
+from src.enrichment.air_quality import (
+    AIR_QUALITY_HOST,
+    AirQualityProvider,
+    OpenMeteoAirQualityProvider,
+)
+from src.storage.memory.day_cache import InMemoryDayCache
+from tests.support.network import fetcher_policy
 
 _FETCH_DATE = date(2025, 6, 21)
 _LAT, _LNG = 42.52, -70.89
+_NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
+
+
+def _provider(session) -> OpenMeteoAirQualityProvider:
+    """The real provider over a faked session; only the transport stands in."""
+    return OpenMeteoAirQualityProvider(
+        session=session,
+        policy=fetcher_policy(
+            urls=f"https://{AIR_QUALITY_HOST}/v1/air-quality", now=_NOW
+        ),
+        air_quality_cache=InMemoryDayCache(),
+        cache_ttl=timedelta(hours=12),
+        get_now=lambda: _NOW,
+    )
 _HOURS = list(range(24))
 
 
@@ -22,18 +44,20 @@ def _payload() -> dict:
 def _mock_session(payload: dict | None = None, status_error: bool = False):
     resp = MagicMock()
     resp.json.return_value = payload if payload is not None else _payload()
-    resp.raise_for_status.side_effect = Exception("400") if status_error else None
+    resp.raise_for_status.side_effect = (
+        requests.HTTPError("400") if status_error else None
+    )
     session = MagicMock()
     session.get.return_value = resp
     return session
 
 
 def _fetch(session) -> dict | None:
-    return OpenMeteoAirQualityProvider(session=session).fetch(_FETCH_DATE, _LAT, _LNG)
+    return _provider(session).fetch(_FETCH_DATE, _LAT, _LNG)
 
 
 def test_is_an_air_quality_provider():
-    assert isinstance(OpenMeteoAirQualityProvider(session=MagicMock()), AirQualityProvider)
+    assert isinstance(_provider(MagicMock()), AirQualityProvider)
 
 
 def test_request_asks_for_us_aqi_on_the_target_day():
@@ -58,7 +82,7 @@ def test_reading_is_taken_from_its_own_hour():
 
 def test_returns_none_on_network_error():
     session = MagicMock()
-    session.get.side_effect = Exception("network error")
+    session.get.side_effect = requests.ConnectionError("network error")
     assert _fetch(session) is None
 
 

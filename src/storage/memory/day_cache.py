@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Any
 
 
-class InMemoryWeatherCache:
+class InMemoryDayCache:
     """Holds forecasts in a dict keyed by day and place."""
 
     def __init__(self) -> None:

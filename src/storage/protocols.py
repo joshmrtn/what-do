@@ -438,7 +438,7 @@ class EntityRepository(Protocol):
         ...
 
 
-class WeatherCache(Protocol):
+class DayCache(Protocol):
     """Cached forecasts, keyed by day and place.
 
     `get` takes the oldest stamp still worth serving rather than handing back

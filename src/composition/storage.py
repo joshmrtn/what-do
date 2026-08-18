@@ -32,7 +32,7 @@ from src.storage.protocols import (
     RunRepository,
     DedupDecisionRepository,
     ScoreRepository,
-    WeatherCache,
+    DayCache,
 )
 from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.entities import SqliteEntityRepository
@@ -50,7 +50,7 @@ from src.storage.sqlite.rescores import SqliteRescoreRepository
 from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
-from src.storage.sqlite.weather_cache import SqliteWeatherCache
+from src.storage.sqlite.day_cache import SqliteDayCache
 
 
 @dataclass(frozen=True)
@@ -76,7 +76,10 @@ class ViewStorage:
     runs: RunRepository
     #: The rescore's forecast, served from cache when it is still fresh —
     #: which is what makes a second invocation seconds later open no socket.
-    weather_cache: WeatherCache
+    weather_cache: DayCache
+    #: Its own table, not the forecast's. Both are keyed
+    #: `(date, latitude, longitude)`, so one table would collide.
+    air_quality_cache: DayCache
 
 
 @dataclass(frozen=True)
@@ -90,7 +93,8 @@ class BatchStorage:
     runs: RunRepository
     entities: EntityRepository
     dedup_decisions: DedupDecisionRepository
-    weather_cache: WeatherCache
+    weather_cache: DayCache
+    air_quality_cache: DayCache
     http_cache: HttpCache
     curve_state: CurveStateRepository
     extraction_observations: ExtractionObservationRepository
@@ -112,7 +116,8 @@ def build_view_storage(db_path: Path | str, embedding_model: str) -> ViewStorage
         preference_revisions=SqlitePreferenceRevisionRepository(db_path),
         rescores=SqliteRescoreRepository(db_path),
         runs=SqliteRunRepository(db_path),
-        weather_cache=SqliteWeatherCache(db_path),
+        weather_cache=SqliteDayCache(db_path, table="weather_cache"),
+        air_quality_cache=SqliteDayCache(db_path, table="air_quality_cache"),
     )
 
 
@@ -136,6 +141,7 @@ def build_batch_storage(db_path: Path | str, embedding_model: str) -> BatchStora
         preference_revisions=SqlitePreferenceRevisionRepository(db_path),
         entities=SqliteEntityRepository(db_path),
         dedup_decisions=SqliteDedupDecisionRepository(db_path),
-        weather_cache=SqliteWeatherCache(db_path),
+        weather_cache=SqliteDayCache(db_path, table="weather_cache"),
+        air_quality_cache=SqliteDayCache(db_path, table="air_quality_cache"),
         http_cache=SqliteHttpCache(db_path),
     )

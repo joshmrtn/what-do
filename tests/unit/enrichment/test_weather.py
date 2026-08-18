@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
+import requests
 
 from src.enrichment.weather import (
     OPEN_METEO_HOST,
@@ -12,7 +13,7 @@ from src.enrichment.weather import (
     map_wmo_code,
     sample_hour,
 )
-from src.storage.memory.weather_cache import InMemoryWeatherCache
+from src.storage.memory.day_cache import InMemoryDayCache
 from tests.support.network import fetcher_policy
 
 
@@ -79,7 +80,7 @@ def _provider(session) -> OpenMeteoProvider:
     return OpenMeteoProvider(
         session=session,
         policy=fetcher_policy(urls=f"https://{OPEN_METEO_HOST}/v1/forecast", now=_NOW),
-        weather_cache=InMemoryWeatherCache(),
+        weather_cache=InMemoryDayCache(),
         cache_ttl=timedelta(hours=12),
         get_now=lambda: _NOW,
     )
@@ -206,13 +207,26 @@ def test_fetch_records_the_date_it_covers():
 
 def test_provider_returns_none_on_network_error():
     session = MagicMock()
-    session.get.side_effect = Exception("network error")
+    session.get.side_effect = requests.ConnectionError("network error")
     assert _provider(session).fetch(_FETCH_DATE, _LAT, _LNG) is None
+
+
+def test_a_programming_error_is_not_reported_as_no_weather():
+    """The catch is narrow on purpose.
+
+    `except Exception` swallowed a missing import as an absent forecast: the
+    provider answered None, enrichment recorded no weather, and nothing said a
+    name was undefined. A bug must not be able to look like bad weather.
+    """
+    session = MagicMock()
+    session.get.side_effect = NameError("DayReadingsCache")
+    with pytest.raises(NameError):
+        _provider(session).fetch(_FETCH_DATE, _LAT, _LNG)
 
 
 def test_provider_returns_none_on_http_error():
     mock_resp = MagicMock()
-    mock_resp.raise_for_status.side_effect = Exception("500")
+    mock_resp.raise_for_status.side_effect = requests.HTTPError("500")
     session = MagicMock()
     session.get.return_value = mock_resp
     assert _provider(session).fetch(_FETCH_DATE, _LAT, _LNG) is None

@@ -21,11 +21,12 @@ from typing import Callable
 import requests
 
 from src.config import AppConfig
+from src.enrichment.air_quality import AIR_QUALITY_HOST, OpenMeteoAirQualityProvider
 from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider
 from src.network.http import HttpFetcher
 from src.network.policy import RequestPolicy
 from src.network.throttle import InMemoryThrottle
-from src.storage.protocols import HttpCache, WeatherCache
+from src.storage.protocols import HttpCache, DayCache
 from src.utils.logging import StructuredLogger
 
 
@@ -83,7 +84,7 @@ def build_http_fetcher(
 def build_weather_provider(
     config: AppConfig,
     *,
-    weather_cache: WeatherCache,
+    weather_cache: DayCache,
     get_now: Callable[[], datetime],
     policy: RequestPolicy | None = None,
     logger: StructuredLogger | None = None,
@@ -102,5 +103,30 @@ def build_weather_provider(
         else build_request_policy(config, get_now=get_now, logger=logger),
         weather_cache=weather_cache,
         cache_ttl=config.network.for_host(OPEN_METEO_HOST).cache_ttl,
+        get_now=get_now,
+    )
+
+
+def build_air_quality_provider(
+    config: AppConfig,
+    *,
+    air_quality_cache: DayCache,
+    get_now: Callable[[], datetime],
+    policy: RequestPolicy | None = None,
+    logger: StructuredLogger | None = None,
+) -> OpenMeteoAirQualityProvider:
+    """The air quality provider, with the cache it has never had.
+
+    Its host is not the forecast's. They belong to one provider and share a
+    policy, but they are separate services with **different horizons**, and the
+    bound that expresses that stays with the caller.
+    """
+    return OpenMeteoAirQualityProvider(
+        session=requests.Session(),
+        policy=policy
+        if policy is not None
+        else build_request_policy(config, get_now=get_now, logger=logger),
+        air_quality_cache=air_quality_cache,
+        cache_ttl=config.network.for_host(AIR_QUALITY_HOST).cache_ttl,
         get_now=get_now,
     )

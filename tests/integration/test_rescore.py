@@ -17,6 +17,7 @@ import pytest
 import requests
 
 from src.composition.storage import build_view_storage
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider
 from src.config import load_config
 from src.config import (
@@ -32,6 +33,7 @@ from src.config import (
     VenueDiscoveryConfig,
     WeatherConfig,
 )
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.models.event import Event
 from src.models.event_score import EventScore
@@ -148,7 +150,7 @@ def _network() -> NetworkConfig:
                 cache_ttl=timedelta(hours=12),
             )
         },
-        hosts={OPEN_METEO_HOST: "open_meteo"},
+        hosts={OPEN_METEO_HOST: "open_meteo", AIR_QUALITY_HOST: "open_meteo"},
     )
 
 def _config() -> AppConfig:

@@ -1,4 +1,4 @@
-"""Contract every WeatherCacheRepository implementation must satisfy.
+"""Contract every day-and-place cache implementation must satisfy.
 
 `get` takes `fresh_since` rather than returning whatever is stored, so a caller
 **cannot** serve a stale forecast by forgetting to check. That is deliberate:
@@ -13,8 +13,8 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from src.storage.sqlite.connection import connect, init_db
-from src.storage.memory.weather_cache import InMemoryWeatherCache
-from src.storage.sqlite.weather_cache import SqliteWeatherCache
+from src.storage.memory.day_cache import InMemoryDayCache
+from src.storage.sqlite.day_cache import SqliteDayCache
 
 _NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
 _DAY = date(2026, 8, 14)
@@ -27,8 +27,8 @@ def cache(request, tmp_path):
     if request.param == "sqlite":
         path = tmp_path / "weather.db"
         init_db(path)
-        return SqliteWeatherCache(path)
-    return InMemoryWeatherCache()
+        return SqliteDayCache(path, table="weather_cache")
+    return InMemoryDayCache()
 
 
 def _put(cache, data=None, now=_NOW, day=_DAY, lat=_LAT, lng=_LNG):
@@ -99,7 +99,7 @@ class TestCorruptStamp:
         """Refetching costs one request; trusting it could serve any age."""
         path = tmp_path / "weather.db"
         init_db(path)
-        cache = SqliteWeatherCache(path)
+        cache = SqliteDayCache(path, table="weather_cache")
         cache.put(day=_DAY, latitude=_LAT, longitude=_LNG, data={"temp_f": 71}, now=_NOW)
 
         conn = connect(path)

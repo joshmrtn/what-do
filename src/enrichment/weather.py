@@ -6,9 +6,10 @@ from typing import Any, Callable, Iterable
 
 import requests
 
+from src.enrichment.day_cache import DayReadingsCache
 from src.network.http import requests_transient_check
 from src.network.policy import RequestPolicy
-from src.storage.protocols import WeatherCache
+from src.storage.protocols import DayCache
 
 WMO_TO_CONDITION: dict[int, str] = {
     0: "clear",
@@ -127,55 +128,6 @@ def sample_hour(
 OPEN_METEO_HOST = "api.open-meteo.com"
 
 
-class WeatherDayCache:
-    """A `CacheStrategy` bound to one day and one place.
-
-    The key is the caller's, because the policy cannot know what identifies a
-    request — it never sees a URL, let alone a latitude. The lifetime is
-    config's, read from the host's policy. `None` is a declared `never`.
-    """
-
-    def __init__(
-        self,
-        cache: WeatherCache,
-        *,
-        day: date,
-        latitude: float,
-        longitude: float,
-        ttl: timedelta | None,
-        get_now: Callable[[], datetime],
-    ) -> None:
-        self._cache = cache
-        self._day = day
-        self._latitude = latitude
-        self._longitude = longitude
-        self._ttl = ttl
-        self._get_now = get_now
-
-    def get(self) -> dict[str, Any] | None:
-        """The stored forecast while it is still fresh, otherwise None."""
-        if self._ttl is None:
-            return None
-        return self._cache.get(
-            day=self._day,
-            latitude=self._latitude,
-            longitude=self._longitude,
-            fresh_since=self._get_now() - self._ttl,
-        )
-
-    def put(self, value: dict[str, Any]) -> None:
-        """Store the forecast, stamped from the injected clock."""
-        if self._ttl is None:
-            return
-        self._cache.put(
-            day=self._day,
-            latitude=self._latitude,
-            longitude=self._longitude,
-            data=value,
-            now=self._get_now(),
-        )
-
-
 class OpenMeteoProvider(WeatherProvider):
     """Weather provider backed by the Open-Meteo free API (no key required)."""
 
@@ -186,7 +138,7 @@ class OpenMeteoProvider(WeatherProvider):
         *,
         session: requests.Session,
         policy: RequestPolicy,
-        weather_cache: WeatherCache,
+        weather_cache: DayCache,
         cache_ttl: timedelta | None,
         get_now: Callable[[], datetime],
     ) -> None:
@@ -218,13 +170,18 @@ class OpenMeteoProvider(WeatherProvider):
         It used to wrap the call itself, which left retry nothing to act on:
         every failure became a `None` before anything could judge whether it
         was worth another attempt.
+        A **narrow** catch. `except Exception` here swallowed a missing import
+        as "no readings" — the provider returned None, enrichment recorded an
+        absence, and nothing anywhere said a name was undefined. What this
+        tolerates is the provider being unreachable, unhappy or malformed;
+        what it lets through is us being wrong.
         """
         try:
             return self._policy.call(
                 host=OPEN_METEO_HOST,
                 perform=lambda timeout: self._request(date, lat, lng, timeout),
                 is_transient=self._is_transient,
-                cache=WeatherDayCache(
+                cache=DayReadingsCache(
                     self._weather_cache,
                     day=date,
                     latitude=lat,
@@ -234,7 +191,7 @@ class OpenMeteoProvider(WeatherProvider):
                 ),
                 label="weather",
             )
-        except Exception:
+        except (requests.RequestException, ValueError, KeyError):
             return None
 
     def _request(

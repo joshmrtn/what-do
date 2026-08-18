@@ -9,7 +9,7 @@ import zoneinfo
 
 import pytest
 
-from src.storage.sqlite.weather_cache import SqliteWeatherCache
+from src.storage.sqlite.day_cache import SqliteDayCache
 from src.config import (
     AppConfig,
     ConfigError,
@@ -21,6 +21,7 @@ from src.config import (
     SyntheticConditions,
     VenueDiscoveryConfig,
 )
+from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator
@@ -78,7 +79,7 @@ def _network(cache_ttl: timedelta | None = timedelta(hours=12)) -> NetworkConfig
                 cache_ttl=cache_ttl,
             )
         },
-        hosts={OPEN_METEO_HOST: "open_meteo"},
+        hosts={OPEN_METEO_HOST: "open_meteo", AIR_QUALITY_HOST: "open_meteo"},
     )
 
 

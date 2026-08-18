@@ -181,6 +181,20 @@ CREATE TABLE IF NOT EXISTS weather_cache (
     UNIQUE (date, latitude, longitude)
 );
 
+-- Air quality is a separate service from the forecast, with its own shorter
+-- horizon, so it gets its own table rather than a discriminator column on
+-- weather_cache: the UNIQUE key there is (date, latitude, longitude), which two
+-- providers would collide on. Same shape, same reader.
+CREATE TABLE IF NOT EXISTS air_quality_cache (
+    id         TEXT PRIMARY KEY,
+    date       TEXT NOT NULL,
+    latitude   TEXT NOT NULL,
+    longitude  TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    UNIQUE (date, latitude, longitude)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id                    TEXT PRIMARY KEY,
     source_type           TEXT NOT NULL,
