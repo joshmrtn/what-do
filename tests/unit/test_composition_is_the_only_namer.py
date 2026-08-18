@@ -65,6 +65,12 @@ _RAW_CONNECTION = {
     # The two escape hatches, for the batched-transaction reason above.
     "ingestion/ingestion_service.py",
     "ingestion/venue_discovery.py",
+    # Re-keying a source. Four tables move together or none of them do, and it
+    # needs `defer_foreign_keys` — which SQLite clears at every COMMIT, so it
+    # must be set inside the one transaction that spans the lot. A repository
+    # per table cannot express that, and half a re-key is the duplicate-event
+    # failure the operation exists to prevent.
+    "storage/rekey.py",
     # Storage E2, deferred by design: this wraps `preference_embeddings_cache`,
     # a table scheduled for deletion by the preference-revision work. Building a
     # repository over it now means building it twice.
