@@ -233,8 +233,10 @@ class _FakeSession:
         self._responses = list(responses)
         self.calls: list[dict[str, object]] = []
 
-    def get(self, url: str, *, headers: dict[str, str], timeout: float):
-        self.calls.append({"url": url, "headers": headers, "timeout": timeout})
+    def get(self, url: str, *, headers: dict[str, str], params=None, timeout: float):
+        self.calls.append(
+            {"url": url, "headers": headers, "params": params, "timeout": timeout}
+        )
         if not self._responses:
             raise AssertionError(f"unexpected extra request to {url}")
         return self._responses.pop(0)
@@ -507,3 +509,70 @@ def test_a_naive_stored_timestamp_does_not_break_the_fetch():
 
     assert body == "STALE"
     assert session.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Query parameters, and the credentials that hide in them
+# ---------------------------------------------------------------------------
+
+
+def test_params_are_sent_to_the_transport():
+    session = _FakeSession(_response())
+    _fetcher(session).get(URL, label="x", params={"q": "salem ma", "format": "json"})
+    assert session.calls[0]["params"] == {"q": "salem ma", "format": "json"}
+
+
+def test_params_are_part_of_what_identifies_the_request():
+    """Two addresses are two questions, not one answered twice."""
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="salem"), _response(body="beverly"))
+    _fetcher(session, http_cache=store).get(URL, label="x", params={"q": "salem"})
+    body = _fetcher(session, http_cache=store).get(URL, label="x", params={"q": "beverly"})
+
+    assert body == "beverly"
+    assert len(session.calls) == 2
+
+
+def test_the_same_question_is_asked_once():
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="salem"))
+    _fetcher(session, http_cache=store).get(URL, label="x", params={"q": "salem"})
+    body = _fetcher(session, http_cache=store).get(URL, label="x", params={"q": "salem"})
+
+    assert body == "salem"
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize("secret", ["token", "api_key", "apikey", "key", "access_token"])
+def test_a_credential_in_the_query_refuses_to_become_a_cache_key(secret):
+    """The cache key is written to the database, so a token in the query string
+    would be a credential at rest in `http_cache`. Structural, not remembered:
+    a caller that means to cache says what the key is."""
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError, match=secret):
+        _fetcher(session).get(URL, label="x", params={secret: "s3cret", "q": "a"})
+    assert session.calls == []
+
+
+def test_an_explicit_cache_key_lets_a_credentialled_call_through():
+    session = _FakeSession(_response(body="posts"))
+    body = _fetcher(session).get(
+        URL,
+        label="x",
+        params={"token": "s3cret", "usernames": "a,b"},
+        cache_key=f"{URL}?usernames=a,b",
+    )
+    assert body == "posts"
+
+
+def test_the_explicit_key_is_what_gets_stored():
+    """And so the token never reaches the database."""
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="posts"))
+    key = f"{URL}?usernames=a,b"
+    _fetcher(session, http_cache=store).get(
+        URL, label="x", params={"token": "s3cret", "usernames": "a,b"}, cache_key=key
+    )
+
+    assert store.get(key) is not None
+    assert store.get(URL) is None

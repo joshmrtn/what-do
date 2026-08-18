@@ -31,7 +31,7 @@ class _FakeSession:
         self._body = body
         self.requested: list[str] = []
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, params=None, timeout=None):
         self.requested.append(url)
         # Only page one exists in this capture; anything further is empty, as a
         # well-behaved listing would answer.

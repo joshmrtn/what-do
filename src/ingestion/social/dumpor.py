@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-import requests
+from src.network.http import HttpFetcher
 
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
@@ -21,11 +22,19 @@ class DumporAdapter(IngestionSource):
     def __init__(
         self,
         handles: list[str],
-        session: requests.Session | None = None,
+        fetcher: HttpFetcher,
         get_now: Callable[[], datetime] = datetime.now,
     ) -> None:
+        """
+        Args:
+            handles: Instagram handles to read.
+            fetcher: The polite conditional GET. **This adapter passed no
+                timeout at all**, so an unresponsive mirror hung the whole batch
+                indefinitely rather than failing its stage.
+            get_now: Injected clock.
+        """
         self._handles = handles
-        self._session = session or requests.Session()
+        self._fetcher = fetcher
         self._get_now = get_now
 
     def fetch(self) -> list[EventCandidate]:
@@ -33,9 +42,9 @@ class DumporAdapter(IngestionSource):
         candidates: list[EventCandidate] = []
         for handle in self._handles:
             username = handle.lstrip("@")
-            response = self._session.get(f"{_DUMPOR_BASE}/user/{username}")
-            response.raise_for_status()
-            posts: list[dict[str, Any]] = response.json()
+            posts: list[dict[str, Any]] = json.loads(
+                self._fetcher.get(f"{_DUMPOR_BASE}/user/{username}", label="dumpor")
+            )
             candidates.extend(self._to_candidate(p, handle) for p in posts)
         return candidates
 

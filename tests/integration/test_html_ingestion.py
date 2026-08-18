@@ -59,7 +59,7 @@ class _FakeSession:
         self._body = body
         self.calls = 0
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, params=None, timeout=None):
         self.calls += 1
         return _FakeResponse(self._body)
 

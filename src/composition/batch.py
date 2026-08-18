@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+import requests
+
 from src.composition.network import (
     build_air_quality_provider,
     build_movie_provider,
@@ -176,16 +178,6 @@ def build_dependencies(
     handles = _handles(storage.entities, seeds_path)
     blocklist = load_blocklist(blocklist_path)
 
-    # Alternative routes to the same Instagram data, tried in order. Apify is
-    # first because it is the only one under contract; the scrapers are the
-    # fallback when it is unavailable or unaffordable.
-    failover_sources: list[Any] = []
-    apify_key = _credential("APIFY_API_KEY", "apify")
-    if apify_key:
-        failover_sources.append(ApifyAdapter(apify_key, handles, get_now=get_now))
-    failover_sources.append(PicukiAdapter(handles, get_now=get_now))
-    failover_sources.append(DumporAdapter(handles, get_now=get_now))
-
     # One fetcher, shared by every adapter. It owns the session, the throttle,
     # the retry schedule and the cache, so an adapter no longer holds any of
     # them — and there is one place that can answer what we asked of whom.
@@ -201,11 +193,29 @@ def build_dependencies(
         logger=logger,
     )
 
+    # Alternative routes to the same Instagram data, tried in order. Apify is
+    # first because it is the only one under contract; the scrapers are the
+    # fallback when it is unavailable or unaffordable.
+    failover_sources: list[Any] = []
+    apify_key = _credential("APIFY_API_KEY", "apify")
+    if apify_key:
+        failover_sources.append(
+            ApifyAdapter(apify_key, handles, fetcher, get_now=get_now)
+        )
+    failover_sources.append(PicukiAdapter(handles, fetcher, get_now=get_now))
+    failover_sources.append(DumporAdapter(handles, fetcher, get_now=get_now))
+
     independent_sources: list[Any] = []
     amc_key = _credential("AMC_API_KEY", "amc")
     if amc_key:
         independent_sources.append(
-            AmcAdapter(amc_key, config.location.postal_code, get_now=get_now)
+            AmcAdapter(
+                amc_key,
+                config.location.postal_code,
+                session=requests.Session(),
+                policy=request_policy,
+                get_now=get_now,
+            )
         )
     for feed in config.sources.ics_calendars:
         independent_sources.append(
@@ -406,7 +416,7 @@ def build_dependencies(
                 model=config.models.llm_extraction,
                 min_tags=config.models.min_tags,
             ),
-            image_fetcher=HttpImageFetcher(),
+            image_fetcher=HttpImageFetcher(requests.Session(), request_policy),
             logger=logger,
             get_now=get_now,
             budget_minutes=config.models.extraction_budget_minutes,

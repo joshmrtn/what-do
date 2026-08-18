@@ -7,12 +7,20 @@ from typing import Any, Callable
 
 import requests
 
+from src.network.http import requests_transient_check
+from src.network.policy import RequestPolicy
+from src.network.protocols import NullCache
+
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.source_type import AMC
 
-_AMC_GRAPHQL_URL = "https://api.amctheatres.com/graphql"
+#: The host AMC's API is reached at, named so a caller can look up its
+#: politeness policy without owning a second copy of the address.
+AMC_HOST = "api.amctheatres.com"
+
+_AMC_GRAPHQL_URL = f"https://{AMC_HOST}/graphql"
 
 _SHOWTIMES_QUERY = """
 query GetShowtimes($postalCode: String!) {
@@ -31,23 +39,43 @@ class AmcAdapter(IngestionSource):
         self,
         api_key: str,
         postal_code: str,
-        session: requests.Session | None = None,
+        session: requests.Session,
+        policy: RequestPolicy,
         get_now: Callable[[], datetime] = datetime.now,
     ) -> None:
+        """
+        Args:
+            api_key: AMC vendor key.
+            postal_code: Which theatres to ask about.
+            session: Injected HTTP session, so tests never reach the network.
+            policy: Throttle, retry and timeout for this host. Used directly
+                rather than through `HttpFetcher`, because this is a **POST**
+                and a conditional GET cannot express it.
+            get_now: Injected clock.
+        """
         self._api_key = api_key
         self._postal_code = postal_code
-        self._session = session or requests.Session()
+        self._session = session
+        self._policy = policy
         self._get_now = get_now
+        self._is_transient = requests_transient_check(get_now=get_now)
 
     def fetch(self) -> list[EventCandidate]:
         """Fetch upcoming AMC showtimes for the configured postal code."""
-        response = self._session.post(
-            _AMC_GRAPHQL_URL,
-            json={"query": _SHOWTIMES_QUERY, "variables": {"postalCode": self._postal_code}},
-            headers={"X-AMC-Vendor-Key": self._api_key},
+        data = self._policy.call(
+            host=AMC_HOST,
+            perform=self._post,
+            is_transient=self._is_transient,
+            # A GraphQL POST is not a document with a URL identity, and the
+            # showtimes it returns are the thing the pipeline persists. Nothing
+            # here is a cacheable resource; the reason is recorded rather than
+            # left as an absence somebody has to infer.
+            cache=NullCache(
+                reason="a GraphQL POST has no URL identity to key on, and its "
+                "showtimes are persisted as candidates rather than replayed"
+            ),
+            label="amc",
         )
-        response.raise_for_status()
-        data = response.json()
         entries = data.get("data", {}).get("getMoviesAndShowtimes", [])
         candidates: list[EventCandidate] = []
         for entry in entries:
@@ -55,6 +83,21 @@ class AmcAdapter(IngestionSource):
             for show in entry.get("showtimes", []):
                 candidates.append(self._to_candidate(movie, show))
         return candidates
+
+    def _post(self, timeout: float) -> dict[str, Any]:
+        """One attempt. Raises so the policy can decide about trying again."""
+        response = self._session.post(
+            _AMC_GRAPHQL_URL,
+            json={
+                "query": _SHOWTIMES_QUERY,
+                "variables": {"postalCode": self._postal_code},
+            },
+            headers={"X-AMC-Vendor-Key": self._api_key},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload: dict[str, Any] = response.json()
+        return payload
 
     def _to_candidate(
         self, movie: dict[str, Any], show: dict[str, Any]

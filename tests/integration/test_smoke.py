@@ -1058,7 +1058,7 @@ class _FixtureSession:
         self._body = body
         self.calls = 0
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, params=None, timeout=None):
         self.calls += 1
         return MagicMock(status_code=200, headers={}, text=self._body, raise_for_status=lambda: None)
 

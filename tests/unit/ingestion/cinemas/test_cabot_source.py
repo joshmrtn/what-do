@@ -56,7 +56,7 @@ class _Pages:
         self._bodies = bodies
         self.requested: list[str] = []
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, params=None, timeout=None):
         self.requested.append(url)
         response = MagicMock()
         response.status_code = 200

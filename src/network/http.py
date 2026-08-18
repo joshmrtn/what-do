@@ -17,8 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Callable
-from urllib.parse import urlsplit
+from typing import Any, Callable, Mapping
+from urllib.parse import urlencode, urlsplit
 
 import requests
 
@@ -245,6 +245,8 @@ class HttpFetcher:
         url: str,
         *,
         label: str,
+        params: Mapping[str, Any] | None = None,
+        cache_key: str | None = None,
         policy: str | None = None,
         max_age: timedelta | None = None,
     ) -> str:
@@ -254,6 +256,13 @@ class HttpFetcher:
             url: Document to fetch. Its host decides the policy, unless one is
                 named.
             label: Source name, for log messages.
+            params: Query parameters. Part of what identifies the request, so
+                they are part of the cache key by default — two addresses are
+                two questions, not one answered twice.
+            cache_key: What to store the answer under, when the URL and its
+                query are the wrong key. Required whenever a parameter looks
+                like a credential: the key is written to `http_cache`, so a
+                token in the query string would be a secret at rest.
             policy: Names a policy directly, for a host that arrived from
                 fetched data rather than from config.
             max_age: This document's own lifetime, overriding the category's.
@@ -270,6 +279,7 @@ class HttpFetcher:
             ConfigError: If the host has no assigned policy.
             ValueError: If the server answers 304 with nothing stored to serve.
         """
+        key = cache_key if cache_key is not None else _keyed(url, params)
         host = _host_of(url)
         limits = (
             self._network.for_category(policy)
@@ -277,7 +287,7 @@ class HttpFetcher:
             else self._network.for_host(host)
         )
         cache = UrlCache(
-            url=url,
+            url=key,
             http_cache=self._http_cache,
             get_now=self._get_now,
             # A declared `never` is not overridable: it says this caller keeps
@@ -288,7 +298,7 @@ class HttpFetcher:
 
         document = self._policy.call(
             host=host,
-            perform=lambda timeout: self._perform(url, cache.stored(), timeout),
+            perform=lambda timeout: self._perform(url, params, cache.stored(), timeout),
             is_transient=self._is_transient,
             cache=cache,
             label=label,
@@ -297,7 +307,11 @@ class HttpFetcher:
         return document.body
 
     def _perform(
-        self, url: str, stored: CachedResponse | None, timeout: float
+        self,
+        url: str,
+        params: Mapping[str, Any] | None,
+        stored: CachedResponse | None,
+        timeout: float,
     ) -> HttpDocument:
         """One attempt: a conditional request, and what its answer means."""
         headers = {"User-Agent": USER_AGENT}
@@ -307,7 +321,9 @@ class HttpFetcher:
             if stored.last_modified:
                 headers["If-Modified-Since"] = stored.last_modified
 
-        response = self._session.get(url, headers=headers, timeout=timeout)
+        response = self._session.get(
+            url, headers=headers, params=params, timeout=timeout
+        )
         response.raise_for_status()
 
         if response.status_code == 304:
@@ -327,6 +343,40 @@ class HttpFetcher:
             etag=response.headers.get("ETag"),
             last_modified=response.headers.get("Last-Modified"),
         )
+
+
+#: Query parameter names that carry a credential. The cache key is written to
+#: the database, so a request whose key would contain one of these is refused
+#: rather than silently storing a secret at rest. Structural: a caller that
+#: means to cache such a request says what the key is.
+_CREDENTIAL_PARAMS = frozenset(
+    {"token", "api_key", "apikey", "key", "access_token", "auth", "password", "secret"}
+)
+
+
+def _keyed(url: str, params: Mapping[str, Any] | None) -> str:
+    """What identifies this request, for the cache.
+
+    Sorted, so two callers spelling the same query in a different order share
+    an answer rather than each storing their own.
+
+    Raises:
+        ValueError: If a parameter looks like a credential and no explicit
+            `cache_key` was given.
+    """
+    if not params:
+        return url
+
+    offending = sorted(str(name) for name in params if str(name).lower() in _CREDENTIAL_PARAMS)
+    if offending:
+        raise ValueError(
+            f"Refusing to build a cache key containing {', '.join(offending)}: the "
+            "key is stored in http_cache, so this would put a credential at rest. "
+            "Pass cache_key= naming what actually identifies the request."
+        )
+
+    query = urlencode(sorted((str(k), str(v)) for k, v in params.items()))
+    return f"{url}?{query}"
 
 
 def _host_of(url: str) -> str:

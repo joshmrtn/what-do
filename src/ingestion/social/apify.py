@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-import requests
+from src.network.http import HttpFetcher
 
 from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
@@ -22,23 +23,38 @@ class ApifyAdapter(IngestionSource):
         self,
         api_key: str,
         handles: list[str],
-        session: requests.Session | None = None,
+        fetcher: HttpFetcher,
         get_now: Callable[[], datetime] = datetime.now,
     ) -> None:
+        """
+        Args:
+            api_key: Apify credential.
+            handles: Instagram handles to read.
+            fetcher: The polite conditional GET. Apify is **metered and paid**,
+                so it is the one place a wasted call costs money.
+            get_now: Injected clock.
+        """
         self._api_key = api_key
         self._handles = handles
-        self._session = session or requests.Session()
+        self._fetcher = fetcher
         self._get_now = get_now
 
     def fetch(self) -> list[EventCandidate]:
         """Fetch recent posts for configured handles via Apify."""
         url = f"{_APIFY_BASE}/acts/apify~instagram-scraper/runs"
-        response = self._session.get(
-            url,
-            params={"token": self._api_key, "usernames": ",".join(self._handles)},
+        usernames = ",".join(self._handles)
+        # The token is deliberately absent from the cache key. A key is written
+        # to `http_cache`, so keying on the query string as sent would put a
+        # paid credential at rest in the database — which the fetcher refuses
+        # to do by accident, and this is the deliberate alternative.
+        posts: list[dict[str, Any]] = json.loads(
+            self._fetcher.get(
+                url,
+                label="apify",
+                params={"token": self._api_key, "usernames": usernames},
+                cache_key=f"{url}?usernames={usernames}",
+            )
         )
-        response.raise_for_status()
-        posts: list[dict[str, Any]] = response.json()
         return [self._to_candidate(p) for p in posts]
 
     def _to_candidate(self, post: dict[str, Any]) -> EventCandidate:

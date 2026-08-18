@@ -7,8 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.ingestion.movies.amc import AmcAdapter
+from src.ingestion.movies.amc import AMC_HOST, AmcAdapter
 from src.models.event_candidate import EventCandidate
+from tests.support.network import fetcher_policy
 
 FIXED_NOW = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 SHOWTIME = datetime(2025, 6, 16, 19, 0, 0, tzinfo=timezone.utc)
@@ -46,6 +47,7 @@ def _make_adapter(response=None):
         api_key="fake-amc-key",
         postal_code="01970",
         session=mock_session,
+        policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
     )
 
@@ -91,6 +93,7 @@ def test_raises_on_http_error():
         api_key="bad-key",
         postal_code="01970",
         session=mock_session,
+        policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
     )
     with pytest.raises(Exception):
@@ -124,6 +127,7 @@ def test_id_is_stable_across_runs_on_different_days():
         api_key="fake-amc-key",
         postal_code="01970",
         session=mock_session,
+        policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=later),
         get_now=lambda: later,
     ).fetch()[0]
 

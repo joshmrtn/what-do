@@ -48,7 +48,7 @@ class _Windows:
         self._by_bar_date = by_bar_date
         self.requested: list[str | None] = []
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, params=None, timeout=None):
         bar = None
         if "tribe-bar-date=" in url:
             bar = url.split("tribe-bar-date=")[1].split("&")[0]

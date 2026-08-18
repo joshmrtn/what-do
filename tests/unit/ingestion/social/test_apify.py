@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from unittest.mock import MagicMock
+
+import requests
 
 import pytest
 
 from src.ingestion.social.apify import ApifyAdapter
 from src.models.event_candidate import EventCandidate
+from tests.support.network import fetcher_for
 
 FIXED_NOW = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
 PUBLISHED_AT = datetime(2025, 6, 10, 18, 0, 0, tzinfo=timezone.utc)
@@ -26,16 +30,25 @@ _APIFY_RESPONSE = [
 ]
 
 
+def _json_session(payload):
+    """A session answering with JSON text, which is what the transport returns."""
+    session = MagicMock()
+    response = session.get.return_value
+    response.status_code = 200
+    response.text = json.dumps(payload)
+    response.headers = {}
+    response.raise_for_status.return_value = None
+    return session
+
+
 def _make_adapter(response=None):
 
-    mock_session = MagicMock()
-    mock_session.get.return_value.json.return_value = response or _APIFY_RESPONSE
-    mock_session.get.return_value.raise_for_status.return_value = None
+    session = _json_session(response or _APIFY_RESPONSE)
 
     return ApifyAdapter(
         api_key="fake-key",
         handles=["@testvenue"],
-        session=mock_session,
+        fetcher=fetcher_for(session, urls="https://api.apify.com/v2/acts/apify~instagram-scraper/runs", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
     )
 
@@ -82,13 +95,13 @@ def test_image_url_populated():
 
 def test_raises_on_http_error():
 
-    mock_session = MagicMock()
-    mock_session.get.return_value.raise_for_status.side_effect = Exception("HTTP 429")
+    session = MagicMock()
+    session.get.return_value.raise_for_status.side_effect = requests.HTTPError("503")
 
     adapter = ApifyAdapter(
         api_key="fake-key",
         handles=["@testvenue"],
-        session=mock_session,
+        fetcher=fetcher_for(session, urls="https://api.apify.com/v2/acts/apify~instagram-scraper/runs", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
     )
     with pytest.raises(Exception):
@@ -106,13 +119,11 @@ def test_id_is_stable_across_runs_on_different_days():
     later = datetime(2025, 9, 1, 3, 0, 0, tzinfo=timezone.utc)
     first = _make_adapter().fetch()[0]
 
-    mock_session = MagicMock()
-    mock_session.get.return_value.json.return_value = _APIFY_RESPONSE
-    mock_session.get.return_value.raise_for_status.return_value = None
+    session = _json_session(_APIFY_RESPONSE)
     second = ApifyAdapter(
         api_key="fake-key",
         handles=["@testvenue"],
-        session=mock_session,
+        fetcher=fetcher_for(session, urls="https://api.apify.com/v2/acts/apify~instagram-scraper/runs", now=FIXED_NOW),
         get_now=lambda: later,
     ).fetch()[0]
 
