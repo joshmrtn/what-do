@@ -61,7 +61,8 @@ class _Windows:
         return response
 
 
-def _make_source(cache, windows, max_requests=8, horizon_days=45, export_cap=2):
+def _make_source(cache, windows, max_requests=8, horizon_days=45, export_cap=2,
+                 content_ids=False):
     """`export_cap` defaults to 2 so small fixtures still look full and walk."""
     http = _Windows(windows)
     source = TribeCalendarSource(
@@ -74,6 +75,7 @@ def _make_source(cache, windows, max_requests=8, horizon_days=45, export_cap=2):
         day_starts_at=time(4, 0),
         max_requests=max_requests,
         export_cap=export_cap,
+        uses_content_id=lambda source: content_ids,
     )
     return source, http
 

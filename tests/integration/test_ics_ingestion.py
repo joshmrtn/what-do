@@ -78,6 +78,7 @@ def candidates():
         ),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
+        uses_content_id=lambda source: False,
     )
     return source.fetch()
 
@@ -155,6 +156,7 @@ def test_a_second_fetch_reuses_the_cache_without_touching_the_network(db):
             ),
             get_now=lambda: FIXED_NOW,
             logger=get_logger("test", stream=io.StringIO()),
+            uses_content_id=lambda source: False,
         )
 
     first = _source().fetch()

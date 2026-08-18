@@ -71,6 +71,7 @@ def _candidates(db, fixture: str, venue: str, city: str):
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",
+        uses_content_id=lambda source: False,
     )
     return source.fetch()
 

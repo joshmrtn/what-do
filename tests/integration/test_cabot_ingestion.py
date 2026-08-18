@@ -116,6 +116,7 @@ def test_the_adapter_maps_the_page_to_candidates(db, page):
         timezone_name="America/New_York",
         horizon_days=45,
         day_starts_at=time(4, 0),
+        uses_content_id=lambda source: False,
     )
 
     candidates = source.fetch()

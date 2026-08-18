@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.network.http import HttpFetcher
+from src.ingestion.candidate_id import derive_content_id
 from src.ingestion.cinemas.cabot_listing import CabotEvent, parse_cabot
+from src.ingestion.identity import ContentIdRule
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.timing import EXACT, UNKNOWN
@@ -46,6 +48,8 @@ class CabotListingSource(IngestionSource):
         horizon_days: int = DEFAULT_HORIZON_DAYS,
         day_starts_at: time = DEFAULT_DAY_STARTS_AT,
         max_pages: int = _DEFAULT_MAX_PAGES,
+        *,
+        uses_content_id: ContentIdRule,
     ) -> None:
         self._config = config
         self._fetcher = fetcher
@@ -55,6 +59,8 @@ class CabotListingSource(IngestionSource):
         self._horizon_days = horizon_days
         self._day_starts_at = day_starts_at
         self._max_pages = max_pages
+        # Required and keyword-only, so the composition root cannot forget it.
+        self._uses_content_id = uses_content_id
 
     @property
     def source_name(self) -> str:
@@ -126,8 +132,15 @@ class CabotListingSource(IngestionSource):
 
     def _to_candidate(self, event: CabotEvent) -> EventCandidate:
         """Map one listed event, localising its wall clock to the venue's zone."""
+        start = self._localise(
+            event.start
+            if event.time_known
+            else event.start.replace(
+                hour=self._day_starts_at.hour, minute=self._day_starts_at.minute
+            )
+        )
         return EventCandidate(
-            id=f"{self._config.name}:{event.event_id}",
+            id=self._candidate_id(event, start),
             source=self._config.name,
             source_type=self._config.source_type,
             title=event.title,
@@ -138,13 +151,7 @@ class CabotListingSource(IngestionSource):
             venue=_venue_of(event) or self._config.venue,
             location=self._config.city,
             url=event.url,
-            start_time=self._localise(
-                event.start
-                if event.time_known
-                else event.start.replace(
-                    hour=self._day_starts_at.hour, minute=self._day_starts_at.minute
-                )
-            ),
+            start_time=start,
             end_time=self._localise(event.end) if event.end else None,
             # The listing gave a date but no hour. Not the same as all day —
             # a drop-in has a start, nobody has published it.
@@ -154,6 +161,22 @@ class CabotListingSource(IngestionSource):
             raw_published_at=None,
             discovered_at=self._get_now(),
         )
+
+    def _candidate_id(self, event: CabotEvent, start: datetime) -> str:
+        """The listing's own event id, unless those ids identify nothing.
+
+        The Cabot publishes a stable `event_id` and it is the better key while
+        it holds — it survives a retitling, which a content key does not.
+        """
+        if self._uses_content_id(self._config.name):
+            return derive_content_id(
+                source=self._config.name,
+                title=event.title,
+                venue=_venue_of(event) or self._config.venue,
+                start=start,
+            )
+
+        return f"{self._config.name}:{event.event_id}"
 
     def _localise(self, when: datetime) -> datetime:
         return when.replace(tzinfo=self._zone)

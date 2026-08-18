@@ -20,7 +20,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.config import FeedConfig
 from src.network.http import HttpFetcher
+from src.ingestion.candidate_id import derive_content_id
 from src.ingestion.cinemas.veezi_listing import VeeziSession, parse_sessions
+from src.ingestion.identity import ContentIdRule
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 
@@ -35,12 +37,16 @@ class VeeziSessionsSource(IngestionSource):
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
         timezone_name: str = "UTC",
+        *,
+        uses_content_id: ContentIdRule,
     ) -> None:
         self._config = config
         self._fetcher = fetcher
         self._get_now = get_now
         self._logger = logger
         self._zone = _zone_of(timezone_name)
+        # Required and keyword-only, so the composition root cannot forget it.
+        self._uses_content_id = uses_content_id
 
     @property
     def source_name(self) -> str:
@@ -67,8 +73,9 @@ class VeeziSessionsSource(IngestionSource):
 
     def _to_candidate(self, showing: VeeziSession) -> EventCandidate:
         """Map one showing, localising its wall clock to the cinema's zone."""
+        start = showing.start.replace(tzinfo=self._zone)
         return EventCandidate(
-            id=f"{self._config.name}:{showing.session_id}",
+            id=self._candidate_id(showing, start),
             source=self._config.name,
             source_type=self._config.source_type,
             title=showing.title,
@@ -78,7 +85,7 @@ class VeeziSessionsSource(IngestionSource):
             venue=self._config.venue,
             location=self._config.city,
             url=showing.url,
-            start_time=showing.start.replace(tzinfo=self._zone),
+            start_time=start,
             # Runtime is not published here. TMDb enrichment can supply it later
             # rather than the adapter inventing a duration.
             end_time=None,
@@ -88,6 +95,23 @@ class VeeziSessionsSource(IngestionSource):
             raw_published_at=None,
             discovered_at=self._get_now(),
         )
+
+    def _candidate_id(self, showing: VeeziSession, start: datetime) -> str:
+        """The session id, unless this cinema's session ids identify nothing.
+
+        Veezi publishes a `session_id` and it is the better key while it holds —
+        it survives a retitling, and it tells one screen from another where a
+        content key cannot. The content path exists for when it stops holding.
+        """
+        if self._uses_content_id(self._config.name):
+            return derive_content_id(
+                source=self._config.name,
+                title=showing.title,
+                venue=self._config.venue,
+                start=start,
+            )
+
+        return f"{self._config.name}:{showing.session_id}"
 
 
 def _zone_of(name: str) -> ZoneInfo:

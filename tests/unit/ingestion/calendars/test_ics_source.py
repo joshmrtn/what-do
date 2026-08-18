@@ -58,7 +58,7 @@ def _session(response=None):
 
 
 def _make_source(cache, session=None, now=FIXED_NOW, stream=None, horizon_days=30,
-                 timezone_name="UTC", **config_overrides):
+                 timezone_name="UTC", content_ids=False, **config_overrides):
     settings = {
         "name": "northshorenightout",
         "url": URL,
@@ -74,6 +74,7 @@ def _make_source(cache, session=None, now=FIXED_NOW, stream=None, horizon_days=3
         logger=get_logger("test", stream=stream or io.StringIO()),
         horizon_days=horizon_days,
         timezone_name=timezone_name,
+        uses_content_id=lambda source: content_ids,
     )
 
 
@@ -93,6 +94,100 @@ def test_id_derives_from_uid_and_is_stable_across_fetches(cache):
 
     assert first.id == later.id
     assert "abc123@google.com" in first.id
+
+
+class TestWhenThePublishersUidsAreNotTrusted:
+    """`northshorenightout` is a Google Calendar export that re-mints every UID
+    between days — 860 stored rows for 156 listings. A source latched to content
+    ids keys on the listing instead, and must collapse exactly the rows the
+    churn detector counted as one.
+    """
+
+    def _renamed_uid(self, uid: str) -> str:
+        return _calendar(
+            f"UID:{uid}\r\n"
+            "SUMMARY:​[The Rhumb Line\\, Gloucester\\, Music] Three Ply\r\n"
+            "DTSTART:20260809T010000Z\r\n"
+            "DTEND:20260809T040000Z\r\n"
+            "STATUS:CONFIRMED"
+        )
+
+    def test_a_re_minted_uid_yields_the_same_id(self, cache):
+        """The defect this exists for. Same listing, new handle on it."""
+        first = _make_source(
+            cache, session=_session(_response(self._renamed_uid("first@google.com"))),
+            content_ids=True,
+        ).fetch()[0]
+        later = _make_source(
+            cache, session=_session(_response(self._renamed_uid("second@google.com"))),
+            now=FIXED_NOW + timedelta(days=1), content_ids=True,
+        ).fetch()[0]
+
+        assert first.id == later.id
+
+    def test_the_uid_is_not_in_the_id_at_all(self, cache):
+        first = _make_source(cache, content_ids=True).fetch()[0]
+
+        assert "abc123@google.com" not in first.id
+
+    def test_a_re_cased_republish_yields_the_same_id(self, cache):
+        """Canonical on both text fields, or the latch fires and the duplicates
+        survive it — a venue writing its listings in caps was invisible to dedup
+        for exactly this reason."""
+        shouted = _calendar(
+            "UID:abc123@google.com\r\n"
+            "SUMMARY:​[THE RHUMB LINE\\, Gloucester\\, Music] THREE PLY\r\n"
+            "DTSTART:20260809T010000Z\r\n"
+            "DTEND:20260809T040000Z\r\n"
+            "STATUS:CONFIRMED"
+        )
+
+        normal = _make_source(cache, content_ids=True).fetch()[0]
+        # A day on, or the conditional cache serves the first body back and the
+        # republish is never read — the assertion would hold vacuously.
+        loud = _make_source(
+            cache, session=_session(_response(shouted)), content_ids=True,
+            now=FIXED_NOW + timedelta(days=1),
+        ).fetch()[0]
+
+        assert normal.id == loud.id
+
+    def test_two_occurrences_of_a_series_stay_distinct(self, cache):
+        """A recurring programme shares one UID *and* one title and venue across
+        every date it runs, so the start is what tells tonight from next week.
+        Without it a whole season collapses into one candidate."""
+        series = _calendar(
+            "UID:weekly@google.com\r\n"
+            "SUMMARY:​[The Rhumb Line\\, Gloucester\\, Music] Open Mic\r\n"
+            "DTSTART:20260809T010000Z\r\n"
+            "DTEND:20260809T040000Z\r\n"
+            "RRULE:FREQ=WEEKLY;COUNT=3\r\n"
+            "STATUS:CONFIRMED"
+        )
+
+        results = _make_source(
+            cache, session=_session(_response(series)), content_ids=True
+        ).fetch()
+
+        assert len(results) == 3
+        assert len({c.id for c in results}) == 3
+
+    def test_a_different_listing_still_gets_a_different_id(self, cache):
+        other = _calendar(
+            "UID:abc123@google.com\r\n"
+            "SUMMARY:​[The Rhumb Line\\, Gloucester\\, Music] Someone Else\r\n"
+            "DTSTART:20260809T010000Z\r\n"
+            "DTEND:20260809T040000Z\r\n"
+            "STATUS:CONFIRMED"
+        )
+
+        first = _make_source(cache, content_ids=True).fetch()[0]
+        second = _make_source(
+            cache, session=_session(_response(other)), content_ids=True,
+            now=FIXED_NOW + timedelta(days=1),
+        ).fetch()[0]
+
+        assert first.id != second.id
 
 
 def test_source_and_source_type_come_from_config(cache):

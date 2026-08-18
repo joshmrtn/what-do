@@ -60,7 +60,8 @@ def _session(body=_ONE_SHOWING):
     return http
 
 
-def _make_source(cache, body=_ONE_SHOWING, now=FIXED_NOW, session=None, **overrides):
+def _make_source(cache, body=_ONE_SHOWING, now=FIXED_NOW, session=None,
+                 content_ids=False, **overrides):
     settings = {
         "name": "cinemasalem",
         "url": URL,
@@ -82,6 +83,7 @@ def _make_source(cache, body=_ONE_SHOWING, now=FIXED_NOW, session=None, **overri
         get_now=lambda: now,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",
+        uses_content_id=lambda source: content_ids,
     )
 
 
@@ -178,3 +180,45 @@ class TestDegradation:
         results = _make_source(cache, body=body).fetch()
 
         assert [c.title for c in results] == ["Fine"]
+
+
+class TestWhenTheSessionIdsAreNotTrusted:
+    """A Veezi `session_id` is the better key while it holds — it survives a
+    retitling, and it tells one screen from another. This is the path for a
+    cinema whose session ids stop identifying anything, which nothing but
+    measurement can reveal.
+    """
+
+    def test_a_re_minted_session_id_yields_the_same_id(self, cache):
+        first = _make_source(cache, content_ids=True).fetch()[0]
+        renumbered = _page(("The Odyssey", "Friday 7, August", "99999", "7:00 PM"))
+
+        later = _make_source(
+            cache, body=renumbered, content_ids=True,
+            now=FIXED_NOW + timedelta(days=1),
+        ).fetch()[0]
+
+        assert first.id == later.id
+
+    def test_the_session_id_is_not_in_the_id_at_all(self, cache):
+        assert "38750" not in _make_source(cache, content_ids=True).fetch()[0].id
+
+    def test_two_showings_of_one_film_stay_distinct(self, cache):
+        """Same film, same cinema, different times. Without the start they
+        collapse into one candidate and the later showing disappears."""
+        body = _page(
+            ("The Odyssey", "Friday 7, August", "38750", "3:30 PM"),
+            ("The Odyssey", "Friday 7, August", "38754", "7:00 PM"),
+        )
+
+        results = _make_source(cache, body=body, content_ids=True).fetch()
+
+        assert len({c.id for c in results}) == 2
+
+    def test_the_id_is_stable_across_a_refetch(self, cache):
+        first = _make_source(cache, content_ids=True).fetch()[0]
+        later = _make_source(
+            cache, content_ids=True, now=FIXED_NOW + timedelta(days=1)
+        ).fetch()[0]
+
+        assert first.id == later.id

@@ -42,6 +42,7 @@ from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.ingestion.identity import content_id_rule
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.ingestion.calendars.tribe_source import TribeCalendarSource
 from src.ingestion.cinemas.cabot_source import CabotListingSource
@@ -193,6 +194,12 @@ def build_dependencies(
         logger=logger,
     )
 
+    # Whether each source's publisher may be trusted to identify its own
+    # listings. One rule, built once and handed to every adapter that keys a
+    # candidate on something the publisher supplied — so there is one place the
+    # answer can come from when the churn latch starts supplying it too.
+    uses_content_id = content_id_rule(config.sources)
+
     # Alternative routes to the same Instagram data, tried in order. Apify is
     # first because it is the only one under contract; the scrapers are the
     # fallback when it is unavailable or unaffordable.
@@ -227,6 +234,7 @@ def build_dependencies(
                 timezone_name=config.location.timezone,
                 horizon_days=config.scraping.horizon_days,
                 day_starts_at=config.day_starts_at,
+                uses_content_id=uses_content_id,
             )
         )
     for feed in config.sources.veezi_cinemas:
@@ -237,6 +245,7 @@ def build_dependencies(
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
+                uses_content_id=uses_content_id,
             )
         )
     for feed in config.sources.tribe_calendars:
@@ -249,6 +258,7 @@ def build_dependencies(
                 timezone_name=config.location.timezone,
                 horizon_days=config.scraping.horizon_days,
                 day_starts_at=config.day_starts_at,
+                uses_content_id=uses_content_id,
             )
         )
     for feed in config.sources.cabot_listings:
@@ -261,6 +271,7 @@ def build_dependencies(
                 timezone_name=config.location.timezone,
                 horizon_days=config.scraping.horizon_days,
                 day_starts_at=config.day_starts_at,
+                uses_content_id=uses_content_id,
             )
         )
     for feed in config.sources.do617_venues:

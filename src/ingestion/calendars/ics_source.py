@@ -19,7 +19,9 @@ from typing import Any, Callable
 
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.network.http import HttpFetcher
+from src.ingestion.candidate_id import derive_content_id
 from src.ingestion.calendars.listing_category import category_metadata
+from src.ingestion.identity import ContentIdRule
 from src.ingestion.ics import VEvent, parse_ics
 from src.ingestion.recurrence import Occurrence, expand_calendar
 from src.ingestion.source import IngestionSource
@@ -47,11 +49,18 @@ class IcsCalendarSource(IngestionSource):
         timezone_name: str = "UTC",
         horizon_days: int = DEFAULT_HORIZON_DAYS,
         day_starts_at: time = DEFAULT_DAY_STARTS_AT,
+        *,
+        uses_content_id: ContentIdRule,
     ) -> None:
         self._config = config
         self._fetcher = fetcher
         self._get_now = get_now
         self._logger = logger
+        # Required and keyword-only: an optional rule is one the composition
+        # root can forget to forward, and the whole subsystem would then be
+        # built, typed and never reached — which is how the refit went unrun
+        # for weeks. `mypy --strict` enumerates the call sites instead.
+        self._uses_content_id = uses_content_id
         self._zone = _zone_of(timezone_name)
         self._horizon_days = horizon_days
         self._day_starts_at = day_starts_at
@@ -203,7 +212,21 @@ class IcsCalendarSource(IngestionSource):
 
         The slot is the *original* one, not where a moved instance landed, so
         rescheduling updates the stored event instead of orphaning it.
+
+        None of which applies to a publisher whose UIDs identify nothing. There
+        the listing itself is the identity, and the start is carried always
+        rather than only for a series — it is what tells one occurrence from the
+        next when title and venue are shared.
         """
+        if self._uses_content_id(self._config.name):
+            title, venue, city, _ = self._split_summary(occurrence.event.summary)
+            return derive_content_id(
+                source=self._config.name,
+                title=title,
+                venue=venue or self._config.venue,
+                start=occurrence.start,
+            )
+
         base = f"{self._config.name}:{uid}"
         if not occurrence.from_series:
             return base

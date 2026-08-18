@@ -66,7 +66,7 @@ class _Pages:
         return response
 
 
-def _make_source(db, bodies, horizon_days=45, max_pages=12, **overrides):
+def _make_source(db, bodies, horizon_days=45, max_pages=12, content_ids=False, **overrides):
     settings = {
         "name": "cabot",
         "url": URL,
@@ -85,6 +85,7 @@ def _make_source(db, bodies, horizon_days=45, max_pages=12, **overrides):
         horizon_days=horizon_days,
         day_starts_at=time(4, 0),
         max_pages=max_pages,
+        uses_content_id=lambda source: content_ids,
     )
     return source, http
 
@@ -243,3 +244,55 @@ class TestRepeatedPages:
 
         assert len(results) == 10
         assert len(http.requested) == 2
+
+
+class TestWhenTheEventIdsAreNotTrusted:
+    """The Cabot publishes a stable `event_id`, and it is the better key while
+    it holds. This is the path for a listing whose ids stop identifying
+    anything — the shape that let one Google Calendar feed reach 860 rows for
+    156 listings before anybody looked.
+    """
+
+    def test_a_re_minted_event_id_yields_the_same_id(self, db):
+        source, _ = _make_source(
+            db, {URL: _page(_item("1", 7), total=1)}, content_ids=True
+        )
+        first = source.fetch()[0]
+
+        renumbered, _ = _make_source(
+            db, {URL: _page(_item("9999", 7), total=1)}, content_ids=True
+        )
+
+        assert renumbered.fetch()[0].id == first.id
+
+    def test_the_event_id_is_not_in_the_id_at_all(self, db):
+        source, _ = _make_source(
+            db, {URL: _page(_item("1", 7), total=1)}, content_ids=True
+        )
+
+        assert "cabot:1" != source.fetch()[0].id
+
+    def test_two_events_on_different_days_stay_distinct(self, db):
+        source, _ = _make_source(
+            db,
+            {URL: _page(_item("1", 7), _item("2", 8), total=2)},
+            content_ids=True,
+        )
+
+        results = source.fetch()
+
+        assert len(results) == 2
+        assert len({c.id for c in results}) == 2
+
+    def test_two_different_shows_on_one_day_stay_distinct(self, db):
+        source, _ = _make_source(
+            db,
+            {URL: _page(
+                _item("1", 7, title="One Show"),
+                _item("2", 7, title="Another Show"),
+                total=2,
+            )},
+            content_ids=True,
+        )
+
+        assert len({c.id for c in source.fetch()}) == 2

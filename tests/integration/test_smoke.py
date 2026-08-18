@@ -1149,6 +1149,7 @@ def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger
         ),
         get_now=lambda: BATCH_NOW,
         logger=logger,
+        uses_content_id=lambda source: False,
     )
     html = HtmlListingSource(
         config=FeedConfig("nsno_list", "https://listings.example.com/", "nsno_list"),

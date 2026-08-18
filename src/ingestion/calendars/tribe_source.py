@@ -20,6 +20,7 @@ from typing import Any, Callable
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.network.http import HttpFetcher
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.ingestion.identity import ContentIdRule
 from src.ingestion.ics import parse_ics
 from src.utils.nights import night_start
 
@@ -48,6 +49,8 @@ class TribeCalendarSource(IcsCalendarSource):
         day_starts_at: time = DEFAULT_DAY_STARTS_AT,
         max_requests: int = _DEFAULT_MAX_REQUESTS,
         export_cap: int = _DEFAULT_EXPORT_CAP,
+        *,
+        uses_content_id: ContentIdRule,
     ) -> None:
         super().__init__(
             config,
@@ -57,6 +60,7 @@ class TribeCalendarSource(IcsCalendarSource):
             timezone_name=timezone_name,
             horizon_days=horizon_days,
             day_starts_at=day_starts_at,
+            uses_content_id=uses_content_id,
         )
         self._max_requests = max_requests
         self._export_cap = export_cap
