@@ -4,7 +4,8 @@
 vendor SDK goes through it unchanged. Three things do not survive that
 abstraction, and they live here:
 
-* **which failures are worth another attempt** — a status code, for `requests`;
+* **which failures are worth another attempt** — a status code, whether it
+  arrived as a `requests` exception or on a vendor SDK's error;
 * **what the server said with `Retry-After`** — it named a number, so we use its
   number rather than our own schedule;
 * **the conditional request** — replaying `ETag` and `Last-Modified` so a server
@@ -67,10 +68,46 @@ def requests_transient_check(*, get_now: Callable[[], datetime]) -> TransientChe
     return check
 
 
+def api_status_transient_check(*, get_now: Callable[[], datetime]) -> TransientCheck:
+    """A transient-failure predicate for an SDK error carrying an HTTP status.
+
+    A vendor SDK does not raise `requests`' exceptions, but the service behind it
+    still answers with a status, and the SDK keeps it: `google.genai`'s `APIError`
+    carries `.code`, and the response it came from when there was one. A status
+    means the same thing whoever transported it, so the judgement is the same and
+    lives in one place.
+
+    Read off the attribute rather than by type, so this module stays free of any
+    vendor SDK — nothing in `src/network/` should have to be edited to add a
+    provider.
+
+    **It reads a status and nothing else.** An SDK whose transport failures carry
+    no status — a timeout, a refused connection — needs those recognised too, and
+    that vocabulary belongs to the provider: compose this with the provider's own
+    check, as `gemini_transient_check` does.
+
+    Args:
+        get_now: Injected clock, for a `Retry-After` given as an HTTP date.
+
+    Returns:
+        A check reading `.code` and any `Retry-After` on the kept response.
+    """
+
+    def check(error: BaseException) -> RetryAdvice:
+        status = getattr(error, "code", None)
+        if not isinstance(status, int):
+            return DO_NOT_RETRY
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", None)
+        return _advice_for_status(status, headers, get_now)
+
+    return check
+
+
 def _advice_for_http_error(
     error: requests.HTTPError, get_now: Callable[[], datetime]
 ) -> RetryAdvice:
-    """Advice for a status code, and the server's own opinion on when.
+    """Advice for a `requests` failure that reached a server.
 
     An error carrying no response has no status to judge, so it is not retried:
     without one there is nothing to call transient and guessing would retry the
@@ -79,14 +116,23 @@ def _advice_for_http_error(
     response = error.response
     if response is None:
         return DO_NOT_RETRY
+    return _advice_for_status(response.status_code, response.headers, get_now)
 
-    status = response.status_code
+
+def _advice_for_status(
+    status: int,
+    headers: Mapping[str, str] | None,
+    get_now: Callable[[], datetime],
+) -> RetryAdvice:
+    """Advice for a status code, and the server's own opinion on when."""
     if status not in _RETRYABLE_STATUSES and status < 500:
         return DO_NOT_RETRY
 
     return RetryAdvice(
         retry=True,
-        retry_after_seconds=_retry_after_seconds(response.headers.get("Retry-After"), get_now),
+        retry_after_seconds=_retry_after_seconds(
+            headers.get("Retry-After") if headers is not None else None, get_now
+        ),
     )
 
 

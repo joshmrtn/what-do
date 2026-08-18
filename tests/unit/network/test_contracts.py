@@ -21,12 +21,20 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 import requests
+from google.genai.errors import APIError
 
-from src.network.http import HttpDocument, UrlCache, requests_transient_check
+from src.network.http import (
+    HttpDocument,
+    UrlCache,
+    api_status_transient_check,
+    requests_transient_check,
+)
 from src.network.protocols import CacheStrategy, NullCache, TransientCheck
 from src.storage.memory.http_cache import InMemoryHttpCache
+from src.utils.gemini_client import gemini_transient_check
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 VALUE = HttpDocument(body="a body", etag='"abc"', last_modified=None)
@@ -110,18 +118,31 @@ def _requests_check() -> TransientCheck:
     return requests_transient_check(get_now=lambda: NOW)
 
 
-#: Phase 5 adds the SDK check here. One implementation pins little; the list is
-#: the point, because the second one arrives already held to this.
-ALL_CHECKS = [_requests_check]
+def _api_status_check() -> TransientCheck:
+    return api_status_transient_check(get_now=lambda: NOW)
+
+
+def _gemini_check() -> TransientCheck:
+    return gemini_transient_check(get_now=lambda: NOW)
+
+
+#: Every implementation. A provider adds its check here rather than bringing
+#: tests of its own — the list is the mechanism, and the point is that each new
+#: one arrives already held to what the policy relies on.
+ALL_CHECKS = [_requests_check, _api_status_check, _gemini_check]
 
 #: Failures every transport can suffer, plus one that is ours rather than any
-#: transport's.
+#: transport's. Deliberately mixed: a check is handed the failures of transports
+#: it knows nothing about, because it runs inside the policy's `except` and must
+#: answer for whatever arrives there.
 ANY_ERROR = [
     ValueError("not a transport failure"),
     TypeError("ours"),
     RuntimeError("unclassifiable"),
     requests.Timeout("too slow"),
     requests.ConnectionError("refused"),
+    httpx.TimeoutException("too slow"),
+    APIError(503, {"error": {"message": "unavailable", "status": "X"}}),
     KeyboardInterrupt(),
 ]
 

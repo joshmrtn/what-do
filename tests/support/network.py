@@ -33,6 +33,7 @@ def network_for(
     *,
     cache_ttl: timedelta | None = timedelta(hours=6),
     max_attempts: int = 3,
+    timeout_seconds: float = 30.0,
     policy_name: str = TEST_POLICY,
 ) -> NetworkConfig:
     """One policy, assigned to every host in `urls`.
@@ -57,7 +58,7 @@ def network_for(
         policies={
             policy_name: NetworkPolicy(
                 min_interval_seconds=0.0,
-                timeout_seconds=30.0,
+                timeout_seconds=timeout_seconds,
                 max_attempts=max_attempts,
                 backoff_base_seconds=0.0,
                 backoff_max_seconds=0.0,
@@ -74,6 +75,7 @@ def fetcher_policy(
     now: datetime | Callable[[], datetime],
     cache_ttl: timedelta | None = timedelta(hours=6),
     max_attempts: int = 3,
+    timeout_seconds: float = 30.0,
     sleeps: list[float] | None = None,
     policy_name: str = TEST_POLICY,
 ) -> RequestPolicy:
@@ -85,7 +87,11 @@ def fetcher_policy(
     """
     clock: Callable[[], datetime] = now if callable(now) else (lambda: now)
     network = network_for(
-        urls, cache_ttl=cache_ttl, max_attempts=max_attempts, policy_name=policy_name
+        urls,
+        cache_ttl=cache_ttl,
+        max_attempts=max_attempts,
+        timeout_seconds=timeout_seconds,
+        policy_name=policy_name,
     )
     record = sleeps.append if sleeps is not None else (lambda seconds: None)
 

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
+from google.genai.errors import APIError
 
 from src.config import ConfigError, NetworkConfig, NetworkPolicy
 from src.network.http import (
@@ -18,6 +19,7 @@ from src.network.http import (
     HttpDocument,
     HttpFetcher,
     UrlCache,
+    api_status_transient_check,
     requests_transient_check,
 )
 from src.network.policy import RequestPolicy
@@ -138,6 +140,57 @@ def test_retry_after_on_a_status_we_will_not_retry_is_still_not_retried():
         _http_error(404, {"Retry-After": "30"})
     )
     assert not advice.retry
+
+
+# ---------------------------------------------------------------------------
+# An SDK error that carries the status it came from
+# ---------------------------------------------------------------------------
+
+
+def _api_error(status: int, headers: dict[str, str] | None = None) -> APIError:
+    """What a vendor SDK raises for a failed HTTP call.
+
+    The real `google.genai` error, deliberately, rather than a duck. The check
+    reads `.code`, and a hand-rolled stand-in would still pass if the SDK spelled
+    it something else — which is the only thing this check can get wrong.
+    """
+    response = requests.Response()
+    response.status_code = status
+    response.headers.update(headers or {})
+    return APIError(status, {"error": {"message": "boom", "status": "X"}}, response)
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_a_server_side_sdk_failure_is_worth_retrying(status):
+    """A status means the same thing whoever transported it."""
+    assert api_status_transient_check(get_now=_clock())(_api_error(status)).retry
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_a_client_side_sdk_error_is_never_retried(status):
+    assert not api_status_transient_check(get_now=_clock())(_api_error(status)).retry
+
+
+def test_an_sdk_error_states_when_to_come_back():
+    """The SDK keeps the response, so the server's own opinion survives it."""
+    advice = api_status_transient_check(get_now=_clock())(
+        _api_error(429, {"Retry-After": "30"})
+    )
+    assert advice.retry_after_seconds == pytest.approx(30.0)
+
+
+def test_an_sdk_error_carrying_no_response_is_still_judged_by_its_status():
+    """`response` is optional on an `APIError`; the code is not."""
+    error = APIError(503, {"error": {"message": "unavailable", "status": "X"}})
+    advice = api_status_transient_check(get_now=_clock())(error)
+    assert advice.retry
+    assert advice.retry_after_seconds is None
+
+
+def test_an_error_carrying_no_status_is_not_retried():
+    """Nothing to call transient, and a transport failure with no status is the
+    caller's own check to add — this one only reads a status."""
+    assert not api_status_transient_check(get_now=_clock())(TypeError("ours")).retry
 
 
 # ---------------------------------------------------------------------------

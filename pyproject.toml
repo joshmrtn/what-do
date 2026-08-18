@@ -14,6 +14,11 @@ dependencies = [
     "rapidfuzz>=3.0",
     "astral>=3.0",
     "google-genai>=1.0",
+    # The Gemini SDK's own transport, named here because we read it directly:
+    # its timeout and connection failures carry no HTTP status, so the transient
+    # check has to recognise them by type. Same reason as numpy below — arriving
+    # transitively is not the same as being depended on.
+    "httpx>=0.27",
     "python-dateutil>=2.9",
     # Used by the scoring curve fit. Was installed transitively via
     # timezonefinder and relied on undeclared, so a bump upstream could have
