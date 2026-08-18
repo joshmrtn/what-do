@@ -6,17 +6,19 @@ import io
 from datetime import datetime, time, timedelta, timezone
 
 import pytest
+from unittest.mock import MagicMock
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.rss import RssItem
 from src.models.timing import EXACT
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 EASTERN = timezone(timedelta(hours=-4))
 FIXED_NOW = datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc)
+FEED_URL = "https://salempl.assabetinteractive.com/calendar/upcoming-events.rss"
 
 #: The four structural lines every Assabet item opens with, then its prose.
 IN_LIBRARY = (
@@ -44,11 +46,11 @@ def source(tmp_path):
     return AssabetRssSource(
         config=FeedConfig(
             name="salempl",
-            url="https://salempl.assabetinteractive.com/calendar/upcoming-events.rss",
+            url=FEED_URL,
             source_type="salempl",
             city="Salem",
         ),
-        http_cache=InMemoryHttpCache(),
+        fetcher=fetcher_for(MagicMock(), urls=FEED_URL, now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

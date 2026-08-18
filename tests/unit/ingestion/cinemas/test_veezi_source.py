@@ -14,6 +14,7 @@ from src.ingestion.cinemas.veezi_source import VeeziSessionsSource
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXED_NOW = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)  # 02:00 in New York
 TOKEN = "mz33me119qs1fn6sympyf41n2w"
@@ -59,7 +60,7 @@ def _session(body=_ONE_SHOWING):
     return http
 
 
-def _make_source(cache, body=_ONE_SHOWING, now=FIXED_NOW, **overrides):
+def _make_source(cache, body=_ONE_SHOWING, now=FIXED_NOW, session=None, **overrides):
     settings = {
         "name": "cinemasalem",
         "url": URL,
@@ -72,8 +73,12 @@ def _make_source(cache, body=_ONE_SHOWING, now=FIXED_NOW, **overrides):
 
     return VeeziSessionsSource(
         config=FeedConfig(**settings),
-        http_cache=cache,
-        session=_session(body),
+        fetcher=fetcher_for(
+            session if session is not None else _session(body),
+            urls=URL,
+            http_cache=cache,
+            now=now,
+        ),
         get_now=lambda: now,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",
@@ -148,15 +153,16 @@ class TestMapping:
 class TestPoliteness:
     def test_a_refetch_inside_the_interval_reuses_the_cache(self, cache):
         """Somebody else's server, and a nightly job that misbehaves gets blocked."""
-        source = _make_source(cache)
-        source.fetch()
-        calls_after_first = source._session.get.call_count
+        session = _session(_ONE_SHOWING)
+        _make_source(cache, session=session).fetch()
+        calls_after_first = session.get.call_count
 
-        again = _make_source(cache, now=FIXED_NOW + timedelta(hours=1))
-        again.fetch()
+        _make_source(
+            cache, session=session, now=FIXED_NOW + timedelta(hours=1)
+        ).fetch()
 
         assert calls_after_first == 1
-        assert again._session.get.call_count == 0
+        assert session.get.call_count == 1
 
 
 class TestDegradation:

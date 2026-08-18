@@ -17,10 +17,8 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable
 
-import requests
-
-from src.storage.protocols import HttpCache
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
+from src.network.http import HttpFetcher
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.ingestion.ics import parse_ics
 from src.utils.nights import night_start
@@ -42,8 +40,7 @@ class TribeCalendarSource(IcsCalendarSource):
     def __init__(
         self,
         config: FeedConfig,
-        http_cache: HttpCache,
-        session: requests.Session | None = None,
+        fetcher: HttpFetcher,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
         timezone_name: str = "UTC",
@@ -54,8 +51,7 @@ class TribeCalendarSource(IcsCalendarSource):
     ) -> None:
         super().__init__(
             config,
-            http_cache,
-            session=session,
+            fetcher,
             get_now=get_now,
             logger=logger,
             timezone_name=timezone_name,

@@ -7,17 +7,19 @@ from datetime import datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
+from unittest.mock import MagicMock
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.ingestion.rss import RssItem
 from src.models.timing import EXACT, UNKNOWN
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 EASTERN = ZoneInfo("America/New_York")
 FIXED_NOW = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+FEED_URL = "https://www.moon-ns.org/shows?format=rss"
 
 
 @pytest.fixture
@@ -25,8 +27,8 @@ def source(tmp_path):
     path = tmp_path / "test.db"
     init_db(path)
     return MoonRssSource(
-        config=FeedConfig(name="moon", url="https://www.moon-ns.org/shows?format=rss", source_type="moon"),
-        http_cache=InMemoryHttpCache(),
+        config=FeedConfig(name="moon", url=FEED_URL, source_type="moon"),
+        fetcher=fetcher_for(MagicMock(), urls=FEED_URL, now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

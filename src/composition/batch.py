@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+import requests
 
 from src.config import AppConfig
 from src.enrichment.air_quality import OpenMeteoAirQualityProvider
@@ -46,6 +50,9 @@ from src.ingestion.seeds import load_seeds
 from src.ingestion.social.apify import ApifyAdapter
 from src.ingestion.social.dumpor import DumporAdapter
 from src.ingestion.social.picuki import PicukiAdapter
+from src.network.http import HttpFetcher
+from src.network.policy import RequestPolicy
+from src.network.throttle import InMemoryThrottle
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.normalization.service import NormalizationService
 from src.processing.extraction import OllamaExtractionProvider
@@ -182,10 +189,26 @@ def build_dependencies(
     failover_sources.append(PicukiAdapter(handles, get_now=get_now))
     failover_sources.append(DumporAdapter(handles, get_now=get_now))
 
-    # One cache, shared by every adapter. They each make conditional requests
-    # and none of them touches the database for anything else, which is why
-    # they no longer take a `db_path` at all.
-    http_cache = storage.http_cache
+    # One fetcher, shared by every adapter. It owns the session, the throttle,
+    # the retry schedule and the cache, so an adapter no longer holds any of
+    # them — and there is one place that can answer what we asked of whom.
+    #
+    # The throttle is shared for the same reason the cache is: two adapters
+    # pointed at one host are one conversation from the server's side.
+    fetcher = HttpFetcher(
+        session=requests.Session(),
+        network=config.network,
+        policy=RequestPolicy(
+            network=config.network,
+            throttle=InMemoryThrottle(get_now=get_now, sleep=time.sleep),
+            sleep=time.sleep,
+            random=random.random,
+            logger=logger,
+        ),
+        http_cache=storage.http_cache,
+        get_now=get_now,
+        logger=logger,
+    )
 
     independent_sources: list[Any] = []
     amc_key = _credential("AMC_API_KEY", "amc")
@@ -197,7 +220,7 @@ def build_dependencies(
         independent_sources.append(
             IcsCalendarSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -209,7 +232,7 @@ def build_dependencies(
         independent_sources.append(
             VeeziSessionsSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -219,7 +242,7 @@ def build_dependencies(
         independent_sources.append(
             TribeCalendarSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -231,7 +254,7 @@ def build_dependencies(
         independent_sources.append(
             CabotListingSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -243,7 +266,7 @@ def build_dependencies(
         independent_sources.append(
             Do617VenueSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -255,7 +278,7 @@ def build_dependencies(
         independent_sources.append(
             JsonLdEventSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -267,7 +290,7 @@ def build_dependencies(
         independent_sources.append(
             AssabetRssSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -279,7 +302,7 @@ def build_dependencies(
         independent_sources.append(
             MoonRssSource(
                 feed,
-                http_cache,
+                fetcher,
                 get_now=get_now,
                 logger=logger,
                 timezone_name=config.location.timezone,
@@ -291,7 +314,7 @@ def build_dependencies(
         independent_sources.append(
             HtmlListingSource(
                 feed,
-                http_cache,
+                fetcher,
                 config.location.timezone,
                 get_now=get_now,
                 logger=logger,

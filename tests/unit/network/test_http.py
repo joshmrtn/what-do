@@ -407,3 +407,103 @@ def test_a_policy_may_be_named_for_a_host_that_came_from_data():
         "https://cdn.unknowable.test/x.jpg", label="image", policy="listings"
     )
     assert body == "an image"
+
+
+# ---------------------------------------------------------------------------
+# A caller that knows its document better than the category does
+# ---------------------------------------------------------------------------
+
+
+def test_a_shorter_max_age_refetches_before_the_policy_would():
+    """`min_fetch_interval_hours` is per feed and the policy TTL is per
+    category. The specific one wins, exactly as a venue's own name beats the
+    label on the aggregator that listed it."""
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="v1"), _response(body="v2"))
+    hour = timedelta(hours=1)
+    _fetcher(session, http_cache=store, now=NOW).get(URL, label="x", max_age=hour)
+
+    later = NOW + timedelta(hours=2)
+    body = _fetcher(session, http_cache=store, now=later).get(URL, label="x", max_age=hour)
+
+    assert body == "v2"
+    assert len(session.calls) == 2
+
+
+def test_a_longer_max_age_serves_past_the_policys_lifetime():
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="v1"))
+    day = timedelta(days=1)
+    _fetcher(session, http_cache=store, now=NOW).get(URL, label="x", max_age=day)
+
+    later = NOW + timedelta(hours=12)
+    body = _fetcher(session, http_cache=store, now=later).get(URL, label="x", max_age=day)
+
+    assert body == "v1"
+    assert len(session.calls) == 1
+
+
+def test_no_max_age_leaves_the_policy_in_charge():
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="v1"), _response(body="v2"))
+    _fetcher(session, http_cache=store, now=NOW).get(URL, label="x")
+
+    later = NOW + timedelta(hours=7)
+    _fetcher(session, http_cache=store, now=later).get(URL, label="x")
+
+    assert len(session.calls) == 2
+
+
+def test_a_max_age_of_zero_always_revalidates():
+    """Zero disables reuse — the documented meaning of `min_fetch_interval_hours: 0`
+    — and must not read as "no opinion, use the policy"."""
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="v1"), _response(body="v2"))
+    zero = timedelta(0)
+    _fetcher(session, http_cache=store, now=NOW).get(URL, label="x", max_age=zero)
+
+    body = _fetcher(session, http_cache=store, now=NOW).get(URL, label="x", max_age=zero)
+
+    assert body == "v2"
+    assert len(session.calls) == 2
+
+
+def test_a_max_age_cannot_revive_a_declared_never():
+    """`never` says this caller stores nothing. A caller asking to reuse what
+    was never kept gets a fetch, not a resurrection."""
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="v1"), _response(body="v2"))
+    network = _test_network(cache_ttl=None)
+    _fetcher(session, http_cache=store, now=NOW, network=network).get(
+        URL, label="x", max_age=timedelta(days=1)
+    )
+    _fetcher(session, http_cache=store, now=NOW, network=network).get(
+        URL, label="x", max_age=timedelta(days=1)
+    )
+
+    assert len(session.calls) == 2
+
+
+def test_a_naive_stored_timestamp_does_not_break_the_fetch():
+    """A cache row written by an older, naive clock must not kill every source.
+
+    The batch clock is aware, so subtracting a stored naive timestamp raised
+    `can't subtract offset-naive and offset-aware datetimes` — and since every
+    configured source fetches through here, all seventeen failed at once.
+    """
+    store = InMemoryHttpCache()
+    store.put(
+        URL,
+        body="STALE",
+        etag=None,
+        last_modified=None,
+        fetched_at=NOW.replace(tzinfo=None),
+    )
+    session = _FakeSession()
+
+    body = _fetcher(session, http_cache=store, now=NOW + timedelta(hours=1)).get(
+        URL, label="example"
+    )
+
+    assert body == "STALE"
+    assert session.calls == []

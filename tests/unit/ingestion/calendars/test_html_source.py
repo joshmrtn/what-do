@@ -10,6 +10,7 @@ import zoneinfo
 import pytest
 
 from src.storage.memory.http_cache import InMemoryHttpCache
+from tests.support.network import fetcher_for
 from src.config import FeedConfig
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.models.event_candidate import EventCandidate
@@ -64,9 +65,13 @@ def _make_source(cache, session=None, now=FIXED_NOW, stream=None, **overrides):
 
     return HtmlListingSource(
         config=FeedConfig(**settings),
-        http_cache=cache,
+        fetcher=fetcher_for(
+            session or _session(),
+            urls=URL,
+            http_cache=cache,
+            now=now,
+        ),
         tzname="America/New_York",
-        session=session or _session(),
         get_now=lambda: now,
         logger=get_logger("test", stream=stream or io.StringIO()),
     )

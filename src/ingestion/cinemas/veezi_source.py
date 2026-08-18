@@ -14,15 +14,12 @@ Politeness matches the calendar adapters: one conditional request per
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import requests
-
-from src.storage.protocols import HttpCache
 from src.config import FeedConfig
-from src.ingestion.calendars.fetching import fetch_document
+from src.network.http import HttpFetcher
 from src.ingestion.cinemas.veezi_listing import VeeziSession, parse_sessions
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
@@ -34,15 +31,13 @@ class VeeziSessionsSource(IngestionSource):
     def __init__(
         self,
         config: FeedConfig,
-        http_cache: HttpCache,
-        session: requests.Session | None = None,
+        fetcher: HttpFetcher,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
         timezone_name: str = "UTC",
     ) -> None:
         self._config = config
-        self._http_cache = http_cache
-        self._session = session or requests.Session()
+        self._fetcher = fetcher
         self._get_now = get_now
         self._logger = logger
         self._zone = _zone_of(timezone_name)
@@ -59,14 +54,10 @@ class VeeziSessionsSource(IngestionSource):
             One EventCandidate per showing, in page order. Bounding by event time
             is left to ingestion, which applies the same window to every source.
         """
-        body = fetch_document(
+        body = self._fetcher.get(
             self._config.url,
-            session=self._session,
-            http_cache=self._http_cache,
-            get_now=self._get_now,
-            min_fetch_interval_hours=self._config.min_fetch_interval_hours,
             label=self._config.name,
-            logger=self._logger,
+            max_age=timedelta(hours=self._config.min_fetch_interval_hours),
         )
 
         today = self._get_now().astimezone(self._zone).date()

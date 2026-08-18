@@ -240,7 +240,14 @@ class HttpFetcher:
         self._logger = logger
         self._is_transient = requests_transient_check(get_now=get_now)
 
-    def get(self, url: str, *, label: str, policy: str | None = None) -> str:
+    def get(
+        self,
+        url: str,
+        *,
+        label: str,
+        policy: str | None = None,
+        max_age: timedelta | None = None,
+    ) -> str:
         """Fetch a document, skipping the network whenever politeness allows.
 
         Args:
@@ -249,6 +256,12 @@ class HttpFetcher:
             label: Source name, for log messages.
             policy: Names a policy directly, for a host that arrived from
                 fetched data rather than from config.
+            max_age: This document's own lifetime, overriding the category's.
+                A feed's `min_fetch_interval_hours` is more specific than the
+                policy covering ten scraped sites, and the specific one wins —
+                including when it is *shorter*, which fetches more often than
+                the category would. Zero means always revalidate, and still
+                sends the validators, so the server can answer 304.
 
         Returns:
             The body, from cache when refetching would be impolite.
@@ -267,7 +280,10 @@ class HttpFetcher:
             url=url,
             http_cache=self._http_cache,
             get_now=self._get_now,
-            ttl=limits.cache_ttl,
+            # A declared `never` is not overridable: it says this caller keeps
+            # nothing, and a caller asking to reuse what was never kept gets a
+            # fetch rather than a resurrection.
+            ttl=limits.cache_ttl if max_age is None or limits.cache_ttl is None else max_age,
         )
 
         document = self._policy.call(

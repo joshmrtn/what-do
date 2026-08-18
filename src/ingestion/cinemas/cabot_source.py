@@ -16,11 +16,8 @@ from datetime import datetime, time, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import requests
-
-from src.storage.protocols import HttpCache
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
-from src.ingestion.calendars.fetching import fetch_document
+from src.network.http import HttpFetcher
 from src.ingestion.cinemas.cabot_listing import CabotEvent, parse_cabot
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
@@ -42,8 +39,7 @@ class CabotListingSource(IngestionSource):
     def __init__(
         self,
         config: FeedConfig,
-        http_cache: HttpCache,
-        session: requests.Session | None = None,
+        fetcher: HttpFetcher,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
         timezone_name: str = "UTC",
@@ -52,8 +48,7 @@ class CabotListingSource(IngestionSource):
         max_pages: int = _DEFAULT_MAX_PAGES,
     ) -> None:
         self._config = config
-        self._http_cache = http_cache
-        self._session = session or requests.Session()
+        self._fetcher = fetcher
         self._get_now = get_now
         self._logger = logger
         self._zone = _zone_of(timezone_name)
@@ -123,14 +118,10 @@ class CabotListingSource(IngestionSource):
     def _read_page(self, page: int) -> str:
         url = self._config.url if page == 1 else f"{self._config.url.rstrip('/')}/page/{page}/"
 
-        return fetch_document(
+        return self._fetcher.get(
             url,
-            session=self._session,
-            http_cache=self._http_cache,
-            get_now=self._get_now,
-            min_fetch_interval_hours=self._config.min_fetch_interval_hours,
             label=f"{self._config.name} page {page}",
-            logger=self._logger,
+            max_age=timedelta(hours=self._config.min_fetch_interval_hours),
         )
 
     def _to_candidate(self, event: CabotEvent) -> EventCandidate:

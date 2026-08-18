@@ -17,12 +17,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.models.timing import EXACT, UNKNOWN
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "moon_shows.rss"
 URL = "https://www.moon-ns.org/shows?format=rss"
@@ -61,8 +61,11 @@ def _source(db, now):
     http = _FakeSession(FIXTURE.read_text())
     source = MoonRssSource(
         config=FeedConfig(name="moon", url=URL, source_type="moon"),
-        http_cache=InMemoryHttpCache(),
-        session=http,
+        fetcher=fetcher_for(
+            http,
+            urls=URL,
+            now=now,
+        ),
         get_now=lambda: now,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

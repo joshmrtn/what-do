@@ -15,13 +15,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.jsonld_listing import parse_jsonld_events
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.models.timing import EXACT
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "pem_events.html"
 URL = "https://www.pem.org/events"
@@ -57,8 +57,11 @@ def _source(db, horizon_days=45):
     http = _FakeSession(FIXTURE.read_text())
     source = JsonLdEventSource(
         config=FeedConfig(name="pem", url=URL, source_type="pem"),
-        http_cache=InMemoryHttpCache(),
-        session=http,
+        fetcher=fetcher_for(
+            http,
+            urls=URL,
+            now=FIXED_NOW,
+        ),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

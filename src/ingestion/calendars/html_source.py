@@ -13,14 +13,11 @@ from __future__ import annotations
 
 import hashlib
 import zoneinfo
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
-import requests
-
-from src.storage.protocols import HttpCache
 from src.config import FeedConfig
-from src.ingestion.calendars.fetching import fetch_document
+from src.network.http import HttpFetcher
 from src.ingestion.calendars.listing import ListingEntry, parse_listing
 from src.ingestion.calendars.listing_category import category_metadata
 from src.ingestion.source import IngestionSource
@@ -43,25 +40,22 @@ class HtmlListingSource(IngestionSource):
     def __init__(
         self,
         config: FeedConfig,
-        http_cache: HttpCache,
+        fetcher: HttpFetcher,
         tzname: str,
-        session: requests.Session | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: Any = None,
     ) -> None:
         """
         Args:
             config: The feed's name, URL, and politeness settings.
-            http_cache: Where conditional-request validators are stored.
+            fetcher: The polite conditional GET every source fetches through.
             tzname: Zone the listing's wall-clock times are written in.
-            session: Injected HTTP session.
             get_now: Injected clock.
             logger: Structured logger. Optional.
         """
         self._config = config
-        self._http_cache = http_cache
+        self._fetcher = fetcher
         self._tz = zoneinfo.ZoneInfo(tzname)
-        self._session = session or requests.Session()
         self._get_now = get_now
         self._logger = logger
 
@@ -76,14 +70,10 @@ class HtmlListingSource(IngestionSource):
         Returns:
             One EventCandidate per placeable listing line, in page order.
         """
-        body = fetch_document(
+        body = self._fetcher.get(
             self._config.url,
-            session=self._session,
-            http_cache=self._http_cache,
-            get_now=self._get_now,
-            min_fetch_interval_hours=self._config.min_fetch_interval_hours,
             label=self._config.name,
-            logger=self._logger,
+            max_age=timedelta(hours=self._config.min_fetch_interval_hours),
         )
 
         # The page's headings are local dates, so "today" must be local too —

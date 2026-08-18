@@ -26,6 +26,7 @@ from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.normalization.service import NormalizationService
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURE = Path("tests/fixtures/northshorenightout.ics")
 FIXED_NOW = datetime(2026, 8, 5, 2, 0, tzinfo=timezone.utc)
@@ -70,8 +71,11 @@ def candidates():
             url=URL,
             source_type="northshorenightout",
         ),
-        http_cache=InMemoryHttpCache(),
-        session=_FakeSession(FIXTURE.read_text(encoding="utf-8")),
+        fetcher=fetcher_for(
+            _FakeSession(FIXTURE.read_text(encoding="utf-8")),
+            urls=URL,
+            now=FIXED_NOW,
+        ),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
     )
@@ -143,8 +147,12 @@ def test_a_second_fetch_reuses_the_cache_without_touching_the_network(db):
     def _source():
         return IcsCalendarSource(
             config=config,
-            http_cache=cache,
-            session=session,
+            fetcher=fetcher_for(
+                session,
+                urls=URL,
+                http_cache=cache,
+                now=FIXED_NOW,
+            ),
             get_now=lambda: FIXED_NOW,
             logger=get_logger("test", stream=io.StringIO()),
         )

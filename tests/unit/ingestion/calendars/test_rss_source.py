@@ -16,6 +16,7 @@ from src.models.event_candidate import EventCandidate
 from src.models.timing import EXACT, UNKNOWN
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 #: 02:00 in New York, so the night in progress began the previous day.
 FIXED_NOW = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)
@@ -89,8 +90,7 @@ def _make_source(cache, body, horizon_days=45, **stub_kwargs):
     http = _FakeSession(body)
     source = _Stub(
         config=FeedConfig(name="moon", url=URL, source_type="moon"),
-        http_cache=cache,
-        session=http,
+        fetcher=fetcher_for(http, urls=URL, http_cache=cache, now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

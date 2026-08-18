@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.cinemas.veezi_source import VeeziSessionsSource
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -63,8 +63,11 @@ def _candidates(db, fixture: str, venue: str, city: str):
             venue=venue,
             city=city,
         ),
-        http_cache=InMemoryHttpCache(),
-        session=_FakeSession((FIXTURES / f"veezi_{fixture}.html").read_text(encoding="utf-8")),
+        fetcher=fetcher_for(
+            _FakeSession((FIXTURES / f"veezi_{fixture}.html").read_text(encoding="utf-8")),
+            urls=f"https://ticketing.useast.veezi.com/sessions/?siteToken={fixture}",
+            now=FIXED_NOW,
+        ),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

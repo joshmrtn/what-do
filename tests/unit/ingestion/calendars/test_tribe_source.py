@@ -18,6 +18,7 @@ from src.config import FeedConfig
 from src.ingestion.calendars.tribe_source import TribeCalendarSource
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXED_NOW = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)
 URL = "https://example.org/events/?ical=1"
@@ -65,8 +66,7 @@ def _make_source(cache, windows, max_requests=8, horizon_days=45, export_cap=2):
     http = _Windows(windows)
     source = TribeCalendarSource(
         config=FeedConfig(name="tribe", url=URL, source_type="tribe"),
-        http_cache=cache,
-        session=http,
+        fetcher=fetcher_for(http, urls=URL, http_cache=cache, now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

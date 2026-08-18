@@ -13,12 +13,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.do617_listing import parse_do617
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -138,8 +138,11 @@ def _source(db, bodies, horizon_days=45, url=VENUE_URL, name="do617_gulu_gulu"):
     http = _Pages(bodies)
     source = Do617VenueSource(
         config=FeedConfig(name=name, url=url, source_type="do617"),
-        http_cache=InMemoryHttpCache(),
-        session=http,
+        fetcher=fetcher_for(
+            http,
+            urls=VENUE_URL,
+            now=FIXED_NOW,
+        ),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

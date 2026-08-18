@@ -8,12 +8,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.cinemas.cabot_source import CabotListingSource
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXED_NOW = datetime(2026, 8, 7, 6, 0, tzinfo=timezone.utc)  # 02:00 in New York
 URL = "https://thecabot.org/whats-on/"
@@ -78,8 +78,7 @@ def _make_source(db, bodies, horizon_days=45, max_pages=12, **overrides):
     http = _Pages(bodies)
     source = CabotListingSource(
         config=FeedConfig(**settings),
-        http_cache=InMemoryHttpCache(),
-        session=http,
+        fetcher=fetcher_for(http, urls=URL, now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

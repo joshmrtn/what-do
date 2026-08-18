@@ -86,6 +86,7 @@ from src.storage.sqlite.scores import SqliteScoreRepository
 from src.utils.logging import get_logger
 from src.utils.ollama_client import OllamaClient
 from src.utils.vectors import decode_vector
+from tests.support.network import fetcher_for
 
 
 @pytest.fixture
@@ -1142,16 +1143,22 @@ def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger
 
     ics = IcsCalendarSource(
         config=FeedConfig("nsno_cal", "https://cal.example.com/basic.ics", "nsno_cal"),
-        http_cache=InMemoryHttpCache(),
-        session=_FixtureSession(ICS_FIXTURE.read_text(encoding="utf-8")),
+        fetcher=fetcher_for(
+            _FixtureSession(ICS_FIXTURE.read_text(encoding="utf-8")),
+            urls="https://cal.example.com/basic.ics",
+            now=BATCH_NOW,
+        ),
         get_now=lambda: BATCH_NOW,
         logger=logger,
     )
     html = HtmlListingSource(
         config=FeedConfig("nsno_list", "https://listings.example.com/", "nsno_list"),
-        http_cache=InMemoryHttpCache(),
+        fetcher=fetcher_for(
+            _FixtureSession(HTML_FIXTURE.read_text(encoding="utf-8")),
+            urls="https://listings.example.com/",
+            now=BATCH_NOW,
+        ),
         tzname="America/New_York",
-        session=_FixtureSession(HTML_FIXTURE.read_text(encoding="utf-8")),
         get_now=lambda: BATCH_NOW,
         logger=logger,
     )

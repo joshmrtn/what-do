@@ -15,6 +15,7 @@ from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXED_NOW = datetime(2026, 8, 5, 2, 0, tzinfo=timezone.utc)
 URL = "https://calendar.example.com/public/basic.ics"
@@ -68,8 +69,7 @@ def _make_source(cache, session=None, now=FIXED_NOW, stream=None, horizon_days=3
 
     return IcsCalendarSource(
         config=FeedConfig(**settings),
-        http_cache=cache,
-        session=session or _session(),
+        fetcher=fetcher_for(session or _session(), urls=URL, http_cache=cache, now=now),
         get_now=lambda: now,
         logger=get_logger("test", stream=stream or io.StringIO()),
         horizon_days=horizon_days,

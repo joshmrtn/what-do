@@ -27,6 +27,7 @@ from src.ingestion.calendars.html_source import HtmlListingSource
 from src.normalization.service import NormalizationService
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURE = Path("tests/fixtures/northshorenightout.html")
 EASTERN = zoneinfo.ZoneInfo("America/New_York")
@@ -71,9 +72,12 @@ def candidates():
             url=URL,
             source_type="northshorenightout",
         ),
-        http_cache=InMemoryHttpCache(),
+        fetcher=fetcher_for(
+            _FakeSession(FIXTURE.read_text(encoding="utf-8")),
+            urls=URL,
+            now=FIXED_NOW,
+        ),
         tzname="America/New_York",
-        session=_FakeSession(FIXTURE.read_text(encoding="utf-8")),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
     )
@@ -186,9 +190,8 @@ def test_a_second_fetch_reuses_the_cache(db):
     def _source():
         return HtmlListingSource(
             config=config,
-            http_cache=cache,
+            fetcher=fetcher_for(session, urls=URL, http_cache=cache, now=FIXED_NOW),
             tzname="America/New_York",
-            session=session,
             get_now=lambda: FIXED_NOW,
             logger=get_logger("test", stream=io.StringIO()),
         )

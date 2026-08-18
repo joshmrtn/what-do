@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.models.event_candidate import EventCandidate
 from src.models.timing import EXACT
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 #: 02:00 in New York, so the night in progress began the previous day.
 FIXED_NOW = datetime(2026, 8, 8, 6, 0, tzinfo=timezone.utc)
@@ -75,8 +75,7 @@ def _make_source(db, body, horizon_days=45, **overrides):
     http = _FakeSession(body)
     source = JsonLdEventSource(
         config=FeedConfig(**settings),
-        http_cache=InMemoryHttpCache(),
-        session=http,
+        fetcher=fetcher_for(http, urls=URL, now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",

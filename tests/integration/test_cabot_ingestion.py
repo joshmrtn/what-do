@@ -13,12 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
 from src.ingestion.cinemas.cabot_listing import parse_cabot
 from src.ingestion.cinemas.cabot_source import CabotListingSource
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
+from tests.support.network import fetcher_for
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "cabot_whats_on.html"
 
@@ -106,8 +106,11 @@ def test_the_adapter_maps_the_page_to_candidates(db, page):
             venue="The Cabot",
             city="Beverly",
         ),
-        http_cache=InMemoryHttpCache(),
-        session=_FakeSession(page),
+        fetcher=fetcher_for(
+            _FakeSession(page),
+            urls="https://thecabot.org/whats-on/",
+            now=FIXED_NOW,
+        ),
         get_now=lambda: FIXED_NOW,
         logger=get_logger("test", stream=io.StringIO()),
         timezone_name="America/New_York",
