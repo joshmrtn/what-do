@@ -1,11 +1,19 @@
 """Unit tests for MovieMetadataProvider and enrich_movie_event."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, call
 
 import pytest
+import requests
 
-from src.enrichment.movies import MovieMetadataProvider, TMDbProvider, enrich_movie_event
+from src.enrichment.movies import (
+    TMDB_HOST,
+    MovieMetadataProvider,
+    TMDbProvider,
+    enrich_movie_event,
+)
+from src.storage.memory.movie_cache import InMemoryMovieCache
+from tests.support.network import fetcher_policy
 from src.models.event import Event
 from src.utils.logging import StructuredLogger
 
@@ -14,6 +22,21 @@ from src.utils.logging import StructuredLogger
 # ---------------------------------------------------------------------------
 
 NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
+
+_TMDB_NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+
+
+def _tmdb_provider(session) -> TMDbProvider:
+    """The real provider over a faked session; only the transport stands in."""
+    return TMDbProvider(
+        "testkey",
+        session=session,
+        policy=fetcher_policy(urls=f"https://{TMDB_HOST}/3", now=_TMDB_NOW),
+        movie_cache=InMemoryMovieCache(),
+        cache_ttl=timedelta(days=7),
+        get_now=lambda: _TMDB_NOW,
+    )
+
 
 _METADATA = {
     "genres": ["Horror", "Thriller"],
@@ -59,7 +82,7 @@ def test_movie_metadata_provider_is_abstract():
 
 
 def test_tmdb_provider_is_movie_metadata_provider():
-    provider = TMDbProvider(api_key="key", session=MagicMock())
+    provider = _tmdb_provider(MagicMock())
     assert isinstance(provider, MovieMetadataProvider)
 
 
@@ -212,33 +235,33 @@ def _tmdb_session(search_results=None, detail_result=None):
 
 
 def test_tmdb_provider_returns_metadata_dict():
-    provider = TMDbProvider(api_key="testkey", session=_tmdb_session())
+    provider = _tmdb_provider(_tmdb_session())
     result = provider.fetch("The Thing", year=None)
     assert result is not None
     assert set(result.keys()) == {"genres", "runtime_minutes", "summary", "release_year"}
 
 
 def test_tmdb_provider_genres_are_list_of_strings():
-    provider = TMDbProvider(api_key="testkey", session=_tmdb_session())
+    provider = _tmdb_provider(_tmdb_session())
     result = provider.fetch("The Thing", year=None)
     assert isinstance(result["genres"], list)
     assert all(isinstance(g, str) for g in result["genres"])
 
 
 def test_tmdb_provider_runtime_minutes():
-    provider = TMDbProvider(api_key="testkey", session=_tmdb_session())
+    provider = _tmdb_provider(_tmdb_session())
     result = provider.fetch("The Thing", year=None)
     assert result["runtime_minutes"] == 112
 
 
 def test_tmdb_provider_summary():
-    provider = TMDbProvider(api_key="testkey", session=_tmdb_session())
+    provider = _tmdb_provider(_tmdb_session())
     result = provider.fetch("The Thing", year=None)
     assert result["summary"] == "A terrifying tale."
 
 
 def test_tmdb_provider_release_year():
-    provider = TMDbProvider(api_key="testkey", session=_tmdb_session())
+    provider = _tmdb_provider(_tmdb_session())
     result = provider.fetch("The Thing", year=None)
     assert result["release_year"] == 2024
 
@@ -251,14 +274,14 @@ def test_tmdb_provider_no_results_returns_none():
     single_resp.json.return_value = {"results": []}
     session = MagicMock()
     session.get.return_value = single_resp
-    provider = TMDbProvider(api_key="testkey", session=session)
+    provider = _tmdb_provider(session)
     assert provider.fetch("Nonexistent Movie", year=None) is None
 
 
 def test_tmdb_provider_network_error_returns_none():
     session = MagicMock()
-    session.get.side_effect = Exception("network error")
-    provider = TMDbProvider(api_key="testkey", session=session)
+    session.get.side_effect = requests.ConnectionError("network error")
+    provider = _tmdb_provider(session)
     assert provider.fetch("The Thing", year=None) is None
 
 
@@ -271,6 +294,6 @@ def test_tmdb_provider_missing_runtime_returns_none_for_that_field():
             "release_date": "2023-05-15",
         }
     )
-    provider = TMDbProvider(api_key="testkey", session=session)
+    provider = _tmdb_provider(session)
     result = provider.fetch("A Drama", year=None)
     assert result["runtime_minutes"] is None

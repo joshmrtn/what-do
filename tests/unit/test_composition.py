@@ -29,6 +29,7 @@ from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
 from src.enrichment.air_quality import AIR_QUALITY_HOST
+from src.enrichment.movies import TMDB_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
 from src.utils.logging import get_logger
 from tests.support.network import network_for
@@ -53,6 +54,7 @@ def _config(**overrides) -> AppConfig:
             [
                 f"https://{OPEN_METEO_HOST}/v1/forecast",
                 f"https://{AIR_QUALITY_HOST}/v1/air-quality",
+                f"https://{TMDB_HOST}/3",
             ]
         ),
     }

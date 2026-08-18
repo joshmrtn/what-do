@@ -26,6 +26,7 @@ from src.storage.protocols import (
     EntityRepository,
     EventRepository,
     HttpCache,
+    MovieCache,
     PreferenceRevisionRepository,
     RankingRepository,
     RescoreRepository,
@@ -51,6 +52,7 @@ from src.storage.sqlite.runs import SqliteRunRepository
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 from src.storage.sqlite.day_cache import SqliteDayCache
+from src.storage.sqlite.movie_cache import SqliteMovieCache
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class BatchStorage:
     dedup_decisions: DedupDecisionRepository
     weather_cache: DayCache
     air_quality_cache: DayCache
+    movie_cache: MovieCache
     http_cache: HttpCache
     curve_state: CurveStateRepository
     extraction_observations: ExtractionObservationRepository
@@ -143,5 +146,6 @@ def build_batch_storage(db_path: Path | str, embedding_model: str) -> BatchStora
         dedup_decisions=SqliteDedupDecisionRepository(db_path),
         weather_cache=SqliteDayCache(db_path, table="weather_cache"),
         air_quality_cache=SqliteDayCache(db_path, table="air_quality_cache"),
+        movie_cache=SqliteMovieCache(db_path),
         http_cache=SqliteHttpCache(db_path),
     )

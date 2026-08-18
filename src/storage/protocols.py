@@ -20,6 +20,7 @@ from src.models.preference_revision import PreferenceRevision
 from src.models.ranking import Ranking
 from src.models.rescore import Rescore
 from src.models.run import RunRecord
+from src.models.movie_lookup import MovieLookup
 from src.normalization.decision_sampling import SampledDecision
 from src.storage.curve_state import CurveState
 from src.storage.dedup_decisions import StoredDecision
@@ -493,6 +494,38 @@ class HttpCache(Protocol):
         fetched_at: datetime,
     ) -> None:
         """Store a response, replacing any earlier entry for the same URL."""
+        ...
+
+
+class MovieCache(Protocol):
+    """Stored movie lookups, keyed by the question asked.
+
+    A **miss is stored**, not omitted. An absent row cannot be told apart from
+    never having asked, and a cinema listing is full of titles the provider
+    does not recognise — so an omitted miss is a request that repeats on every
+    run for ever.
+    """
+
+    def get(
+        self, *, title_key: str, year: int | None, fresh_since: datetime
+    ) -> MovieLookup | None:
+        """The stored answer for a title and year, if it is fresh enough.
+
+        Returns:
+            The lookup, or None when nothing is stored — which is a different
+            thing from a stored lookup that found nothing.
+        """
+        ...
+
+    def put(
+        self,
+        *,
+        title_key: str,
+        year: int | None,
+        lookup: MovieLookup,
+        now: datetime,
+    ) -> None:
+        """Store an answer, replacing any earlier one to the same question."""
         ...
 
 

@@ -22,11 +22,12 @@ import requests
 
 from src.config import AppConfig
 from src.enrichment.air_quality import AIR_QUALITY_HOST, OpenMeteoAirQualityProvider
+from src.enrichment.movies import TMDB_HOST, TMDbProvider
 from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider
 from src.network.http import HttpFetcher
 from src.network.policy import RequestPolicy
 from src.network.throttle import InMemoryThrottle
-from src.storage.protocols import HttpCache, DayCache
+from src.storage.protocols import DayCache, HttpCache, MovieCache
 from src.utils.logging import StructuredLogger
 
 
@@ -128,5 +129,32 @@ def build_air_quality_provider(
         else build_request_policy(config, get_now=get_now, logger=logger),
         air_quality_cache=air_quality_cache,
         cache_ttl=config.network.for_host(AIR_QUALITY_HOST).cache_ttl,
+        get_now=get_now,
+    )
+
+
+def build_movie_provider(
+    config: AppConfig,
+    api_key: str,
+    *,
+    movie_cache: MovieCache,
+    get_now: Callable[[], datetime],
+    policy: RequestPolicy | None = None,
+    logger: StructuredLogger | None = None,
+) -> TMDbProvider:
+    """The TMDb provider, with the cache it has never had.
+
+    Seven days, and **misses cached**: a cinema listing is full of titles TMDb
+    does not recognise, and a miss that is not stored is a request that repeats
+    on every run for ever.
+    """
+    return TMDbProvider(
+        api_key,
+        session=requests.Session(),
+        policy=policy
+        if policy is not None
+        else build_request_policy(config, get_now=get_now, logger=logger),
+        movie_cache=movie_cache,
+        cache_ttl=config.network.for_host(TMDB_HOST).cache_ttl,
         get_now=get_now,
     )

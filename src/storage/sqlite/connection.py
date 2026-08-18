@@ -195,6 +195,23 @@ CREATE TABLE IF NOT EXISTS air_quality_cache (
     UNIQUE (date, latitude, longitude)
 );
 
+-- What TMDb said, keyed by the question asked. RAW: it is the provider's
+-- answer, retained and expirable. What we conclude a film *is* belongs in
+-- movie_metadata, which is a separate table and a separate decision.
+--
+-- A miss is a row with is_miss, never an absent row. An absent row cannot be
+-- told apart from never having asked, which is what makes an unrecognised
+-- title a request that repeats on every run for ever.
+CREATE TABLE IF NOT EXISTS tmdb_responses (
+    id         TEXT PRIMARY KEY,
+    title_key  TEXT NOT NULL,
+    year       TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    is_miss    INTEGER NOT NULL,
+    fetched_at TEXT NOT NULL,
+    UNIQUE (title_key, year)
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id                    TEXT PRIMARY KEY,
     source_type           TEXT NOT NULL,

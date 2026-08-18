@@ -1,12 +1,37 @@
 """Movie metadata provider ABC, TMDb implementation, and event enrichment helper."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, Callable
 
 import requests
 
 from src.models.event import Event
+from src.models.movie_lookup import MovieLookup
+from src.network.http import requests_transient_check
+from src.network.policy import RequestPolicy
+from src.storage.protocols import MovieCache
 from src.utils.logging import StructuredLogger
+
+#: The host TMDb's API is reached at, named so a caller can look up its
+#: politeness policy without owning a second copy of the address.
+TMDB_HOST = "api.themoviedb.org"
+
+
+def title_key(title: str) -> str:
+    """The canonical form two spellings of one film share.
+
+    Compare on a canonical key; store what the source wrote. Casefolded because
+    one cinema publishes `BACK TO THE FUTURE` and another `Back to the Future`,
+    and whitespace collapsed because listings pad and wrap titles. It is
+    deliberately *not* what gets stored or sent to TMDb — the query keeps the
+    title as the listing wrote it.
+
+    Nothing is stripped beyond case and spacing: `The Thing` and `The Thing II`
+    are different films, and an article rule that folded them would be worse
+    than no rule at all.
+    """
+    return " ".join(title.split()).casefold()
 
 _MOVIE_SOURCE_TYPES = {"cinema_veezi", "amc"}
 
@@ -27,57 +52,158 @@ class MovieMetadataProvider(ABC):
 class TMDbProvider(MovieMetadataProvider):
     """Movie metadata provider backed by The Movie Database (TMDb) API."""
 
-    _BASE_URL = "https://api.themoviedb.org/3"
+    _BASE_URL = f"https://{TMDB_HOST}/3"
 
-    def __init__(self, api_key: str, session: requests.Session | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        session: requests.Session,
+        policy: RequestPolicy,
+        movie_cache: MovieCache,
+        cache_ttl: timedelta | None,
+        get_now: Callable[[], datetime],
+    ) -> None:
+        """
+        Args:
+            api_key: TMDb credential.
+            session: Injected HTTP session, so tests never reach the network.
+            policy: Throttle, retry and timeout for this host.
+            movie_cache: Answers keyed on canonical title and year, **misses
+                included**.
+            cache_ttl: Lifetime from the `tmdb` policy. `None` is a declared
+                `never`.
+            get_now: Injected clock.
+        """
         self._api_key = api_key
-        self._session = session or requests.Session()
+        self._session = session
+        self._policy = policy
+        self._cache = movie_cache
+        self._cache_ttl = cache_ttl
+        self._get_now = get_now
+        self._is_transient = requests_transient_check(get_now=get_now)
 
     def fetch(self, title: str, year: int | None) -> dict[str, Any] | None:
         """Search TMDb for a movie and return structured metadata.
 
         Returns:
-            Dict with genres, runtime_minutes, summary, release_year,
-            or None on not-found or any error.
+            Dict with genres, runtime_minutes, summary, release_year, or None
+            when TMDb was asked and had nothing.
+
+        A not-found is an **answer**, and it is cached like any other: a cinema
+        listing is full of titles TMDb does not recognise, and a miss that is
+        not stored is a request that repeats on every run for ever. A *failure*
+        raises instead, so the policy can judge whether to try again.
+
+        The catch is narrow on purpose. `except Exception` here would report a
+        bug in this file as a film nobody has heard of.
         """
         try:
-            params: dict[str, Any] = {"api_key": self._api_key, "query": title}
-            if year is not None:
-                params["year"] = year
-
-            search_resp = self._session.get(
-                f"{self._BASE_URL}/search/movie", params=params, timeout=10
+            lookup = self._policy.call(
+                host=TMDB_HOST,
+                perform=lambda timeout: self._request(title, year, timeout),
+                is_transient=self._is_transient,
+                cache=MovieTitleCache(
+                    self._cache,
+                    title_key=title_key(title),
+                    year=year,
+                    ttl=self._cache_ttl,
+                    get_now=self._get_now,
+                ),
+                label="tmdb",
             )
-            search_resp.raise_for_status()
-            results = search_resp.json().get("results", [])
-            if not results:
-                return None
+        except (requests.RequestException, ValueError, KeyError):
+            return None
+        return lookup.metadata
 
-            movie_id = results[0]["id"]
-            release_date: str = results[0].get("release_date", "")
+    def _request(self, title: str, year: int | None, timeout: float) -> MovieLookup:
+        """One attempt: search, then detail. Raises so the policy can retry.
 
-            detail_resp = self._session.get(
-                f"{self._BASE_URL}/movie/{movie_id}",
-                params={"api_key": self._api_key},
-                timeout=10,
-            )
-            detail_resp.raise_for_status()
-            detail = detail_resp.json()
+        Two requests, one lookup. They are a single question — *what is this
+        film* — and the throttle spaces both because it counts per host.
+        """
+        params: dict[str, Any] = {"api_key": self._api_key, "query": title}
+        if year is not None:
+            params["year"] = year
 
-            genres = [g["name"] for g in detail.get("genres", [])]
-            runtime = detail.get("runtime")
-            overview = detail.get("overview") or None
-            release_year_str = (detail.get("release_date") or release_date)[:4]
-            release_year = int(release_year_str) if release_year_str.isdigit() else None
+        search_resp = self._session.get(
+            f"{self._BASE_URL}/search/movie", params=params, timeout=timeout
+        )
+        search_resp.raise_for_status()
+        results = search_resp.json().get("results", [])
+        if not results:
+            return MovieLookup(metadata=None)
 
-            return {
+        movie_id = results[0]["id"]
+        release_date: str = results[0].get("release_date", "")
+
+        detail_resp = self._session.get(
+            f"{self._BASE_URL}/movie/{movie_id}",
+            params={"api_key": self._api_key},
+            timeout=timeout,
+        )
+        detail_resp.raise_for_status()
+        detail = detail_resp.json()
+
+        genres = [g["name"] for g in detail.get("genres", [])]
+        runtime = detail.get("runtime")
+        overview = detail.get("overview") or None
+        release_year_str = (detail.get("release_date") or release_date)[:4]
+        release_year = int(release_year_str) if release_year_str.isdigit() else None
+
+        return MovieLookup(
+            metadata={
                 "genres": genres,
                 "runtime_minutes": int(runtime) if runtime else None,
                 "summary": overview,
                 "release_year": release_year,
             }
-        except Exception:
+        )
+
+
+class MovieTitleCache:
+    """A `CacheStrategy[MovieLookup]` bound to one title and year."""
+
+    def __init__(
+        self,
+        cache: MovieCache,
+        *,
+        title_key: str,
+        year: int | None,
+        ttl: timedelta | None,
+        get_now: Callable[[], datetime],
+    ) -> None:
+        self._cache = cache
+        self._title_key = title_key
+        self._year = year
+        self._ttl = ttl
+        self._get_now = get_now
+
+    def get(self) -> MovieLookup | None:
+        """The stored answer while it is still fresh, otherwise None.
+
+        None here means *nothing stored*, never *nothing found* — a stored miss
+        comes back as a `MovieLookup` with no metadata, which is what stops it
+        being asked again.
+        """
+        if self._ttl is None:
             return None
+        return self._cache.get(
+            title_key=self._title_key,
+            year=self._year,
+            fresh_since=self._get_now() - self._ttl,
+        )
+
+    def put(self, value: MovieLookup) -> None:
+        """Store the answer, misses included, stamped from the injected clock."""
+        if self._ttl is None:
+            return
+        self._cache.put(
+            title_key=self._title_key,
+            year=self._year,
+            lookup=value,
+            now=self._get_now(),
+        )
 
 
 def enrich_movie_event(

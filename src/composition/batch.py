@@ -27,13 +27,13 @@ from typing import Any, Callable, Mapping
 
 from src.composition.network import (
     build_air_quality_provider,
+    build_movie_provider,
     build_http_fetcher,
     build_request_policy,
     build_weather_provider,
 )
 from src.config import AppConfig
 from src.enrichment.astronomical import AstronomicalCalculator
-from src.enrichment.movies import TMDbProvider
 from src.enrichment.service import EnrichmentService
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
@@ -374,7 +374,18 @@ def build_dependencies(
                 policy=request_policy,
                 logger=logger,
             ),
-            movie_provider=TMDbProvider(tmdb_key) if tmdb_key else None,
+            movie_provider=(
+                build_movie_provider(
+                    config,
+                    tmdb_key,
+                    movie_cache=storage.movie_cache,
+                    get_now=get_now,
+                    policy=request_policy,
+                    logger=logger,
+                )
+                if tmdb_key
+                else None
+            ),
             astronomical_calculator=AstronomicalCalculator(),
             synthetic_rules=config.synthetic_activities,
             config=config,
