@@ -183,16 +183,25 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
    being allowed to use the network is not a licence to use it carelessly; if anything it is
    the stricter case, because a person can invoke it in a loop.
 
-   > **Current state, so this is not read as a description of reality.** It is an obligation,
-   > and today the codebase mostly does not meet it. Eleven modules make HTTP calls and exactly
-   > one is polite — `ingestion/calendars/fetching.py`, via `HttpCache` and
-   > `min_fetch_interval_hours`. There is **no throttling, no backoff and no transport retry
-   > anywhere**; weather is cached by its caller, air quality is bounded but still uncached, and
-   > the rest have neither. Issue **#10** owns closing this, and the shape it wants is **one
-   > shared network adapter every caller goes through** — enforced structurally, the way
-   > `composition/storage.py` made repositories un-bypassable, rather than remembered at each
-   > new call site. A rule that has to be remembered at every new call site is a rule that will
-   > be forgotten, and this one already was.
+   > **How it is met, since 2026-08-18.** Every outbound call goes through `src/network/` —
+   > `RequestPolicy.call` for throttle, retry, backoff and timeout, with two things injected
+   > per provider: a **transient-failure predicate** and a **cache strategy**. It wraps a
+   > *call*, not a URL, so a vendor SDK goes through it unchanged. Bounding what is asked
+   > stays with the caller, because only it knows its provider's horizon.
+   >
+   > **There is no default policy and no code default.** `network.policies` declares named
+   > policies, each complete; `network.hosts` assigns every host to one **by name**. An
+   > unassigned host and an unknown policy name are both `ConfigError` — *a default is applied
+   > to a host nobody considered; a category is applied to a host somebody placed in it, and
+   > the assignment stays explicit.* A lifetime has exactly one home, `cache_ttl_seconds`,
+   > with its reasoning written beside it.
+   >
+   > Enforced structurally rather than remembered:
+   > `tests/unit/test_network_is_the_only_transport.py` forbids performing a request, building
+   > a transport client, or holding one without reaching for the policy — and
+   > `what-do-check-config` names every host this config will call that has no policy, all at
+   > once. Ollama is exempt as **localhost**, never as "the model client". Resolves **#10**,
+   > and more than it asked.
 
 3. **No network calls in tests.** All external services injected as dependencies so tests
    substitute fakes. Violation = bug. The `external` tier is the only exception:
