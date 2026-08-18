@@ -424,6 +424,34 @@ class TestBackoff:
 
         assert clock.slept == [pytest.approx(17.0)]
 
+    def test_a_retry_after_shorter_than_our_own_floor_is_still_waited_out(self, clock, logger):
+        """A server asking for less than we promised does not license us to be
+        quicker than we promised.
+
+        Nominatim publishes one request a second and `min_interval_seconds` is
+        1.5 — deliberately more restraint than it demands. Honouring a
+        `Retry-After: 0` literally would spend that choice the moment a host
+        happened to be having a bad minute, which is the worst moment to have it.
+        The gap is `max(what it asked for, what we owe)`, because the throttle
+        gates every attempt rather than only the first.
+        """
+        network = _network(
+                max_attempts=2, min_interval_seconds=1.5,
+                backoff_base_seconds=1.0, backoff_max_seconds=60.0,
+            )
+
+        with pytest.raises(RuntimeError):
+            _policy(clock, logger, network).call(
+                host=HOST, perform=_raising,
+                is_transient=lambda e: RetryAdvice(retry=True, retry_after_seconds=0.0),
+                cache=RecordingCache(), label="example",
+            )
+
+        # Asserted as a total rather than a list: what the host experiences is
+        # the gap between the two requests, and how that is split between the
+        # backoff sleep and the throttle's is an implementation detail.
+        assert sum(clock.slept) == pytest.approx(1.5)
+
     def test_retry_after_is_not_jittered(self, clock, logger):
         """Jittering a number the server chose is second-guessing it."""
         network = _network(
