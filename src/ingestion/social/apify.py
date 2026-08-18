@@ -13,7 +13,8 @@ from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.source_type import APIFY
 
-_APIFY_BASE = "https://api.apify.com/v2"
+APIFY_HOST = "api.apify.com"
+_APIFY_BASE = f"https://{APIFY_HOST}/v2"
 
 
 class ApifyAdapter(IngestionSource):

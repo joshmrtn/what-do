@@ -29,11 +29,28 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import yaml
 from typing import Any
 
 from src.config import AppConfig
+from src.enrichment.air_quality import AIR_QUALITY_HOST
+from src.enrichment.movies import TMDB_HOST
+from src.enrichment.weather import OPEN_METEO_HOST
+from src.ingestion.geocoder import NOMINATIM_HOST
+from src.ingestion.movies.amc import AMC_HOST
+from src.ingestion.social.apify import APIFY_HOST
+from src.ingestion.social.dumpor import DUMPOR_HOST
+from src.ingestion.social.picuki import PICUKI_HOST
+from src.processing.image_fetcher import DATA_DERIVED_POLICY
+from src.utils.gemini_client import GEMINI_HOST
+
+#: The config cannot run as it stands. Today that means exactly one thing: a
+#: host this config will call with no politeness policy assigned to it. `for_host`
+#: already refuses one — but only the first that happens to be reached, at the
+#: moment it is reached, which for a seasonal source is months away.
+ERROR = "ERROR"
 
 #: A feature is off and nothing else says so.
 WARNING = "WARNING"
@@ -41,6 +58,40 @@ WARNING = "WARNING"
 #: A section the file never mentioned. Quieter, because every key in it has a
 #: default and most of those defaults are correct.
 INFO = "INFO"
+
+#: Hosts a provider module hardcodes, which `sources:` therefore never mentions.
+#: **Imported, not spelled again** — each provider already declares its host as
+#: the constant its own call site uses, so there is one artefact per host rather
+#: than two that can disagree. What is left to drift is membership of this tuple,
+#: and `TestTheRegistryCannotDrift` compares it against what `src/` names.
+PROVIDER_HOSTS = (
+    AIR_QUALITY_HOST,
+    AMC_HOST,
+    APIFY_HOST,
+    DUMPOR_HOST,
+    GEMINI_HOST,
+    NOMINATIM_HOST,
+    OPEN_METEO_HOST,
+    PICUKI_HOST,
+    TMDB_HOST,
+)
+
+#: Hosts written into `src/` that are never fetched from, with the reason each
+#: is not a gap. Short by design: an entry here exempts a host from the coverage
+#: check, so it is the one place this check can go quietly wrong.
+NEVER_FETCHED = {
+    # A vocabulary URI. It identifies a schema.org type in markup we parse and is
+    # never dereferenced.
+    "schema.org": "a vocabulary URI in parsed markup, never fetched",
+    # Ollama, and the bench's default pointing at the same place. Localhost is
+    # the exemption — not "the model client", which would survive a provider swap
+    # and silently exempt a hosted API.
+    "localhost": "localhost: Ollama runs on this machine",
+}
+
+#: Policies named at a call site rather than assigned to a host, because their
+#: hosts arrive from fetched data. Imported from the call site that names each.
+CALL_SITE_POLICIES = (DATA_DERIVED_POLICY,)
 
 
 @dataclass(frozen=True)
@@ -146,6 +197,100 @@ def _is_section(field: dataclasses.Field[Any]) -> bool:
     return dataclasses.is_dataclass(produced) or isinstance(produced, list)
 
 
+def check_hosts(config: Any) -> list[Finding]:
+    """Every host this config will call, and whether it has a policy.
+
+    Two sources, because a host arrives two ways: `sources:` names the feeds,
+    and a provider module hardcodes its own service. Neither half sees the
+    other, and a check built on `sources:` alone would have declared a config
+    complete while TMDb, Nominatim and Gemini went unassigned.
+
+    Args:
+        config: The loaded `AppConfig`.
+
+    Returns:
+        One `ERROR` per host with no policy and per name that resolves to
+        nothing, then one `WARNING` per declared policy nothing uses. Empty when
+        every host is covered.
+    """
+    declared = set(config.network.policies)
+    assigned = config.network.hosts
+
+    findings = [
+        Finding(
+            level=ERROR,
+            path=f"network.hosts.{host}",
+            detail=f"no politeness policy assigned — asked for by {source}",
+        )
+        for host, source in sorted(_hosts_called(config).items())
+        if host not in assigned
+    ]
+
+    findings.extend(
+        Finding(
+            level=ERROR,
+            path=f"network.hosts.{host}",
+            detail=(
+                f"names policy {name!r}, which is not declared under "
+                f"network.policies ({', '.join(sorted(declared)) or 'none'})"
+            ),
+        )
+        for host, name in sorted(assigned.items())
+        if name not in declared
+    )
+
+    findings.extend(
+        Finding(
+            level=ERROR,
+            path=f"network.policies.{name}",
+            detail="named at a call site for hosts that arrive from fetched data, "
+            "and not declared — the fetch that needs it will be refused",
+        )
+        for name in CALL_SITE_POLICIES
+        if name not in declared
+    )
+
+    used = set(assigned.values()) | set(CALL_SITE_POLICIES)
+    findings.extend(
+        Finding(
+            level=WARNING,
+            path=f"network.policies.{name}",
+            detail="declared but no host uses it — dead config",
+        )
+        for name in sorted(declared - used)
+    )
+
+    return findings
+
+
+def _hosts_called(config: Any) -> dict[str, str]:
+    """Every host this config will call, mapped to what asks for it.
+
+    A feed's own name rather than its URL, because that is what the reader has
+    to go and edit; a provider's host names itself, since no config line
+    produced it.
+    """
+    called = {host: "a provider module" for host in PROVIDER_HOSTS}
+    for feed in config.sources.all_feeds():
+        host = urlsplit(feed.url).hostname
+        if host is None:
+            continue
+        # First feed wins: ten venue pages on one host would otherwise report
+        # the last one read, which is not the one anybody wrote first.
+        called.setdefault(host, f"source {feed.name!r}")
+    return called
+
+
+def exit_code(findings: list[Finding]) -> int:
+    """What `what-do-check-config` returns.
+
+    An `ERROR` fails. A `WARNING` does not: a switched-off feature is worth
+    saying and never worth refusing over, which has been true of this module
+    since it shipped and does not change because a stricter level now exists.
+    """
+    return 1 if any(finding.level == ERROR for finding in findings) else 0
+
+
 def check_config_file(config: Any, path: Any) -> list[Finding]:
     """Both checks, as the batch wants them: switched-off features and absent sections.
 
@@ -164,11 +309,43 @@ def check_config_file(config: Any, path: Any) -> list[Finding]:
         path: Where the raw YAML lives.
 
     Returns:
-        Switched-off features first, then absent sections.
+        Switched-off features first, then unassigned hosts, then absent sections.
     """
     try:
         with open(path) as handle:
             raw = yaml.safe_load(handle)
     except (OSError, yaml.YAMLError):
-        return check_config(config)
-    return check_config(config) + check_sections(raw)
+        return check_config(config) + check_hosts(config)
+    return check_config(config) + check_hosts(config) + check_sections(raw)
+
+
+def format_findings(path: Any, findings: list[Finding]) -> str:
+    """The report `what-do-check-config` prints."""
+    if not findings:
+        return f"{path}: nothing switched off, every host covered."
+
+    width = max(len(finding.path) for finding in findings)
+    lines = [f"{path}: {len(findings)} finding(s)"]
+    lines.extend(
+        f"  {finding.level:<7} {finding.path.ljust(width)}  {finding.detail}"
+        for finding in findings
+    )
+    return "\n".join(lines)
+
+
+def run() -> int:
+    """Entry point for `what-do-check-config`."""
+    import argparse
+
+    from src.config import DEFAULT_CONFIG_PATH, load_config
+
+    parser = argparse.ArgumentParser(
+        prog="what-do-check-config",
+        description="Report configuration that leaves a feature off or a host uncovered.",
+    )
+    parser.add_argument("config", nargs="?", default=str(DEFAULT_CONFIG_PATH))
+    args = parser.parse_args()
+
+    findings = check_config_file(load_config(args.config), args.config)
+    print(format_findings(args.config, findings))
+    return exit_code(findings)

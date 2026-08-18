@@ -1,6 +1,9 @@
 """Unit tests for the config completeness check."""
 
+import ast
 from datetime import timedelta
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from src.config import (
     AppConfig,
@@ -18,12 +21,21 @@ from src.config import (
     WeatherConfig,
 )
 from src.config_check import (
+    ERROR,
     INFO,
+    NEVER_FETCHED,
+    PROVIDER_HOSTS,
     WARNING,
+    CALL_SITE_POLICIES,
+    Finding,
     check_config,
     check_config_file,
+    check_hosts,
     check_sections,
+    exit_code,
 )
+
+SRC = Path(__file__).resolve().parents[2] / "src"
 
 
 def _config(**overrides) -> AppConfig:
@@ -56,6 +68,17 @@ def _config(**overrides) -> AppConfig:
         scoring=ScoringConfig(domain_map={"cinema_veezi": "movies"}),
         network=NetworkConfig(
             policies={
+                # Declared but assigned to no host, on purpose: it is named at
+                # the image fetcher's call site, because those hosts arrive from
+                # fetched data and cannot be listed.
+                "data_derived": NetworkPolicy(
+                    min_interval_seconds=1.0,
+                    timeout_seconds=15.0,
+                    max_attempts=2,
+                    backoff_base_seconds=1.0,
+                    backoff_max_seconds=30.0,
+                    cache_ttl=timedelta(days=7),
+                ),
                 "tmdb": NetworkPolicy(
                     min_interval_seconds=0.05,
                     timeout_seconds=30.0,
@@ -65,7 +88,11 @@ def _config(**overrides) -> AppConfig:
                     cache_ttl=timedelta(days=7),
                 )
             },
-            hosts={"api.themoviedb.org": "tmdb"},
+            # Every host this config will call, because that is now part of
+            # being a correct config: the feed above, and every host a provider
+            # module hardcodes. One policy serves them all here — the assignment
+            # is what is being tested, not the numbers.
+            hosts={host: "tmdb" for host in [*PROVIDER_HOSTS, "example.test"]},
         ),
         sources=SourcesConfig(
             ics_calendars=[feed], html_calendars=[feed], veezi_cinemas=[feed],
@@ -253,3 +280,209 @@ class TestBothChecksTogether:
         findings = check_config_file(_config(scoring=ScoringConfig()), tmp_path / "gone.yaml")
 
         assert [f.path for f in findings] == ["scoring.domain_map"]
+
+
+def _network(hosts: dict[str, str], policies: list[str] | None = None) -> NetworkConfig:
+    """A network config naming `policies`.
+
+    Defaults to the ones `hosts` uses **plus the call-site policies**, so a test
+    about host assignment is not also a test about `data_derived`. A test that
+    means to leave one out names the whole declared set itself.
+    """
+    declared = (
+        policies
+        if policies is not None
+        else sorted(set(hosts.values()) | set(CALL_SITE_POLICIES))
+    )
+    return NetworkConfig(
+        policies={
+            name: NetworkPolicy(
+                min_interval_seconds=1.0,
+                timeout_seconds=30.0,
+                max_attempts=3,
+                backoff_base_seconds=2.0,
+                backoff_max_seconds=60.0,
+                cache_ttl=timedelta(hours=6),
+            )
+            for name in declared
+        },
+        hosts=hosts,
+    )
+
+
+def _covered(extra_hosts: tuple[str, ...] = ()) -> dict[str, str]:
+    """Every host that must be assigned, plus any the test adds."""
+    return {host: "everything" for host in [*PROVIDER_HOSTS, "example.test", *extra_hosts]}
+
+
+class TestHostCoverage:
+    """Every host this config will call, and whether it has a policy.
+
+    `for_host` already refuses an unassigned host — but only the *first* one
+    reached, at the moment it is reached, which for a seasonal source is months
+    away. This answers the same question about all of them, before anything is
+    fetched.
+    """
+
+    def test_a_complete_config_reports_nothing(self):
+        """The whole point, again: a check that fires on a correct config is one
+        people learn to skip."""
+        assert check_hosts(_config()) == []
+
+    def test_a_feed_host_with_no_policy_is_an_error(self):
+        feed = FeedConfig(name="new", url="https://unassigned.test/x.ics", source_type="new")
+        config = _config(sources=SourcesConfig(ics_calendars=[feed]))
+
+        findings = check_hosts(config)
+
+        assert [(f.level, f.path) for f in findings] == [(ERROR, "network.hosts.unassigned.test")]
+
+    def test_every_unassigned_host_is_named_not_just_the_first(self):
+        """The reason this exists rather than leaving it to `for_host`: that one
+        raises on whichever host is reached first and says nothing about the
+        rest, so a config with four holes takes four runs to fix."""
+        feeds = [
+            FeedConfig(name="a", url="https://one.test/a.ics", source_type="a"),
+            FeedConfig(name="b", url="https://two.test/b.ics", source_type="b"),
+        ]
+        config = _config(sources=SourcesConfig(ics_calendars=feeds))
+
+        paths = _paths(check_hosts(config))
+
+        assert paths == ["network.hosts.one.test", "network.hosts.two.test"]
+
+    def test_a_provider_host_no_feed_mentions_is_checked_too(self):
+        """The half config cannot see. TMDb's host is hardcoded in `movies.py`,
+        so nothing in `sources:` names it and an unassigned one would surface
+        only when a film was next looked up."""
+        hosts = _covered()
+        del hosts["api.themoviedb.org"]
+
+        paths = _paths(check_hosts(_config(network=_network(hosts))))
+
+        assert paths == ["network.hosts.api.themoviedb.org"]
+
+    def test_the_finding_says_where_the_host_came_from(self):
+        """A hostname alone sends the reader hunting for who asks for it."""
+        feed = FeedConfig(name="new_venue", url="https://unassigned.test/x", source_type="v")
+        config = _config(sources=SourcesConfig(html_calendars=[feed]))
+
+        detail = check_hosts(config)[0].detail
+
+        assert "new_venue" in detail
+
+    def test_a_host_assigned_to_a_policy_that_does_not_exist_is_an_error(self):
+        """A typo that would otherwise surface when that host is next fetched."""
+        hosts = _covered()
+        hosts["example.test"] = "web_listings"
+
+        findings = check_hosts(
+            _config(network=_network(hosts, policies=["everything", "data_derived"]))
+        )
+
+        assert [(f.level, f.path) for f in findings] == [(ERROR, "network.hosts.example.test")]
+        assert "web_listings" in findings[0].detail
+
+    def test_a_policy_named_at_a_call_site_must_be_declared(self):
+        """`data_derived` is assigned to no host by design — an image URL points
+        at whatever CDN a venue uses — so nothing else in this check would
+        notice it missing until an image was fetched."""
+        network = _network(_covered(), policies=["everything"])
+
+        findings = check_hosts(_config(network=network))
+
+        assert [(f.level, f.path) for f in findings] == [(ERROR, "network.policies.data_derived")]
+
+    def test_a_policy_nothing_uses_is_reported_as_dead_config(self):
+        network = _network(_covered(), policies=["everything", "data_derived", "nobody_uses_me"])
+
+        findings = check_hosts(_config(network=network))
+
+        assert [(f.level, f.path) for f in findings] == [
+            (WARNING, "network.policies.nobody_uses_me")
+        ]
+
+    def test_a_call_site_policy_is_not_dead_config(self):
+        """It is used, just not by a host — which is the one thing a host-based
+        reading of "used" cannot see."""
+        network = _network(_covered(), policies=["everything", "data_derived"])
+
+        assert check_hosts(_config(network=network)) == []
+
+    def test_the_batch_sees_host_findings_too(self, tmp_path):
+        """One function, both questions — the batch calls `check_config_file`."""
+        path = tmp_path / "config.yaml"
+        path.write_text("location: {}\n")
+        feed = FeedConfig(name="a", url="https://unassigned.test/a", source_type="a")
+
+        findings = check_config_file(_config(sources=SourcesConfig(ics_calendars=[feed])), path)
+
+        assert "network.hosts.unassigned.test" in _paths(findings)
+
+
+class TestExitCode:
+    """What `what-do-check-config` returns, which is the part a script reads."""
+
+    def test_an_error_fails(self):
+        assert exit_code([Finding(level=ERROR, path="x", detail="d")]) == 1
+
+    def test_a_warning_does_not(self):
+        """A switched-off feature is worth saying and not worth refusing over —
+        that has been true since this module shipped, and stays true."""
+        assert exit_code([Finding(level=WARNING, path="x", detail="d")]) == 0
+
+    def test_nothing_at_all_passes(self):
+        assert exit_code([]) == 0
+
+
+class TestTheRegistryCannotDrift:
+    """`PROVIDER_HOSTS` is a second artefact, and the trap that comes with one.
+
+    It is the same shape as `_SCHEMA` against the live database: a list somebody
+    has to remember to update is a list that will be wrong, and wrong here means
+    a host silently exempt from the coverage check — the exact hole the check
+    exists to close. So it is compared against what `src/` actually names.
+    """
+
+    def _host_constants(self) -> dict[str, str]:
+        """Every module-level `*_HOST = "..."` in `src/`."""
+        found: dict[str, str] = {}
+        for path in sorted(SRC.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+                    continue
+                if not isinstance(node.value.value, str):
+                    continue
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id.endswith("_HOST"):
+                        found[target.id] = node.value.value
+        return found
+
+    def _literal_hosts(self) -> set[str]:
+        """Every host appearing in a URL literal in `src/`."""
+        found: set[str] = set()
+        for path in sorted(SRC.rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    if node.value.startswith(("http://", "https://")):
+                        host = urlsplit(node.value).hostname
+                        if host:
+                            found.add(host)
+        return found
+
+    def test_every_host_constant_is_in_the_registry(self):
+        """A provider that declares its host and is not registered would be
+        checked by nothing."""
+        assert set(self._host_constants().values()) <= set(PROVIDER_HOSTS)
+
+    def test_every_host_written_into_a_url_is_accounted_for(self):
+        """The other way in: a module that hardcodes a URL rather than naming a
+        constant. Each one is either a host we call — and so registered — or one
+        we demonstrably do not, recorded with its reason."""
+        unaccounted = self._literal_hosts() - set(PROVIDER_HOSTS) - set(NEVER_FETCHED)
+
+        assert unaccounted == set(), f"unregistered host(s) in src/: {sorted(unaccounted)}"
+
+    def test_nothing_is_excused_that_is_actually_called(self):
+        """The exclusion list is where this check would go quietly wrong."""
+        assert set(NEVER_FETCHED).isdisjoint(PROVIDER_HOSTS)

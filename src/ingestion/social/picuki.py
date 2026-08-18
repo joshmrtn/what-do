@@ -13,7 +13,8 @@ from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.source_type import PICUKI
 
-_PICUKI_BASE = "https://www.picuki.com/api"
+PICUKI_HOST = "www.picuki.com"
+_PICUKI_BASE = f"https://{PICUKI_HOST}/api"
 
 
 class PicukiAdapter(IngestionSource):

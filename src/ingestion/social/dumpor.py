@@ -13,7 +13,8 @@ from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.source_type import DUMPOR
 
-_DUMPOR_BASE = "https://dumpor.com/api"
+DUMPOR_HOST = "dumpor.com"
+_DUMPOR_BASE = f"https://{DUMPOR_HOST}/api"
 
 
 class DumporAdapter(IngestionSource):
