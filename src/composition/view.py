@@ -136,7 +136,6 @@ def build_rescore_pipeline(
             synthetic_rules=config.synthetic_activities,
             config=config,
             db_path=db_path,
-            weather_cache=storage.weather_cache,
             air_quality_provider=OpenMeteoAirQualityProvider(),
             get_now=get_now,
             logger=logger,

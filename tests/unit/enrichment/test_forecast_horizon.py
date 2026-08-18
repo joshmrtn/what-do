@@ -110,7 +110,6 @@ def _service(tmp_path: Path, provider: _CountingWeather, config: AppConfig):
         synthetic_rules=[],
         config=config,
         db_path=db,
-        weather_cache=InMemoryWeatherCache(),
         air_quality_provider=None,
         get_now=lambda: NOW,
         logger=get_logger("horizon_test"),
@@ -124,11 +123,22 @@ def _asked_for(tmp_path, days: list[date], config: AppConfig | None = None) -> l
     are conditioned on tonight's weather and have no start time of their own.
     That request is unrelated to the horizon and is stripped here so the
     assertions below say what they mean — its presence is asserted separately.
+
+    **Distinct dates, in the order first asked.** These tests are about *which*
+    dates the bound lets through, never how many times one is requested — and
+    repetition is not a property of the system anyway: the provider caches on
+    `(day, latitude, longitude)`, so the run-day request is served from the same
+    entry as an event on that date. A counting fake has no cache and would show
+    that date twice, which is an artefact of the double rather than behaviour.
     """
     provider = _CountingWeather()
     service = _service(tmp_path, provider, config or _config())
     service.enrich([_event(day) for day in days], TODAY)
-    asked = list(provider.asked)
+
+    asked: list[date] = []
+    for day in provider.asked:
+        if day not in asked:
+            asked.append(day)
     if TODAY in asked and TODAY not in days:
         asked.remove(TODAY)
     return asked
@@ -259,7 +269,6 @@ def _aqi_asked_for(tmp_path, days: list[date], config: AppConfig) -> list[date]:
         synthetic_rules=[],
         config=config,
         db_path=db,
-        weather_cache=InMemoryWeatherCache(),
         air_quality_provider=aqi,
         get_now=lambda: NOW,
         logger=get_logger("aqi_horizon_test"),

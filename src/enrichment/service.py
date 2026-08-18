@@ -10,9 +10,8 @@ from src.enrichment.air_quality import AirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator, AstronomicalData
 from src.enrichment.movies import MovieMetadataProvider, enrich_movie_event
 from src.enrichment.synthetic import SyntheticActivityGenerator
-from src.enrichment.weather import OPEN_METEO_HOST, WeatherProvider, sample_hour
+from src.enrichment.weather import WeatherProvider, sample_hour
 from src.models.event import Event
-from src.storage.protocols import WeatherCache
 from src.utils.logging import StructuredLogger, get_logger
 
 
@@ -27,13 +26,11 @@ class EnrichmentService:
         synthetic_rules: list[SyntheticActivityRule],
         config: AppConfig,
         db_path: Path,
-        weather_cache: WeatherCache,
         air_quality_provider: AirQualityProvider | None = None,
         get_now: Callable[[], datetime] = datetime.now,
         logger: StructuredLogger | None = None,
     ) -> None:
         self._weather_provider = weather_provider
-        self._weather_cache = weather_cache
         self._air_quality_provider = air_quality_provider
         self._movie_provider = movie_provider
         self._calculator = astronomical_calculator
@@ -233,13 +230,8 @@ class EnrichmentService:
         if not self._forecastable(event_date):
             return None
 
-        cached = self._db_weather_get(event_date, lat, lng)
-        if cached is not None:
-            return cached
-
-        # Cache miss — call provider
         try:
-            weather = self._weather_provider.fetch(event_date, lat, lng)
+            return self._weather_provider.fetch(event_date, lat, lng)
         except Exception as exc:
             self._logger.error(
                 f"Weather fetch failed for {event_date}: {exc}",
@@ -247,44 +239,3 @@ class EnrichmentService:
             )
             return None
 
-        if weather is not None:
-            self._db_weather_put(event_date, lat, lng, weather)
-
-        return weather
-
-    def _db_weather_get(
-        self, event_date: date, lat: float, lng: float
-    ) -> dict[str, Any] | None:
-        """Return the cached day, or None if absent or past its TTL.
-
-        The TTL is expressed as the oldest stamp still worth serving and handed
-        to the cache, rather than checked here afterwards. A forecast going
-        stale because someone forgot to look is the failure that shape removes:
-        an event found a week out would otherwise score on the forecast issued
-        the day it was discovered, forever.
-
-        The lifetime comes from the politeness policy assigned to Open-Meteo's
-        host, which is its one home. A declared `never` is not a zero-length
-        lifetime — it says this caller stores nothing, so there is no row worth
-        reading and the cache is skipped rather than consulted and rejected.
-        """
-        ttl = self._config.network.for_host(OPEN_METEO_HOST).cache_ttl
-        if ttl is None:
-            return None
-        return self._weather_cache.get(
-            day=event_date,
-            latitude=lat,
-            longitude=lng,
-            fresh_since=self._get_now() - ttl,
-        )
-
-    def _db_weather_put(
-        self, event_date: date, lat: float, lng: float, weather: dict[str, Any]
-    ) -> None:
-        self._weather_cache.put(
-            day=event_date,
-            latitude=lat,
-            longitude=lng,
-            data=weather,
-            now=self._get_now(),
-        )

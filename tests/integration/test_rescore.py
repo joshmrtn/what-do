@@ -10,11 +10,14 @@ from __future__ import annotations
 import io
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import json
 from typing import Any
 
 import pytest
+import requests
 
 from src.composition.storage import build_view_storage
+from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider
 from src.config import load_config
 from src.config import (
     AppConfig,
@@ -53,6 +56,7 @@ from src.storage.queries import load_ranked_events
 from src.storage.sqlite.connection import init_db
 from src.utils.logging import get_logger
 from src.utils.ollama_client import OllamaClient
+from tests.support.network import fetcher_policy
 
 TZ = timezone(timedelta(hours=-4))
 RUN_DATE = date(2026, 8, 17)
@@ -82,6 +86,33 @@ class _FixedWeather:
     def fetch(self, day: date, lat: float, lng: float) -> dict[str, Any]:
         self.calls += 1
         return {"date": day.isoformat(), "hours": [self._hour]}
+
+
+class _CountingSession:
+    """The transport, faked, counting what actually left the process."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get(self, url: str, *, params=None, timeout=None):
+        self.calls += 1
+        hours = [f"{RUN_DATE.isoformat()}T{h:02d}:00" for h in range(24)]
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps(
+            {
+                "hourly": {
+                    "time": hours,
+                    "temperature_2m": [66.0] * 24,
+                    "relative_humidity_2m": [40.0] * 24,
+                    "dew_point_2m": [50.0] * 24,
+                    "precipitation": [0.0] * 24,
+                    "wind_speed_10m": [5.0] * 24,
+                    "weather_code": [0] * 24,
+                }
+            }
+        ).encode()
+        return response
 
 
 class _RefusingWeather:
@@ -333,20 +364,33 @@ def test_the_rescore_is_recorded(db_path):
     assert recorded.events_rescored == 2
 
 
-def test_a_second_invocation_opens_no_connection(db_path):
+def test_a_second_invocation_makes_no_request(db_path):
     """The forecast is cached, so the follow-up is instant.
 
-    Asserted on the provider's call count rather than on elapsed time, which
-    would be a flaky way to say the same thing.
+    Asserted on requests rather than elapsed time, which would be a flaky way
+    to say the same thing. The **real** provider is built here over a faked
+    session: the cache lives at the request now, so a fake provider could not
+    demonstrate this — it would simply answer twice.
     """
-    weather = _FixedWeather(_hour(66.0, "clear"))
-    _rescore(db_path, weather)
-    after_first = weather.calls
+    session = _CountingSession()
+    storage = build_view_storage(db_path, "nomic-embed-text")
+    provider = OpenMeteoProvider(
+        session=session,
+        policy=fetcher_policy(
+            urls=f"https://{OPEN_METEO_HOST}/v1/forecast", now=NOW
+        ),
+        weather_cache=storage.weather_cache,
+        cache_ttl=timedelta(hours=12),
+        get_now=lambda: NOW,
+    )
 
-    _rescore(db_path, weather, now=NOW + timedelta(minutes=5))
+    _rescore(db_path, provider)
+    after_first = session.calls
+
+    _rescore(db_path, provider, now=NOW + timedelta(minutes=5))
 
     assert after_first == 1
-    assert weather.calls == 1, "the second rescore refetched the forecast"
+    assert session.calls == 1, "the second rescore refetched the forecast"
 
 
 def test_a_network_failure_leaves_the_stored_ranking_alone(db_path):

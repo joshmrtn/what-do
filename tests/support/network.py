@@ -28,13 +28,17 @@ from src.storage.memory.http_cache import InMemoryHttpCache
 TEST_POLICY = "test_sources"
 
 
-def test_network(
+def network_for(
     urls: str | Iterable[str],
     *,
     cache_ttl: timedelta | None = timedelta(hours=6),
     max_attempts: int = 3,
 ) -> NetworkConfig:
     """One policy, assigned to every host in `urls`.
+
+    Named `network_for` rather than `test_network`: pytest collects any
+    module-level `test_*` it can see, so the second name made an imported
+    factory look like a failing test wherever it was used.
 
     Hosts are assigned rather than defaulted, because there is no default to
     fall back on — that is the design, and a test config that quietly acquired
@@ -63,6 +67,32 @@ def test_network(
     )
 
 
+def fetcher_policy(
+    *,
+    urls: str | Iterable[str],
+    now: datetime | Callable[[], datetime],
+    cache_ttl: timedelta | None = timedelta(hours=6),
+    max_attempts: int = 3,
+    sleeps: list[float] | None = None,
+) -> RequestPolicy:
+    """A real policy over a test network config.
+
+    For a provider that speaks JSON rather than documents: it brings its own
+    cache strategy — keyed on what identifies *its* request, which the policy
+    never sees — so it needs the policy, not the fetcher.
+    """
+    clock: Callable[[], datetime] = now if callable(now) else (lambda: now)
+    network = network_for(urls, cache_ttl=cache_ttl, max_attempts=max_attempts)
+    record = sleeps.append if sleeps is not None else (lambda seconds: None)
+
+    return RequestPolicy(
+        network=network,
+        throttle=InMemoryThrottle(get_now=clock, sleep=record),
+        sleep=record,
+        random=lambda: 0.5,
+    )
+
+
 def fetcher_for(
     session: Any,
     *,
@@ -88,17 +118,13 @@ def fetcher_for(
             cares. Real time is never spent either way.
     """
     clock: Callable[[], datetime] = now if callable(now) else (lambda: now)
-    network = test_network(urls, cache_ttl=cache_ttl, max_attempts=max_attempts)
-    record = sleeps.append if sleeps is not None else (lambda seconds: None)
 
     return HttpFetcher(
         session=session,
-        network=network,
-        policy=RequestPolicy(
-            network=network,
-            throttle=InMemoryThrottle(get_now=clock, sleep=record),
-            sleep=record,
-            random=lambda: 0.5,
+        network=network_for(urls, cache_ttl=cache_ttl, max_attempts=max_attempts),
+        policy=fetcher_policy(
+            urls=urls, now=clock, cache_ttl=cache_ttl,
+            max_attempts=max_attempts, sleeps=sleeps,
         ),
         http_cache=http_cache if http_cache is not None else InMemoryHttpCache(),
         get_now=clock,

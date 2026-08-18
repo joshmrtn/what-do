@@ -40,7 +40,7 @@ from src.presentation.freshness import (
 )
 from src.presentation.handles import HANDLE_SIGIL, short_handle
 from src.presentation.progress import is_interactive, spinner
-from src.enrichment.weather import OpenMeteoProvider
+from src.composition.network import build_weather_provider
 from src.presentation.rescore import rescore_if_stale
 from src.scoring.preference_revision import hash_preference_files
 from src.utils.logging import StructuredLogger, get_logger
@@ -190,6 +190,10 @@ def _default_rescore(
         )
         return None
 
+    # One storage bundle: the provider's cache and the pipeline's repositories
+    # must be the same objects, or the rescore writes where nothing reads.
+    view_storage = build_view_storage(db_path, embedding_model)
+
     return rescore_if_stale(
         pairs=pairs,
         tonight=tonight,
@@ -197,10 +201,12 @@ def _default_rescore(
         ttl=ttl,
         config=config,
         db_path=db_path,
-        storage=build_view_storage(db_path, embedding_model),
+        storage=view_storage,
         logger=_view_logger(),
         get_now=lambda: now,
-        weather_provider=OpenMeteoProvider(),
+        weather_provider=build_weather_provider(
+            config, weather_cache=view_storage.weather_cache, get_now=lambda: now
+        ),
         likes_path=DEFAULT_LIKES_PATH,
         dislikes_path=DEFAULT_DISLIKES_PATH,
         blocklist_path=DEFAULT_BLOCKLIST_PATH,

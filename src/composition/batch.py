@@ -20,21 +20,21 @@ from __future__ import annotations
 
 import json
 import os
-import random
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-import requests
-
+from src.composition.network import (
+    build_http_fetcher,
+    build_request_policy,
+    build_weather_provider,
+)
 from src.config import AppConfig
 from src.enrichment.air_quality import OpenMeteoAirQualityProvider
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.movies import TMDbProvider
 from src.enrichment.service import EnrichmentService
-from src.enrichment.weather import OpenMeteoProvider
 from src.ingestion.aggregators.do617_source import Do617VenueSource
 from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.ingestion.calendars.assabet_source import AssabetRssSource
@@ -50,9 +50,6 @@ from src.ingestion.seeds import load_seeds
 from src.ingestion.social.apify import ApifyAdapter
 from src.ingestion.social.dumpor import DumporAdapter
 from src.ingestion.social.picuki import PicukiAdapter
-from src.network.http import HttpFetcher
-from src.network.policy import RequestPolicy
-from src.network.throttle import InMemoryThrottle
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.normalization.service import NormalizationService
 from src.processing.extraction import OllamaExtractionProvider
@@ -195,18 +192,12 @@ def build_dependencies(
     #
     # The throttle is shared for the same reason the cache is: two adapters
     # pointed at one host are one conversation from the server's side.
-    fetcher = HttpFetcher(
-        session=requests.Session(),
-        network=config.network,
-        policy=RequestPolicy(
-            network=config.network,
-            throttle=InMemoryThrottle(get_now=get_now, sleep=time.sleep),
-            sleep=time.sleep,
-            random=random.random,
-            logger=logger,
-        ),
+    request_policy = build_request_policy(config, get_now=get_now, logger=logger)
+    fetcher = build_http_fetcher(
+        config,
         http_cache=storage.http_cache,
         get_now=get_now,
+        policy=request_policy,
         logger=logger,
     )
 
@@ -376,13 +367,18 @@ def build_dependencies(
         ),
         normalization_service=NormalizationService(config, logger),
         enrichment_service=EnrichmentService(
-            weather_provider=OpenMeteoProvider(),
+            weather_provider=build_weather_provider(
+                config,
+                weather_cache=storage.weather_cache,
+                get_now=get_now,
+                policy=request_policy,
+                logger=logger,
+            ),
             movie_provider=TMDbProvider(tmdb_key) if tmdb_key else None,
             astronomical_calculator=AstronomicalCalculator(),
             synthetic_rules=config.synthetic_activities,
             config=config,
             db_path=db_path,
-            weather_cache=storage.weather_cache,
             air_quality_provider=OpenMeteoAirQualityProvider(),
             get_now=get_now,
             logger=logger,

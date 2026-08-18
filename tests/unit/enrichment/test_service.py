@@ -155,7 +155,6 @@ def _make_service(
         synthetic_rules=rules or [],
         config=cfg,
         db_path=db_path,
-        weather_cache=SqliteWeatherCache(db_path),
         get_now=lambda: now,
         logger=logger,
     )
@@ -283,147 +282,19 @@ def test_provider_returns_none_event_weather_is_none(db_path, cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_weather_cache_hit_provider_not_called_twice(db_path, cfg):
-    wp = _weather_provider(CLEAR_DAY)
-    svc = _make_service(db_path, cfg, weather=wp)
-    e1 = _make_event(event_id="evt-1")
-    e2 = _make_event(event_id="evt-2")  # same date as e1
-    svc.enrich([e1, e2], RUN_DATE)
-    assert wp.fetch.call_count == 1
-
-
-def test_weather_cached_in_db_between_calls(db_path, cfg):
-    """Second enrich() call re-uses DB cache, provider not called."""
-    wp = _weather_provider(CLEAR_DAY)
-    svc = _make_service(db_path, cfg, weather=wp)
-    svc.enrich([_make_event()], RUN_DATE)
-    first_call_count = wp.fetch.call_count
-
-    svc.enrich([_make_event()], RUN_DATE)
-    assert wp.fetch.call_count == first_call_count  # no additional fetch
 
 
 # ---------------------------------------------------------------------------
-# Weather cache expiry: a forecast is only reused while it is still fresh
+# The forecast cache is the provider's, not the service's
 # ---------------------------------------------------------------------------
-
-
-def _cache_rows(db_path: Path) -> list[tuple]:
-    with sqlite3.connect(db_path) as conn:
-        return conn.execute("SELECT date, fetched_at FROM weather_cache").fetchall()
-
-
-def test_cached_weather_within_ttl_is_reused(db_path, cfg):
-    wp = _weather_provider(CLEAR_DAY)
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
-
-    later = NOW + _ttl(cfg) - timedelta(minutes=1)
-    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
-
-    assert wp.fetch.call_count == 1
-
-
-def test_cached_weather_beyond_ttl_is_refetched(db_path, cfg):
-    """A forecast issued days ago must never decide tonight's score."""
-    wp = _weather_provider(CLEAR_DAY)
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
-
-    later = NOW + _ttl(cfg) + timedelta(minutes=1)
-    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
-
-    assert wp.fetch.call_count == 2
-
-
-def test_refetched_weather_replaces_the_stale_row(db_path, cfg):
-    wp = _weather_provider(CLEAR_DAY)
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
-
-    # Past the TTL, but *not* past the event. Advancing five days used to
-    # work here and now correctly fetches nothing: a forecast for a night that
-    # has already happened is not a thing to request, and enrichment no longer
-    # asks. See `test_forecast_horizon.py`.
-    later = NOW + _ttl(cfg) + timedelta(hours=1)
-    _make_service(db_path, cfg, weather=wp, now=later).enrich([_make_event()], RUN_DATE)
-
-    rows = _cache_rows(db_path)
-    assert len(rows) == 1
-    assert datetime.fromisoformat(rows[0][1]) == later
-
-
-def test_freshly_fetched_weather_is_stamped_from_injected_clock(db_path, cfg):
-    """fetched_at drives expiry, so it cannot come from the wall clock."""
-    _make_service(db_path, cfg, now=NOW).enrich([_make_event()], RUN_DATE)
-
-    assert datetime.fromisoformat(_cache_rows(db_path)[0][1]) == NOW
-
-
-def test_stale_cache_serves_the_new_forecast_not_the_old_one(db_path, cfg):
-    stale_day = {"date": "2025-06-21", "hours": [_hour_record(h) for h in range(24)]}
-    fresh_day = {
-        "date": "2025-06-21",
-        "hours": [_hour_record(h, condition="thunderstorm") for h in range(24)],
-    }
-    wp = _weather_provider(stale_day)
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
-
-    wp.fetch.return_value = fresh_day
-    # Past the TTL and still before the event, for the reason given above.
-    later = NOW + _ttl(cfg) + timedelta(hours=1)
-    event = _make_service(db_path, cfg, weather=wp, now=later).enrich(
-        [_make_event()], RUN_DATE
-    )[0]
-
-    assert event.weather["forecast"]["hour"]["condition"] == "thunderstorm"
-
-
-def test_ttl_is_read_from_the_host_policy(db_path, cfg):
-    """The lifetime has one home: the policy assigned to Open-Meteo's host.
-
-    The event is days out deliberately. Anchored to tonight, the clock advances
-    past the event itself and enrichment stops fetching for a night that has
-    already happened — so the count stays at one whatever the TTL says, and the
-    test cannot tell a 48-hour lifetime from a 12-hour one.
-    """
-    cfg.network = _network(cache_ttl=timedelta(hours=48))
-    wp = _weather_provider(CLEAR_DAY)
-    event_day = date(2025, 6, 26)
-    future = _make_event(start_time=datetime(2025, 6, 26, 20, 0, tzinfo=LOCAL_TZ))
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([future], RUN_DATE)
-
-    later = NOW + timedelta(hours=24)
-    _make_service(db_path, cfg, weather=wp, now=later).enrich([future], RUN_DATE)
-
-    # Counted for the event's own day. Enrichment also fetches the run day for
-    # synthetic activities, and that call is not what this test is about.
-    assert [c for c in wp.fetch.call_args_list if c.args[0] == event_day] == [
-        call(event_day, SALEM_LAT, SALEM_LNG)
-    ]
-
-
-def test_a_declared_never_serves_nothing_from_cache(db_path, cfg):
-    """`cache_ttl_seconds: never` means the stored row is not servable at all.
-
-    Not "a zero-length lifetime" — reading a row and rejecting it on age is a
-    different thing from a caller that has declared it caches nothing.
-    """
-    cfg.network = _network(cache_ttl=None)
-    wp = _weather_provider(CLEAR_DAY)
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
-    after_first = wp.fetch.call_count
-
-    _make_service(db_path, cfg, weather=wp, now=NOW).enrich([_make_event()], RUN_DATE)
-
-    # The clock has not moved, so under any real lifetime the second run is
-    # served entirely from the stored row — which is what
-    # `test_cached_weather_within_ttl_is_reused` pins.
-    assert wp.fetch.call_count > after_first
-
-
-def test_an_unassigned_weather_host_is_refused_by_name(db_path, cfg):
-    """Absence is loud. A missing assignment must not read as "no caching"."""
-    cfg.network = NetworkConfig()
-    with pytest.raises(ConfigError, match=OPEN_METEO_HOST):
-        _make_service(db_path, cfg, now=NOW).enrich([_make_event()], RUN_DATE)
+#
+# Reuse, expiry, the stamp and a declared `never` all moved to
+# `test_weather_provider.py` when the cache moved to the request. They cannot
+# be asserted here any more, and pretending otherwise would be worse than
+# losing them: the provider is faked in this file, so a "cache hit" would only
+# ever prove that the double answered twice.
+#
+# What stays the service's is the *bound* — see `test_forecast_horizon.py`.
 
 
 # ---------------------------------------------------------------------------

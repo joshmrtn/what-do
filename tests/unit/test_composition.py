@@ -28,7 +28,9 @@ from src.ingestion.calendars.moon_source import MoonRssSource
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
+from src.enrichment.weather import OPEN_METEO_HOST
 from src.utils.logging import get_logger
+from tests.support.network import network_for
 
 FULL_ENV = {
     "APIFY_API_KEY": "apify-key",
@@ -43,6 +45,10 @@ def _config(**overrides) -> AppConfig:
         "scraping": ScrapingConfig(),
         "venue_discovery": VenueDiscoveryConfig(),
         "deduplication": DeduplicationConfig(),
+        # Composition resolves the weather host's policy, so a config that
+        # never mentions Open-Meteo is refused here rather than on the first
+        # fetch of a nightly run. That is the design: absence is loud.
+        "network": network_for(f"https://{OPEN_METEO_HOST}/v1/forecast"),
     }
     fields.update(overrides)
     return AppConfig(**fields)

@@ -437,7 +437,6 @@ def test_enrichment_smoke(tmp_path: Path) -> None:
         synthetic_rules=[walk_rule],
         config=cfg,
         db_path=db_path,
-        weather_cache=SqliteWeatherCache(db_path),
         get_now=lambda: now,
     )
 
@@ -664,7 +663,6 @@ def test_weather_comfort_smoke(tmp_path: Path) -> None:
             synthetic_rules=[],
             config=cfg,
             db_path=db_path,
-            weather_cache=SqliteWeatherCache(db_path),
             get_now=lambda: now,
         )
 
@@ -1184,7 +1182,6 @@ def _batch_dependencies(tmp_path: Path, db_path: Path, config: AppConfig, logger
             synthetic_rules=[],
             config=config,
             db_path=db_path,
-            weather_cache=SqliteWeatherCache(db_path),
             get_now=lambda: BATCH_NOW,
             logger=logger,
         ),

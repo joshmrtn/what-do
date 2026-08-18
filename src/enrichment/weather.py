@@ -1,10 +1,14 @@
 """Weather provider ABC, OpenMeteo implementation, WMO code mapper, and hour sampling."""
 
 from abc import ABC, abstractmethod
-from datetime import date, datetime
-from typing import Any, Iterable
+from datetime import date, datetime, timedelta
+from typing import Any, Callable, Iterable
 
 import requests
+
+from src.network.http import requests_transient_check
+from src.network.policy import RequestPolicy
+from src.storage.protocols import WeatherCache
 
 WMO_TO_CONDITION: dict[int, str] = {
     0: "clear",
@@ -123,22 +127,124 @@ def sample_hour(
 OPEN_METEO_HOST = "api.open-meteo.com"
 
 
+class WeatherDayCache:
+    """A `CacheStrategy` bound to one day and one place.
+
+    The key is the caller's, because the policy cannot know what identifies a
+    request — it never sees a URL, let alone a latitude. The lifetime is
+    config's, read from the host's policy. `None` is a declared `never`.
+    """
+
+    def __init__(
+        self,
+        cache: WeatherCache,
+        *,
+        day: date,
+        latitude: float,
+        longitude: float,
+        ttl: timedelta | None,
+        get_now: Callable[[], datetime],
+    ) -> None:
+        self._cache = cache
+        self._day = day
+        self._latitude = latitude
+        self._longitude = longitude
+        self._ttl = ttl
+        self._get_now = get_now
+
+    def get(self) -> dict[str, Any] | None:
+        """The stored forecast while it is still fresh, otherwise None."""
+        if self._ttl is None:
+            return None
+        return self._cache.get(
+            day=self._day,
+            latitude=self._latitude,
+            longitude=self._longitude,
+            fresh_since=self._get_now() - self._ttl,
+        )
+
+    def put(self, value: dict[str, Any]) -> None:
+        """Store the forecast, stamped from the injected clock."""
+        if self._ttl is None:
+            return
+        self._cache.put(
+            day=self._day,
+            latitude=self._latitude,
+            longitude=self._longitude,
+            data=value,
+            now=self._get_now(),
+        )
+
+
 class OpenMeteoProvider(WeatherProvider):
     """Weather provider backed by the Open-Meteo free API (no key required)."""
 
     _BASE_URL = f"https://{OPEN_METEO_HOST}/v1/forecast"
 
-    def __init__(self, session: requests.Session | None = None) -> None:
-        self._session = session or requests.Session()
+    def __init__(
+        self,
+        *,
+        session: requests.Session,
+        policy: RequestPolicy,
+        weather_cache: WeatherCache,
+        cache_ttl: timedelta | None,
+        get_now: Callable[[], datetime],
+    ) -> None:
+        """
+        Args:
+            session: Injected HTTP session, so tests never reach the network.
+            policy: Throttle, retry and timeout for this host.
+            weather_cache: Persistent forecasts, keyed by day and place.
+            cache_ttl: Lifetime from the `open_meteo` policy. `None` is a
+                declared `never`.
+            get_now: Injected clock.
+        """
+        self._session = session
+        self._policy = policy
+        self._weather_cache = weather_cache
+        self._cache_ttl = cache_ttl
+        self._get_now = get_now
+        self._is_transient = requests_transient_check(get_now=get_now)
 
     def fetch(self, date: date, lat: float, lng: float) -> dict[str, Any] | None:
-        """Fetch one local day of hourly weather from Open-Meteo.
+        """Fetch one local day of hourly weather, or serve what is stored.
 
         Imperial units are requested natively rather than converted, so no
         arithmetic can drift. Humidity and dew point exist only at hourly
         granularity, which is why the daily summary is not enough.
 
-        Returns None on any network, HTTP, or parse error, and on an empty series.
+        Returns None on any network, HTTP, or parse error, and on an empty
+        series. **The catch sits outside the policy, not inside the request.**
+        It used to wrap the call itself, which left retry nothing to act on:
+        every failure became a `None` before anything could judge whether it
+        was worth another attempt.
+        """
+        try:
+            return self._policy.call(
+                host=OPEN_METEO_HOST,
+                perform=lambda timeout: self._request(date, lat, lng, timeout),
+                is_transient=self._is_transient,
+                cache=WeatherDayCache(
+                    self._weather_cache,
+                    day=date,
+                    latitude=lat,
+                    longitude=lng,
+                    ttl=self._cache_ttl,
+                    get_now=self._get_now,
+                ),
+                label="weather",
+            )
+        except Exception:
+            return None
+
+    def _request(
+        self, day: date, lat: float, lng: float, timeout: float
+    ) -> dict[str, Any]:
+        """One attempt. Raises so the policy can decide about trying again.
+
+        An empty series raises rather than returning None: the policy caches
+        what `perform` returns, and storing "no forecast" would serve that
+        absence for the whole lifetime.
         """
         params: dict[str, str | float] = {
             "latitude": lat,
@@ -148,22 +254,19 @@ class OpenMeteoProvider(WeatherProvider):
             "wind_speed_unit": "mph",
             "precipitation_unit": "mm",
             "timezone": "auto",
-            "start_date": date.isoformat(),
-            "end_date": date.isoformat(),
+            "start_date": day.isoformat(),
+            "end_date": day.isoformat(),
         }
-        try:
-            resp = self._session.get(self._BASE_URL, params=params, timeout=10)
-            resp.raise_for_status()
-            hourly = resp.json()["hourly"]
-            times = hourly["time"]
-            if not times:
-                return None
-            return {
-                "date": date.isoformat(),
-                "hours": [self._hour_record(hourly, i) for i in range(len(times))],
-            }
-        except Exception:
-            return None
+        resp = self._session.get(self._BASE_URL, params=params, timeout=timeout)
+        resp.raise_for_status()
+        hourly = resp.json()["hourly"]
+        times = hourly["time"]
+        if not times:
+            raise ValueError(f"Open-Meteo returned no hours for {day.isoformat()}")
+        return {
+            "date": day.isoformat(),
+            "hours": [self._hour_record(hourly, i) for i in range(len(times))],
+        }
 
     @staticmethod
     def _hour_record(hourly: dict[str, Any], index: int) -> dict[str, Any]:

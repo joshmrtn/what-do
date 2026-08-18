@@ -260,7 +260,6 @@ def _enrichment_service(db, error: Exception | None = None) -> _EnrichmentSpy:
             synthetic_rules=[],
             config=_config(),
             db_path=db,
-            weather_cache=InMemoryWeatherCache(),
             get_now=lambda: NOW,
             logger=_stage_log(),
         ),

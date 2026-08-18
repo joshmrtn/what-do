@@ -1,11 +1,19 @@
 """Unit tests for WeatherProvider and WMO code mapping."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
-from src.enrichment.weather import OpenMeteoProvider, WeatherProvider, map_wmo_code, sample_hour
+from src.enrichment.weather import (
+    OPEN_METEO_HOST,
+    OpenMeteoProvider,
+    WeatherProvider,
+    map_wmo_code,
+    sample_hour,
+)
+from src.storage.memory.weather_cache import InMemoryWeatherCache
+from tests.support.network import fetcher_policy
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +67,23 @@ def test_unmapped_code_falls_back_to_overcast():
 
 _FETCH_DATE = date(2025, 6, 21)
 _LAT, _LNG = 42.52, -70.89
+_NOW = datetime(2025, 6, 21, 12, 0, tzinfo=timezone.utc)
+
+
+def _provider(session) -> OpenMeteoProvider:
+    """The real provider over a faked session.
+
+    Its caching, throttling and retry are the policy's now, so a test about the
+    *request* wires the real policy and stands in only for the transport.
+    """
+    return OpenMeteoProvider(
+        session=session,
+        policy=fetcher_policy(urls=f"https://{OPEN_METEO_HOST}/v1/forecast", now=_NOW),
+        weather_cache=InMemoryWeatherCache(),
+        cache_ttl=timedelta(hours=12),
+        get_now=lambda: _NOW,
+    )
+
 
 #: One reading per hour, so a test can tell which hour was sampled.
 _HOURS = list(range(24))
@@ -109,14 +134,14 @@ def _requested_params(session) -> dict:
 )
 def test_request_asks_for_each_hourly_variable(variable):
     session = _mock_session()
-    OpenMeteoProvider(session=session).fetch(_FETCH_DATE, _LAT, _LNG)
+    _provider(session).fetch(_FETCH_DATE, _LAT, _LNG)
     assert variable in _requested_params(session)["hourly"]
 
 
 def test_request_asks_for_imperial_units():
     """Requested natively so no conversion arithmetic can drift."""
     session = _mock_session()
-    OpenMeteoProvider(session=session).fetch(_FETCH_DATE, _LAT, _LNG)
+    _provider(session).fetch(_FETCH_DATE, _LAT, _LNG)
     params = _requested_params(session)
     assert params["temperature_unit"] == "fahrenheit"
     assert params["wind_speed_unit"] == "mph"
@@ -124,7 +149,7 @@ def test_request_asks_for_imperial_units():
 
 def test_request_is_scoped_to_the_single_local_day():
     session = _mock_session()
-    OpenMeteoProvider(session=session).fetch(_FETCH_DATE, _LAT, _LNG)
+    _provider(session).fetch(_FETCH_DATE, _LAT, _LNG)
     params = _requested_params(session)
     assert params["start_date"] == "2025-06-21"
     assert params["end_date"] == "2025-06-21"
@@ -137,13 +162,13 @@ def test_request_is_scoped_to_the_single_local_day():
 
 
 def test_fetch_returns_every_hour_of_the_day():
-    day = OpenMeteoProvider(session=_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
+    day = _provider(_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
     assert day is not None
     assert [record["hour"] for record in day["hours"]] == _HOURS
 
 
 def test_each_hour_carries_every_reading():
-    day = OpenMeteoProvider(session=_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
+    day = _provider(_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
     assert set(day["hours"][0]) == {
         "hour",
         "temperature_f",
@@ -156,21 +181,21 @@ def test_each_hour_carries_every_reading():
 
 
 def test_readings_are_taken_from_their_own_hour():
-    day = OpenMeteoProvider(session=_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
+    day = _provider(_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
     assert day["hours"][20]["temperature_f"] == pytest.approx(70.0)
     assert day["hours"][20]["dew_point_f"] == pytest.approx(50.0)
     assert day["hours"][20]["wind_speed_mph"] == pytest.approx(22.0)
 
 
 def test_condition_derived_from_the_hourly_wmo_code():
-    day = OpenMeteoProvider(session=_mock_session(_hourly_payload(95))).fetch(
+    day = _provider(_mock_session(_hourly_payload(95))).fetch(
         _FETCH_DATE, _LAT, _LNG
     )
     assert day["hours"][0]["condition"] == "thunderstorm"
 
 
 def test_fetch_records_the_date_it_covers():
-    day = OpenMeteoProvider(session=_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
+    day = _provider(_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
     assert day["date"] == "2025-06-21"
 
 
@@ -182,7 +207,7 @@ def test_fetch_records_the_date_it_covers():
 def test_provider_returns_none_on_network_error():
     session = MagicMock()
     session.get.side_effect = Exception("network error")
-    assert OpenMeteoProvider(session=session).fetch(_FETCH_DATE, _LAT, _LNG) is None
+    assert _provider(session).fetch(_FETCH_DATE, _LAT, _LNG) is None
 
 
 def test_provider_returns_none_on_http_error():
@@ -190,25 +215,25 @@ def test_provider_returns_none_on_http_error():
     mock_resp.raise_for_status.side_effect = Exception("500")
     session = MagicMock()
     session.get.return_value = mock_resp
-    assert OpenMeteoProvider(session=session).fetch(_FETCH_DATE, _LAT, _LNG) is None
+    assert _provider(session).fetch(_FETCH_DATE, _LAT, _LNG) is None
 
 
 def test_provider_returns_none_on_malformed_payload():
-    assert OpenMeteoProvider(session=_mock_session({"unexpected": {}})).fetch(
+    assert _provider(_mock_session({"unexpected": {}})).fetch(
         _FETCH_DATE, _LAT, _LNG
     ) is None
 
 
 def test_provider_returns_none_on_empty_series():
     empty = {"hourly": {"time": [], "temperature_2m": []}}
-    assert OpenMeteoProvider(session=_mock_session(empty)).fetch(_FETCH_DATE, _LAT, _LNG) is None
+    assert _provider(_mock_session(empty)).fetch(_FETCH_DATE, _LAT, _LNG) is None
 
 
 def test_provider_tolerates_a_missing_optional_variable():
     """A variable absent from the response becomes None, not a crash."""
     payload = _hourly_payload()
     del payload["hourly"]["dew_point_2m"]
-    day = OpenMeteoProvider(session=_mock_session(payload)).fetch(_FETCH_DATE, _LAT, _LNG)
+    day = _provider(_mock_session(payload)).fetch(_FETCH_DATE, _LAT, _LNG)
     assert day is not None
     assert day["hours"][0]["dew_point_f"] is None
 
@@ -219,7 +244,7 @@ def test_provider_tolerates_a_missing_optional_variable():
 
 
 def _day() -> dict:
-    return OpenMeteoProvider(session=_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
+    return _provider(_mock_session()).fetch(_FETCH_DATE, _LAT, _LNG)
 
 
 def test_sample_hour_picks_the_hour_containing_the_start_time():
