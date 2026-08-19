@@ -8,9 +8,17 @@ import sys
 from datetime import datetime, timezone
 from typing import IO
 
+from src.utils.secret import scrub
+
 
 class _JSONFormatter(logging.Formatter):
-    """Formats log records as single-line JSON with required structured fields."""
+    """Formats log records as single-line JSON with required structured fields.
+
+    Every log line in the process is rendered here, which is why this is where
+    credentials are scrubbed: a caller cannot opt out, and a logger built
+    somewhere that has no composition root to ask for a redactor is covered
+    anyway. See `src/utils/secret.py` for why the registry is process-wide.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
         return json.dumps({
@@ -18,7 +26,7 @@ class _JSONFormatter(logging.Formatter):
             "component": getattr(record, "component", ""),
             "severity": record.levelname,
             "duration_ms": getattr(record, "duration_ms", 0),
-            "message": record.getMessage(),
+            "message": scrub(record.getMessage()),
         })
 
 
