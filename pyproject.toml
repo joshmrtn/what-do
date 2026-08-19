@@ -26,7 +26,11 @@ dependencies = [
     "numpy>=1.26",
 ]
 
-[project.optional-dependencies]
+# PEP 735, not `[project.optional-dependencies]`, because uv installs a
+# dependency group by default and prunes an extra. As an extra, a plain
+# `uv sync` uninstalled pytest and mypy every time, and the symptom — `No module
+# named pytest` right after a successful-looking sync — reads as a broken venv.
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "mypy>=1.9",
