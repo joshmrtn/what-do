@@ -14,3 +14,10 @@ __pycache__/
 dist/
 .venv/
 venv/
+
+# Editor swap and backup files. Not tidiness — `vim .env` writes `.env.swp`
+# holding that buffer's contents, so an editor left open during `git add -A`
+# is a credential in a commit. `.env` itself being ignored does not cover it.
+*.swp
+*.swo
+*~
