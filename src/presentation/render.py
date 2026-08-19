@@ -60,7 +60,9 @@ _ALL_DAY_LABEL = "all day"
 _UNKNOWN_TIME_LABEL = "time TBC"
 
 
-def staleness_notice(run_date: date, tonight: date) -> str | None:
+def staleness_notice(
+    run_date: date, tonight: date, *, running: str | None = None
+) -> str | None:
     """Warn that the ranking on screen predates the night it is shown for.
 
     The order is the product, so a stale one passing as current is the worst
@@ -75,6 +77,10 @@ def staleness_notice(run_date: date, tonight: date) -> str | None:
     Args:
         run_date: The batch whose ranking is being shown.
         tonight: The night being shown, in the view's own zone.
+        running: How far tonight's batch has got, when one is working. "Why is
+            this yesterday's?" has two very different answers — a batch that
+            failed, and a batch that is part-way through — and only one of them
+            is something to act on.
 
     Returns:
         The warning, or None when the ranking is current. A run *ahead* of
@@ -84,9 +90,14 @@ def staleness_notice(run_date: date, tonight: date) -> str | None:
     if days <= 0:
         return None
     plural = "day" if days == 1 else "days"
+    why = (
+        f"Tonight's batch is still running — {running}."
+        if running is not None
+        else "No ranking has been produced for tonight; see logs/batch-latest.log"
+    )
     return (
         f"⚠  Showing the ranking from {run_date.isoformat()} — {days} {plural} old.\n"
-        f"   No ranking has been produced for tonight; see logs/batch-latest.log"
+        f"   {why}"
     )
 
 

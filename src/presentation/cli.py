@@ -39,8 +39,14 @@ from src.presentation.freshness import (
     latest_forecast,
     preference_state,
 )
+from src.observability.heartbeat import Heartbeat, read_heartbeat
 from src.presentation.handles import HANDLE_SIGIL, short_handle
-from src.presentation.status import StatusInputs, probe_status, render_status
+from src.presentation.status import (
+    StatusInputs,
+    probe_status,
+    render_status,
+    running_note,
+)
 from src.presentation.progress import is_interactive, spinner
 from src.composition.network import build_weather_provider
 from src.presentation.rescore import rescore_if_stale
@@ -87,6 +93,9 @@ def _default_now() -> datetime:
 PairLoader = Callable[..., list[RankedEvent]]
 #: Reads the live batch state for `--status`, given the database to ask about.
 StatusProbe = Callable[[Path], StatusInputs]
+#: Reads the heartbeat alone, for the stale banner. No lock probe: the listing
+#: is the hot path and every probe holds the batch lock for a few microseconds.
+ProgressReader = Callable[[], "Heartbeat | None"]
 
 
 def _default_status(db_path: Path) -> StatusInputs:
@@ -392,6 +401,7 @@ def _cmd_recommend(
     check_freshness: FreshnessProbe,
     rescore: Rescorer,
     load_rescore: RescoreLoader,
+    read_progress: ProgressReader,
 ) -> int:
     """Render the default view: the latest run, filtered to tonight."""
     if (conflict := _conflicting_flags(args)) is not None:
@@ -491,7 +501,15 @@ def _cmd_recommend(
     # Before anything is rendered, and to stderr like every other warning, so a
     # piped listing is unchanged and a terminal one cannot miss it. The batch
     # that fails is exactly the batch that leaves an older ranking in place.
-    notice = staleness_notice(pairs[0].ranking.run_date, tonight)
+    notice = staleness_notice(
+        pairs[0].ranking.run_date,
+        tonight,
+        running=running_note(
+            read_progress(),
+            now=get_now(),
+            fresh_within=timedelta(minutes=view.observability.stall_after_minutes),
+        ),
+    )
     if notice is not None:
         print(notice, file=stderr)
 
@@ -959,6 +977,7 @@ def run(
     rescore: Rescorer = _default_rescore,
     load_rescore: RescoreLoader = _default_rescore_record,
     probe_status: StatusProbe = _default_status,
+    read_progress: ProgressReader = read_heartbeat,
 ) -> int:
     """Run one CLI invocation and return its exit code.
 
@@ -988,6 +1007,8 @@ def run(
         probe_status: Reads the lock, the heartbeat and the run rows for
             `--status`. Injected on the same terms as the loaders, so the four
             states can be tested without arranging a real dying batch.
+        read_progress: Reads the heartbeat for the stale banner, so a listing
+            older than tonight can say whether a batch is working on it.
 
     Returns:
         0 on success, including an empty database. 1 for a usage error.
@@ -1023,6 +1044,7 @@ def run(
         check_freshness=check_freshness,
         rescore=rescore,
         load_rescore=load_rescore,
+        read_progress=read_progress,
     )
 
 

@@ -154,6 +154,36 @@ def _is_live(heartbeat: Heartbeat | None, run: RunRecord | None) -> bool:
     return heartbeat is not None and run is not None and run.completed_at is None
 
 
+def running_note(
+    heartbeat: Heartbeat | None,
+    *,
+    now: datetime,
+    fresh_within: timedelta,
+) -> str | None:
+    """A phrase for the stale banner, or None when no batch is working.
+
+    Reads the heartbeat and deliberately not the lock. `--status` is an
+    explicit question and can afford the probe; the listing is the hot path,
+    run many times a day, and every probe holds the batch lock for a few
+    microseconds. Freshness answers this question well enough — a heartbeat
+    updated a minute ago is a batch that is working, whatever the lock says,
+    and one that has not moved in an hour is a file left behind.
+
+    Args:
+        heartbeat: The live state file, or None.
+        now: Injected clock.
+        fresh_within: How recently it must have moved to count as alive. The
+            stall threshold, because that is already the answer to "how long
+            may this go quiet and still be working".
+    """
+    if heartbeat is None or now - heartbeat.updated_at >= fresh_within:
+        return None
+    note = _headline(heartbeat)
+    if heartbeat.deadline is not None and heartbeat.deadline > now:
+        note += f", ~{format_duration(heartbeat.deadline - now)} of budget left"
+    return note
+
+
 def _died_without_reporting(
     open_run: RunRecord | None, latest_run: RunRecord | None
 ) -> bool:

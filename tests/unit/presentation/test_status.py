@@ -9,7 +9,12 @@ import pytest
 from src.models.run import RunRecord
 from src.observability.heartbeat import Heartbeat, HeartbeatFile, Item
 from src.observability.reporter import FINISHED, Progress
-from src.presentation.status import StatusInputs, probe_status, render_status
+from src.presentation.status import (
+    StatusInputs,
+    probe_status,
+    render_status,
+    running_note,
+)
 
 _START = datetime(2026, 8, 18, 6, 0, tzinfo=timezone.utc)
 _STALL_AFTER = timedelta(minutes=15)
@@ -329,3 +334,37 @@ class TestTheProbe:
 
         assert asked == ["run-77"]
         assert inputs.heartbeat_run.completed_at == _at(480)
+
+
+class TestTheRunningNote:
+    """What the stale banner borrows. Deliberately reads the heartbeat alone.
+
+    `--status` is an explicit question and can afford the lock probe; the
+    listing is the hot path, run many times a day, and every probe holds the
+    batch lock for a few microseconds. Freshness of the file answers the
+    banner's question well enough: a heartbeat updated a minute ago is a batch
+    that is working, whatever the lock says.
+    """
+
+    def test_a_fresh_heartbeat_becomes_a_phrase(self):
+        note = running_note(_beat(), now=_at(242), fresh_within=_STALL_AFTER)
+
+        assert "extraction 253/745" in note
+        assert "of budget left" in note
+
+    def test_a_stale_heartbeat_says_nothing(self):
+        """Left behind by a batch that died. The banner's other half — that no
+        ranking was produced and the log is where to look — is the honest
+        answer then."""
+        assert running_note(_beat(), now=_at(600), fresh_within=_STALL_AFTER) is None
+
+    def test_no_heartbeat_says_nothing(self):
+        assert running_note(None, now=_at(1), fresh_within=_STALL_AFTER) is None
+
+    def test_an_unbounded_run_reports_the_queue_alone(self):
+        note = running_note(
+            _beat(deadline=None), now=_at(242), fresh_within=_STALL_AFTER
+        )
+
+        assert "budget" not in note
+        assert "extraction 253/745" in note

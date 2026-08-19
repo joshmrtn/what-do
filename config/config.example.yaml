@@ -684,3 +684,26 @@ view:
   # because Open-Meteo's hourly series does not move within the hour, so a
   # shorter bound spends requests and buys nothing.
   refresh_ttl_minutes: 60
+
+# ---------------------------------------------------------------------------
+# Observability — how much a running batch says about itself
+# ---------------------------------------------------------------------------
+# A batch takes eight hours on this hardware and used to emit its first line at
+# 02:00 and its next at 14:01. These decide how often it speaks, and when
+# silence becomes suspicious.
+observability:
+  # Emit a progress line every this much of the queue. Two rules fire together,
+  # whichever comes first, because one alone reads badly at one of the two
+  # speeds this system runs at: milestones alone put two hours between lines on
+  # local Ollama, and a time floor alone would write a hundred lines against a
+  # hosted API that finishes the same queue in an hour.
+  progress_milestone_fraction: 0.25
+  # ...and never let a working stage go longer than this without saying so.
+  progress_heartbeat_minutes: 20
+  # An event in the model's hands this long is stuck rather than slow, and
+  # `what-do --status` says so. One number rather than a multiple of the
+  # observed rate: at 65s an event this is already ~14x the mean, and against a
+  # fast provider a stall shows up as the run overrunning long before it
+  # matters. Also how fresh the heartbeat must be for the stale-listing banner
+  # to say a batch is working on tonight.
+  stall_after_minutes: 15

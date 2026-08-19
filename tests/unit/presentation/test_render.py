@@ -1001,3 +1001,32 @@ class TestExplainingAnUnrankedEvent:
 
         assert "trivia" in out
         assert "gemma4:e4b" in out
+
+
+class TestTheStalenessNoticeSaysWhy:
+    """"Why is this yesterday's?" has two very different answers — a batch that
+    failed, and a batch that is working on it right now. Only one of them is
+    something to do anything about."""
+
+    def test_a_running_batch_is_named_instead_of_the_log(self):
+        notice = staleness_notice(
+            date(2025, 6, 20), TODAY,
+            running="extraction 253/745, ~3h59m of budget left",
+        )
+
+        assert "still running" in notice
+        assert "extraction 253/745" in notice
+
+    def test_the_date_and_age_survive(self):
+        notice = staleness_notice(date(2025, 6, 20), TODAY, running="extraction 1/2")
+
+        assert "2025-06-20" in notice
+        assert "1 day old" in notice
+
+    def test_without_a_running_batch_it_points_at_the_log(self):
+        assert "batch-latest.log" in staleness_notice(date(2025, 6, 20), TODAY)
+
+    def test_a_current_ranking_says_nothing_even_mid_run(self):
+        """A batch working on tomorrow's listing is not a reason to warn about
+        tonight's, which is current."""
+        assert staleness_notice(TODAY, TODAY, running="extraction 253/745") is None

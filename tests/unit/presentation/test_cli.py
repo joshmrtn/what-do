@@ -158,7 +158,7 @@ class _Harness:
         self.load_events_calls += 1
         return self.events
 
-    def invoke(self, *argv: str, probe_status=None) -> int:
+    def invoke(self, *argv: str, probe_status=None, read_progress=None) -> int:
         return run(
             list(argv),
             get_now=lambda: self.now,
@@ -169,6 +169,7 @@ class _Harness:
             load_all_events=self._load_events,
             db_ready=lambda _: self.db_ready,
             **({} if probe_status is None else {"probe_status": probe_status}),
+            **({} if read_progress is None else {"read_progress": read_progress}),
         )
 
     @property
@@ -771,3 +772,55 @@ class TestStatus:
         ))
 
         assert harness.out.startswith("stalled")
+
+
+class TestTheStaleBannerSaysWhyItIsStale:
+    """The bug the observability plan was written for: `what-do` answered with
+    the previous day's recommendations while a batch was twelve hours into
+    producing today's, and nothing on screen said either thing."""
+
+    @staticmethod
+    def _beat(updated_at, done=253, total=745):
+        return Heartbeat(
+            run_id="run-1", stage="extraction", done=done, total=total,
+            started_at=updated_at - timedelta(hours=4), updated_at=updated_at,
+            in_flight=Item("evt-9", "Salem Jazz", updated_at),
+        )
+
+    def _yesterdays(self):
+        return [replace(pair, ranking=replace(pair.ranking, run_date=TODAY - timedelta(days=1)))
+                for pair in PAIRS]
+
+    def test_a_working_batch_is_named_in_the_banner(self):
+        harness = _Harness(pairs=self._yesterdays())
+
+        harness.invoke(read_progress=lambda: self._beat(NOW - timedelta(minutes=1)))
+
+        assert "still running" in harness.err
+        assert "extraction 253/745" in harness.err
+
+    def test_a_stale_heartbeat_leaves_the_original_answer(self):
+        """Left behind by a batch that died. Then the honest answer is that no
+        ranking was produced and the log is where to look."""
+        harness = _Harness(pairs=self._yesterdays())
+
+        harness.invoke(read_progress=lambda: self._beat(NOW - timedelta(hours=6)))
+
+        assert "batch-latest.log" in harness.err
+
+    def test_a_current_listing_says_nothing_either_way(self):
+        harness = _Harness()
+
+        harness.invoke(read_progress=lambda: self._beat(NOW - timedelta(minutes=1)))
+
+        assert "still running" not in harness.err
+
+    def test_the_results_are_rendered_regardless(self):
+        """Stale recommendations beat none, and this warning has never been a
+        refusal."""
+        harness = _Harness(pairs=self._yesterdays())
+
+        code = harness.invoke(read_progress=lambda: self._beat(NOW - timedelta(minutes=1)))
+
+        assert code == 0
+        assert "Tonight Early" in harness.out
