@@ -202,6 +202,16 @@ class RunRepository(Protocol):
         """
         ...
 
+    def latest(self) -> RunRecord | None:
+        """The newest run row, finished or not.
+
+        Deliberately not `open_run`'s counterpart. That one hunts for a crash
+        and must ignore any successful run that came after it; this one answers
+        *when did this system last do anything* — which is what `--status`
+        reports when nothing is running.
+        """
+        ...
+
     def get(self, run_id: str) -> RunRecord | None:
         """One run's record, or None if no such run exists."""
         ...

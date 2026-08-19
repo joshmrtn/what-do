@@ -22,6 +22,7 @@ import yaml
 
 
 from src.config import (
+    ObservabilityConfig,
     ViewConfig,
     DEFAULT_BLOCKLIST_PATH,
     DEFAULT_DAY_STARTS_AT,
@@ -39,6 +40,7 @@ from src.presentation.freshness import (
     preference_state,
 )
 from src.presentation.handles import HANDLE_SIGIL, short_handle
+from src.presentation.status import StatusInputs, probe_status, render_status
 from src.presentation.progress import is_interactive, spinner
 from src.composition.network import build_weather_provider
 from src.presentation.rescore import rescore_if_stale
@@ -60,7 +62,7 @@ from src.presentation.render import (
     staleness_notice,
 )
 from src.storage.sqlite.connection import DEFAULT_DB_PATH, has_schema
-from src.composition.storage import build_view_storage
+from src.composition.storage import build_run_repository, build_view_storage
 from src.storage.queries import load_ranked_events
 
 _DEFAULT_SEEDS_PATH = Path("data/seeds.yaml")
@@ -83,6 +85,19 @@ def _default_now() -> datetime:
 
 
 PairLoader = Callable[..., list[RankedEvent]]
+#: Reads the live batch state for `--status`, given the database to ask about.
+StatusProbe = Callable[[Path], StatusInputs]
+
+
+def _default_status(db_path: Path) -> StatusInputs:
+    """The lock, the heartbeat, and the run history if there is one.
+
+    `has_schema` rather than `Path.exists`, because `sqlite3.connect` creates a
+    zero-byte file for any path it is handed — and asking for status is the
+    most likely moment for someone to name a database that does not exist yet.
+    """
+    runs = build_run_repository(db_path) if has_schema(db_path) else None
+    return probe_status(runs)
 
 def _default_pairs(
     db_path: Path,
@@ -262,6 +277,9 @@ class ViewSettings:
             reads under the same name. Falls back to the default when config is
             unreadable — the same degraded path as the zone, and announced by
             the same warning.
+        observability: How long an item may be in flight before `--status`
+            calls the batch stalled. Falls back to the dataclass default on the
+            same terms as everything else here.
         view: How many events a listing shows, how far `--upcoming` reaches,
             how many reasons appear, and when a span becomes a daily programme.
             Falls back to the dataclass defaults when config is unreadable, on
@@ -277,6 +295,7 @@ class ViewSettings:
     source_urls: Mapping[str, str] = field(default_factory=dict)
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     view: ViewConfig = field(default_factory=ViewConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     warning: str | None = None
 
 
@@ -299,6 +318,7 @@ def default_view_settings() -> ViewSettings:
             source_urls=config.sources.site_url_by_source_type(),
             embedding_model=config.models.embeddings,
             view=config.view,
+            observability=config.observability,
         )
     except (ConfigError, OSError, ZoneInfoNotFoundError) as exc:
         system_zone = datetime.now().astimezone().tzinfo
@@ -907,6 +927,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show score components and every reason"
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Report whether a batch is running, how far along, and what is wrong",
+    )
     parser.add_argument("--db", help=f"Path to the database (default: {DEFAULT_DB_PATH})")
     parser.add_argument("--run-date", help="Read an earlier batch, as YYYY-MM-DD")
 
@@ -933,6 +958,7 @@ def run(
     check_freshness: FreshnessProbe = _default_freshness,
     rescore: Rescorer = _default_rescore,
     load_rescore: RescoreLoader = _default_rescore_record,
+    probe_status: StatusProbe = _default_status,
 ) -> int:
     """Run one CLI invocation and return its exit code.
 
@@ -959,6 +985,9 @@ def run(
             returns None to leave the stored one alone.
         load_rescore: Reads whether a run has already been recomputed, for
             `--explain`. Reading only — `--explain` never triggers one.
+        probe_status: Reads the lock, the heartbeat and the run rows for
+            `--status`. Injected on the same terms as the loaders, so the four
+            states can be tested without arranging a real dying batch.
 
     Returns:
         0 on success, including an empty database. 1 for a usage error.
@@ -973,6 +1002,15 @@ def run(
     if args.command == "add-source":
         return _cmd_add_source(args, out, err)
 
+    # Before the recommendation path, and before any loader runs: this is asked
+    # *while* a batch is working, when reading the ranking is both irrelevant
+    # to the question and the slowest thing the CLI does.
+    if args.status:
+        return _cmd_status(
+            args, out, get_now=get_now, probe=probe_status,
+            settings=load_view_settings(),
+        )
+
     return _cmd_recommend(
         args,
         get_now=get_now,
@@ -986,6 +1024,37 @@ def run(
         rescore=rescore,
         load_rescore=load_rescore,
     )
+
+
+def _cmd_status(
+    args: argparse.Namespace,
+    stdout: TextIO,
+    *,
+    get_now: Callable[[], datetime],
+    probe: StatusProbe,
+    settings: ViewSettings,
+) -> int:
+    """Print what the batch is doing. Always exits 0.
+
+    A non-zero exit would make `--status` unusable in the one place it is most
+    wanted — a shell pipeline watching a run — where a failed batch is news to
+    report, not an error in the reporting.
+    """
+    inputs = probe(Path(args.db) if args.db else DEFAULT_DB_PATH)
+    print(
+        render_status(
+            lock_held=inputs.lock_held,
+            heartbeat=inputs.heartbeat,
+            heartbeat_run=inputs.heartbeat_run,
+            open_run=inputs.open_run,
+            latest_run=inputs.latest_run,
+            now=get_now(),
+            stall_after=timedelta(minutes=settings.observability.stall_after_minutes),
+            zone=settings.zone,
+        ),
+        file=stdout,
+    )
+    return 0
 
 
 def main() -> None:

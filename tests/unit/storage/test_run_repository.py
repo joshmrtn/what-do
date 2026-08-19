@@ -248,3 +248,44 @@ class TestScoringProvenance:
         run_id = repo.start(_START)
 
         assert repo.get(run_id).scoring_config is None
+
+
+class TestTheLatestRun:
+    """What `what-do --status` reports when nothing is running.
+
+    Deliberately not `open_run`'s counterpart. That one hunts for a crash and
+    must therefore ignore the successful run that came after it; this one
+    answers *when did this system last do anything, and how did it go* — the
+    newest row, finished or not.
+    """
+
+    def test_nothing_has_ever_run(self, repo):
+        assert repo.latest() is None
+
+    def test_the_newest_row_wins(self, repo, revisions):
+        revision = _a_revision(revisions)
+        older = repo.start(_START, preference_revision_id=revision)
+        newer = repo.start(_START + timedelta(days=1), preference_revision_id=revision)
+        repo.finish(older, outcome="success", completed_at=_START + timedelta(hours=8))
+
+        assert repo.latest().run_id == newer
+
+    def test_it_carries_the_outcome(self, repo, revisions):
+        run_id = repo.start(_START, preference_revision_id=_a_revision(revisions))
+        repo.finish(
+            run_id, outcome="partial", completed_at=_START + timedelta(hours=8),
+            errors=["extraction failed: no reply"],
+        )
+
+        latest = repo.latest()
+        assert latest.outcome == "partial"
+        assert latest.completed_at == _START + timedelta(hours=8)
+        assert latest.errors == ["extraction failed: no reply"]
+
+    def test_an_unfinished_run_is_still_the_latest(self, repo, revisions):
+        """A run that is open is the last thing this system did, and reporting
+        the one before it would describe a night that is over as current."""
+        run_id = repo.start(_START, preference_revision_id=_a_revision(revisions))
+
+        assert repo.latest().run_id == run_id
+        assert repo.latest().completed_at is None

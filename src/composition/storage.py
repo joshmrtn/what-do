@@ -127,6 +127,16 @@ def build_view_storage(db_path: Path | str, embedding_model: str) -> ViewStorage
     )
 
 
+def build_run_repository(db_path: Path | str) -> RunRepository:
+    """Just the run history, which is all `what-do --status` reads.
+
+    Its own factory rather than `build_view_storage`, which would construct
+    seven repositories and demand an embedding model to answer a question that
+    has nothing to do with either.
+    """
+    return SqliteRunRepository(db_path)
+
+
 def build_batch_storage(db_path: Path | str, embedding_model: str) -> BatchStorage:
     """Everything a batch reads and writes.
 

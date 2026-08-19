@@ -41,7 +41,8 @@ from src.storage.rekey import rekey_to_content_ids
 from src.storage.snapshot import snapshot_database
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
-from src.observability.reporter import ProgressLog
+from src.observability.heartbeat import HEARTBEAT_PATH, HeartbeatFile
+from src.observability.reporter import Progress, ProgressFn, ProgressLog
 from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.preference_revision import PreferenceRevision
@@ -139,6 +140,7 @@ def run_batch(
     dry_run: bool = False,
     ingest_only: bool = False,
     raw_dump_fn: Callable[[list[Any]], None] | None = None,
+    heartbeat_path: Path | None = None,
     candidate_repository: CandidateRepository,
     event_repository: EventRepository,
     run_repository: RunRepository,
@@ -176,6 +178,10 @@ def run_batch(
         ingest_only: Fetch, filter and stop. Proves every source still works in
             minutes rather than the hours a full run costs, and leaves the
             candidates behind so `skip_ingest` can process them later.
+        heartbeat_path: Where to write live progress for `what-do --status`,
+            or None to run unwatched. Passed rather than defaulted: a default
+            only production reaches is a default no test exercises, and every
+            suite run would otherwise write over the one path a live batch uses.
         raw_dump_fn: Given every candidate as fetched, with the reason any was
             discarded. Supplied only when a diagnostic run asks for the dump,
             since collecting it holds the whole fetch in memory.
@@ -263,6 +269,11 @@ def run_batch(
         finished on the way out would erase the one signal the start-row
         exists to give.
         """
+        # Before the history row is closed, not after: the pair is read
+        # together, and a moment where the run is complete *and* a heartbeat
+        # still names it is a moment `--status` would call a death.
+        if heartbeat is not None:
+            heartbeat.clear()
         if run_id is not None:
             runs_repo.finish(
                 run_id,
@@ -294,17 +305,39 @@ def run_batch(
         if not dry_run and events:
             events_repo.save(events)
 
-    def _progress_log(_stage_name: str) -> ProgressLog:
-        """One policy per stage, because each keeps its own reckoning.
+    # One file for the whole run, and only for a run that has a `run_id` to
+    # own it: a dry run holds no lock and writes no history row, so a heartbeat
+    # from one could not be told from a real batch that died.
+    heartbeat = (
+        HeartbeatFile(heartbeat_path, run_id=run_id)
+        if heartbeat_path is not None and run_id is not None
+        else None
+    )
 
-        Sharing an instance would carry extraction's start time and milestone
-        into embedding, which runs after it and against a different queue.
+    def _progress(stage_name: str) -> ProgressFn:
+        """Where one stage's reports go: the log, and the live state file.
+
+        A policy per stage, because each keeps its own reckoning — sharing an
+        instance would carry extraction's start time and milestone into
+        embedding, which runs after it against a different queue.
+
+        Two sinks with two cadences off one report. The log is rationed,
+        because a person reads it; the file is written every time, because
+        `--status` asks it a question the log cannot answer.
         """
-        return ProgressLog(
+        log = ProgressLog(
             logger,
             milestone_fraction=config.observability.progress_milestone_fraction,
             heartbeat=timedelta(minutes=config.observability.progress_heartbeat_minutes),
         )
+        if heartbeat is None:
+            return log
+
+        def report(progress: Progress) -> None:
+            log(progress)
+            heartbeat(progress)
+
+        return report
 
     def _save_one(event: Event) -> None:
         """Persist a single freshly extracted event.
@@ -433,7 +466,7 @@ def run_batch(
     # rather than in either stage: the stages report every item and decide
     # nothing, so how loud a run is stays one decision in one place — which is
     # what has to change the day extraction stops taking minutes an event.
-    extraction_stage.set_progress_fn(_progress_log("extraction"))
+    extraction_stage.set_progress_fn(_progress("extraction"))
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
     # Read off the stage rather than counted here: an event with no hash may
     # have been deferred by the budget or refused by an unavailable provider,
@@ -456,7 +489,7 @@ def run_batch(
         # live ones, in the same transaction, carrying their supersession.
         _stage("event persistence", lambda: events_repo.replace([], events + displaced))
 
-    embedding_stage.set_progress_fn(_progress_log("embedding"))
+    embedding_stage.set_progress_fn(_progress("embedding"))
     embedded = _stage("embedding", lambda: embedding_stage.process(events))
     if embedded is None:
         # Ranking on absent vectors produces meaningless order, and it would be
@@ -997,6 +1030,7 @@ def run(
             preference_revision_repository=dependencies.preference_revision_repository,
             identity_state_repository=dependencies.identity_state_repository,
             preference_revision=dependencies.preference_revision,
+            heartbeat_path=HEARTBEAT_PATH,
             logger=logger,
             run_date=run_date,
             get_now=get_now,

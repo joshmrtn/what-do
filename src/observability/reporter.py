@@ -50,9 +50,14 @@ class Progress:
 
 
 class ProgressFn(Protocol):
-    """What a stage is handed. Deliberately one argument and no return."""
+    """What a stage is handed. Deliberately one argument and no return.
 
-    def __call__(self, report: Progress) -> None:
+    Positional-only, so any callable of the right shape satisfies it — a sink
+    that happened to name its parameter differently is not a different
+    contract.
+    """
+
+    def __call__(self, report: Progress, /) -> None:
         ...
 
 

@@ -1,6 +1,7 @@
 """Unit tests for CLI argument handling and dispatch."""
 
 import io
+from dataclasses import replace
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -22,7 +23,11 @@ from src.config import (
     SourcesConfig,
     VenueDiscoveryConfig,
 )
+from src.config import ObservabilityConfig
+from src.models.run import RunRecord
+from src.observability.heartbeat import Heartbeat, Item
 from src.presentation.cli import ViewSettings, default_view_settings, run
+from src.presentation.status import StatusInputs
 from src.scoring.similarity import Reason
 
 TZ = timezone(timedelta(hours=-4))
@@ -153,7 +158,7 @@ class _Harness:
         self.load_events_calls += 1
         return self.events
 
-    def invoke(self, *argv: str) -> int:
+    def invoke(self, *argv: str, probe_status=None) -> int:
         return run(
             list(argv),
             get_now=lambda: self.now,
@@ -163,6 +168,7 @@ class _Harness:
             load_pairs=self._load_ranked,
             load_all_events=self._load_events,
             db_ready=lambda _: self.db_ready,
+            **({} if probe_status is None else {"probe_status": probe_status}),
         )
 
     @property
@@ -704,3 +710,64 @@ class TestUpcomingAppliesAfterSunset:
 
         assert "Has Sunset" in harness.out
         assert "No Sunset" not in harness.out
+
+
+class TestStatus:
+    """`--status` answers a question the listing cannot: not *what should we do
+    tonight* but *is the machine that answers that still working*."""
+
+    @staticmethod
+    def _inputs(**kwargs):
+        defaults = dict(
+            lock_held=True, heartbeat=None, heartbeat_run=None,
+            open_run=None, latest_run=None,
+        )
+        defaults.update(kwargs)
+        return StatusInputs(**defaults)
+
+    def test_it_reports_the_state_and_exits_zero(self):
+        harness = _Harness()
+
+        code = harness.invoke("--status", probe_status=lambda db_path: self._inputs())
+
+        assert code == 0
+        assert harness.out.startswith("running")
+
+    def test_it_never_loads_a_ranking(self):
+        """It is asked while a batch is mid-run, when reading the ranking is
+        both irrelevant and the slowest thing the CLI does."""
+        harness = _Harness()
+
+        harness.invoke("--status", probe_status=lambda db_path: self._inputs())
+
+        assert harness.load_ranked_calls == 0
+        assert harness.load_events_calls == 0
+
+    def test_it_asks_about_the_database_it_was_given(self):
+        seen = []
+
+        def probe(db_path):
+            seen.append(db_path)
+            return self._inputs()
+
+        _Harness().invoke("--status", "--db", "/tmp/elsewhere.db", probe_status=probe)
+
+        assert [str(p) for p in seen] == ["/tmp/elsewhere.db"]
+
+    def test_it_reads_the_stall_threshold_from_config(self):
+        """Same seam the zone and the view limits come through, so a `--status`
+        run against an unreadable config still answers rather than dying."""
+        harness = _Harness(view=replace(
+            VIEW, observability=ObservabilityConfig(stall_after_minutes=1)
+        ))
+        beat = Heartbeat(
+            run_id="run-1", stage="extraction", done=1, total=10,
+            started_at=NOW - timedelta(hours=1), updated_at=NOW - timedelta(minutes=30),
+            in_flight=Item("evt-1", "Something Slow", NOW - timedelta(minutes=30)),
+        )
+
+        harness.invoke("--status", probe_status=lambda db_path: self._inputs(
+            heartbeat=beat, heartbeat_run=RunRecord(run_id="run-1", started_at=NOW),
+        ))
+
+        assert harness.out.startswith("stalled")

@@ -12,6 +12,7 @@ from src.composition.batch import BatchDependencies
 from src.ingestion.id_churn import ChurnTally
 from src.ingestion.ingestion_service import RawCandidateRecord
 from src.models.event_candidate import EventCandidate
+from src.observability.heartbeat import HEARTBEAT_PATH
 from src.scheduler import BatchResult, run
 from src.config_check import WARNING, Finding as ConfigFinding
 from src.storage.schema_check import Finding, check_database
@@ -521,3 +522,16 @@ class TestConfigCheckIsReported:
         )
 
         assert seen == [tmp_path / "given.yaml"]
+
+
+def test_the_batch_is_told_where_to_write_its_heartbeat(invoke):
+    """The one place the live path is named.
+
+    `run_batch` takes it rather than defaulting to it, so that no test writes
+    over the file a real batch is using — which leaves this wiring as the only
+    thing standing between the feature and being built, typed and never
+    forwarded.
+    """
+    _, batch, _, _ = invoke([])
+
+    assert batch.kwargs["heartbeat_path"] == HEARTBEAT_PATH

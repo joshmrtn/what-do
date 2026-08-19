@@ -75,6 +75,18 @@ class InMemoryRunRepository:
             return None
         return max(unfinished, key=lambda record: record.started_at)
 
+    def latest(self) -> RunRecord | None:
+        """The newest run row, finished or not.
+
+        Deliberately not `open_run`'s counterpart. That one hunts for a crash
+        and must ignore any successful run that came after it; this one answers
+        *when did this system last do anything* — which is what `--status`
+        reports when nothing is running.
+        """
+        if not self._runs:
+            return None
+        return max(self._runs.values(), key=lambda record: record.started_at)
+
     def get(self, run_id: str) -> RunRecord | None:
         """One run's record, or None if no such run exists."""
         return self._runs.get(run_id)

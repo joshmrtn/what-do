@@ -40,6 +40,7 @@ from src.storage.sqlite.extraction_observations import (
     SqliteExtractionObservationRepository,
 )
 from src.processing.extraction_stage import ExtractionStage, extraction_input_hash
+from src.observability.heartbeat import read_heartbeat
 from src.scheduler import run_batch
 from src.scoring.embedding_stage import EmbeddingStage
 from src.scoring.preferences import PreferenceSet
@@ -2182,3 +2183,53 @@ class TestTheBatchSaysWhereItHasGot:
         _, log = self._watch(db)
 
         assert "budget" not in log
+
+
+class TestTheRunLeavesALiveStateFile:
+    """What `--status` reads, and what a killed batch leaves behind.
+
+    The database cannot answer this. A process that is killed writes no row
+    saying it was killed, so the only evidence of a death is a heartbeat that
+    outlived the run it names.
+    """
+
+    def _path(self, tmp_path):
+        return tmp_path / "progress.json"
+
+    def test_a_finished_run_leaves_nothing_behind(self, db, tmp_path):
+        """A file present after a clean exit would be read as a death, which is
+        the one wrong answer this whole mechanism can give."""
+        _run(db, heartbeat_path=self._path(tmp_path))
+
+        assert read_heartbeat(self._path(tmp_path)) is None
+
+    def test_the_file_is_written_while_the_run_is_working(self, db, tmp_path):
+        """Read from inside extraction, because by the end it is gone."""
+        seen = []
+        path = self._path(tmp_path)
+
+        class _Watching(_ExtractionModel):
+            def extract(self, *args, **kwargs):
+                seen.append(read_heartbeat(path))
+                return super().extract(*args, **kwargs)
+
+        stage = ExtractionStage(_Watching(), None, _stage_log(), get_now=lambda: NOW)
+        _run(db, heartbeat_path=path, deps={"extraction_stage": _StageSpy(stage)})
+
+        assert seen and seen[0] is not None
+        assert seen[0].stage == "extraction"
+        assert seen[0].in_flight is not None, "the event the model has right now"
+
+    def test_a_dry_run_writes_no_heartbeat(self, db, tmp_path):
+        """It holds no lock and opens no run, so a file from one could not be
+        told apart from a real batch that died."""
+        _run(db, heartbeat_path=self._path(tmp_path), dry_run=True)
+
+        assert not self._path(tmp_path).exists()
+
+    def test_a_run_without_a_path_is_unwatched(self, db):
+        """Every test that does not care about progress passes nothing, and
+        must not write over the file a live batch is using."""
+        result, _, _, _ = _run(db)
+
+        assert result.outcome == "success"
