@@ -36,6 +36,15 @@ what-do-run-batch
 what-do
 ```
 
+A batch takes hours on local hardware, so it says where it has got to:
+
+```bash
+what-do --status     # running / stalled / died / idle, with progress and what binds
+```
+
+A listing older than tonight always says so, and says whether a batch is
+working on it.
+
 ## Requirements
 
 - Python 3.11+
