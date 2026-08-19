@@ -192,20 +192,25 @@ class EnrichmentService:
         }
 
     def _within(self, event_date: date, horizon_days: int) -> bool:
-        """Whether a date falls between today and a provider's own horizon.
+        """Whether a date is one of the next `horizon_days` a provider answers.
+
+        `horizon_days` is a **count of days including today**, matching how a
+        provider states its own range — Open-Meteo publishes `forecast_days`,
+        not an offset. Read as an offset the bound reaches one day too far, and
+        that day is refused on every run; see `weather.forecast_horizon_days`.
 
         Judged in the configured zone rather than the machine's: "today" for a
         listing is a local wall-clock day.
         """
         tz = zoneinfo.ZoneInfo(self._config.location.timezone)
         today = self._get_now().astimezone(tz).date()
-        return today <= event_date <= today + timedelta(days=horizon_days)
+        return today <= event_date < today + timedelta(days=horizon_days)
 
     def _forecastable(self, event_date: date) -> bool:
         """Whether the provider could answer for this date at all.
 
         A politeness bound before anything else happens. The provider answers
-        about sixteen days ahead and nothing behind; the ranking horizon is
+        sixteen days counting today and nothing behind; the ranking horizon is
         ninety, so most dates in a listing are questions it cannot answer. A
         `None` reply is not cached, so each of those was re-asked on every batch
         run and every rescore — measured at 74 pointless requests a time.

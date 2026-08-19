@@ -167,15 +167,33 @@ class TestForecastHorizon:
 
         assert provider.asked == [TODAY]
 
-    def test_the_last_day_of_the_horizon_is_fetched(self, tmp_path):
-        """Inclusive: the bound names a day the API answers, not the first it does not."""
-        edge = TODAY + timedelta(days=16)
+    def test_the_last_day_the_provider_answers_is_fetched(self, tmp_path):
+        """A count of answerable days, so sixteen reaches today plus fifteen."""
+        edge = TODAY + timedelta(days=15)
 
         assert _asked_for(tmp_path, [edge], _config(forecast_horizon_days=16)) == [edge]
 
-    def test_a_date_beyond_the_horizon_is_never_asked_for(self, tmp_path):
-        """Open-Meteo answers about sixteen days. Asking for day ninety is noise."""
-        beyond = TODAY + timedelta(days=17)
+    def test_the_day_past_the_providers_range_is_never_asked_for(self, tmp_path):
+        """The off-by-one that put one 400 in every batch log, found 2026-08-19.
+
+        `forecast_horizon_days` counts the days the provider answers, today
+        included — which is how Open-Meteo states its own limit, as
+        `forecast_days`. Read as an offset instead, sixteen reaches a
+        seventeenth day that does not exist, and the API says so:
+
+            {"error":true,"reason":"Parameter 'start_date' is out of allowed
+                                    range from 2026-05-18 to 2026-09-03"}
+
+        Measured on 2026-08-19, that upper bound is today+15. The date the batch
+        asked for and was refused was today+16.
+        """
+        past_the_range = TODAY + timedelta(days=16)
+
+        assert _asked_for(tmp_path, [past_the_range], _config(forecast_horizon_days=16)) == []
+
+    def test_a_date_far_beyond_the_horizon_is_never_asked_for(self, tmp_path):
+        """Open-Meteo answers sixteen days. Asking for day ninety is noise."""
+        beyond = TODAY + timedelta(days=40)
 
         assert _asked_for(tmp_path, [beyond], _config(forecast_horizon_days=16)) == []
 
@@ -184,25 +202,33 @@ class TestForecastHorizon:
         assert _asked_for(tmp_path, [TODAY - timedelta(days=1)]) == []
 
     def test_the_horizon_is_configurable(self, tmp_path):
-        near = TODAY + timedelta(days=3)
-        far = TODAY + timedelta(days=10)
+        """Asserted at the boundary, because that is the only place it shows.
 
-        asked = _asked_for(tmp_path, [near, far], _config(forecast_horizon_days=5))
+        A near/far pair says nothing about *which* reading of the number is in
+        force — today+3 is inside a horizon of five whether the bound counts
+        days or offsets them. Only the last day and the first excluded one can
+        tell the two apart, so those are what this pins.
+        """
+        config = _config(forecast_horizon_days=5)
+        last_answerable = TODAY + timedelta(days=4)
+        first_refused = TODAY + timedelta(days=5)
 
-        assert asked == [near]
+        assert _asked_for(tmp_path, [last_answerable], config) == [last_answerable]
+        assert _asked_for(tmp_path, [first_refused], config) == []
 
     def test_a_ninety_day_listing_costs_a_horizon_of_requests(self, tmp_path):
         """The live shape, as one assertion.
 
         Ninety-eight dates went out and twenty-four came back. What goes out now
-        is bounded by what can come back.
+        is bounded by what can come back — and by exactly what can, with no
+        seventeenth day the provider would refuse.
         """
         days = [TODAY + timedelta(days=offset) for offset in range(90)]
 
         asked = _asked_for(tmp_path, days, _config(forecast_horizon_days=16))
 
-        assert len(asked) == 17, "one per day from today to the horizon, inclusive"
-        assert max(asked) == TODAY + timedelta(days=16)
+        assert len(asked) == 16, "the count of days the provider answers, today included"
+        assert max(asked) == TODAY + timedelta(days=15)
 
 
 class TestUnchangedBehaviour:
@@ -291,22 +317,39 @@ class TestAirQualityHorizon:
         wanted = TODAY + timedelta(days=2)
 
         assert _aqi_asked_for(
-            tmp_path, [wanted], _config(air_quality_horizon_days=5)
+            tmp_path, [wanted], _config(air_quality_horizon_days=7)
         ) == [wanted]
 
-    def test_a_date_beyond_it_is_never_asked_for(self, tmp_path):
-        beyond = TODAY + timedelta(days=6)
+    def test_the_last_day_the_service_answers_is_fetched(self, tmp_path):
+        """Seven days counting today, which is one more than we used to ask for.
 
-        assert _aqi_asked_for(tmp_path, [beyond], _config(air_quality_horizon_days=5)) == []
+        The bound was 5 and had never been measured against anything. Asked for
+        a date it cannot answer, the service names its own range the same way
+        the forecast host does:
+
+            {"error":true,"reason":"Parameter 'start_date' is out of allowed
+                                    range from 2013-01-01 to 2026-08-25"}
+
+        Measured on 2026-08-19, that upper bound is today+6 — so a day of AQI
+        was being left unfetched rather than refused.
+        """
+        edge = TODAY + timedelta(days=6)
+
+        assert _aqi_asked_for(tmp_path, [edge], _config(air_quality_horizon_days=7)) == [edge]
+
+    def test_a_date_beyond_it_is_never_asked_for(self, tmp_path):
+        beyond = TODAY + timedelta(days=7)
+
+        assert _aqi_asked_for(tmp_path, [beyond], _config(air_quality_horizon_days=7)) == []
 
     def test_its_horizon_is_shorter_than_the_weather_one(self, tmp_path):
         """A separate key because it is a separate service with a separate range.
 
-        Sharing the weather horizon would ask the air quality API for eleven days
+        Sharing the weather horizon would ask the air quality API for nine days
         it cannot answer, which is the same mistake one layer down.
         """
         day = TODAY + timedelta(days=10)
-        config = _config(forecast_horizon_days=16, air_quality_horizon_days=5)
+        config = _config(forecast_horizon_days=16, air_quality_horizon_days=7)
 
         assert _asked_for(tmp_path, [day], config) == [day]
         assert _aqi_asked_for(tmp_path, [day], config) == []
@@ -314,6 +357,6 @@ class TestAirQualityHorizon:
     def test_a_ninety_day_listing_costs_a_handful_of_requests(self, tmp_path):
         days = [TODAY + timedelta(days=offset) for offset in range(90)]
 
-        asked = _aqi_asked_for(tmp_path, days, _config(air_quality_horizon_days=5))
+        asked = _aqi_asked_for(tmp_path, days, _config(air_quality_horizon_days=7))
 
-        assert len(asked) == 6, "one per day from today to the horizon, inclusive"
+        assert len(asked) == 7, "the count of days the service answers, today included"

@@ -532,19 +532,27 @@ weather:
   # lifetime, under `network.policies.open_meteo.cache_ttl_seconds`. One home:
   # a second copy here would drift from the one the code reads.
 
-  # How far ahead the provider can actually answer. A POLITENESS BOUND, not a
-  # tuning knob: Open-Meteo's free forecast reaches about sixteen days while
+  # How many days the provider can answer, COUNTING TODAY. A POLITENESS BOUND,
+  # not a tuning knob: Open-Meteo's free forecast reaches sixteen days while
   # the ranking horizon is ninety, and a date it cannot answer returns nothing
   # — which is not cached, so it was re-requested on every batch run and every
   # read-time rescore. Measured: 98 dates asked, 24 answered, 74 asked again
   # every time. Raise this only if the provider's own range grows.
+  #
+  # A count, not an offset, because that is how Open-Meteo states its own limit
+  # (`forecast_days=16`) — so this is the number from their documentation, and
+  # a reader checking it there gets the right answer. Treated as an offset it
+  # reaches a seventeenth day that does not exist and is refused with a 400.
   forecast_horizon_days: 16
 
   # The same bound for air quality, which is a separate service with a
-  # shorter range. It had neither a bound nor a persistent cache — only a
+  # different range. It had neither a bound nor a persistent cache — only a
   # per-run dict — so every distinct date in a ninety-day listing became a
   # request to a second endpoint, on every run, remembered by nothing.
-  air_quality_horizon_days: 5
+  #
+  # Seven is what it answers, established by asking it for a date it refuses:
+  # like the forecast host, it names its own range in the error body.
+  air_quality_horizon_days: 7
 
   # How far weather can move a score. Bad weather vetoes harder than good
   # weather promotes: a thunderstorm is close to disqualifying, while a perfect

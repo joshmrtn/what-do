@@ -284,18 +284,29 @@ class WeatherConfig:
     max_positive_adjustment: float = 0.15
     max_negative_adjustment: float = 0.25
     air_quality_enabled: bool = True
-    #: How far ahead the provider can actually answer. **A politeness bound, not
-    #: a tuning knob.** Open-Meteo's free forecast reaches about sixteen days;
-    #: the ranking horizon is ninety. Asking for day ninety returns nothing, and
-    #: nothing is not cached, so every such date was re-requested on every batch
-    #: run and every read-time rescore. Measured before this existed: 98 dates
-    #: requested, 24 answered, **74 asked again every single time**.
+    #: How many days the provider can actually answer, **counting today**. A
+    #: politeness bound, not a tuning knob. Open-Meteo's free forecast reaches
+    #: sixteen days; the ranking horizon is ninety. Asking for day ninety
+    #: returns nothing, and nothing is not cached, so every such date was
+    #: re-requested on every batch run and every read-time rescore. Measured
+    #: before this existed: 98 dates requested, 24 answered, **74 asked again
+    #: every single time**.
+    #:
+    #: A count rather than an offset because that is how the provider states its
+    #: own limit — the parameter is `forecast_days=16` — so the number here is
+    #: the number in their documentation. Read as an offset, 16 reaches a
+    #: seventeenth day that does not exist and is refused: measured 2026-08-19,
+    #: one 400 in every batch log, silent until the request policy surfaced it.
     forecast_horizon_days: int = 16
     #: The same bound for air quality, which is a **separate service with a
-    #: shorter range**. It had neither a bound nor a persistent cache — only a
+    #: different range**. It had neither a bound nor a persistent cache — only a
     #: per-run dict — so every distinct date in a ninety-day listing became a
     #: request, every run, remembered by nothing.
-    air_quality_horizon_days: int = 5
+    #:
+    #: Seven because that is what the service answers, established by asking it
+    #: for a date it refuses: it names its own range in the error. The previous
+    #: 5 was never measured against anything and left a day unfetched.
+    air_quality_horizon_days: int = 7
     #: Reading name -> curve. Names must match keys in the weather dict.
     comfort: dict[str, ComfortCurve] = field(default_factory=dict)
     #: Condition -> comfort ceiling. Only negative values cap.
