@@ -1515,3 +1515,147 @@ def test_a_skipped_extraction_does_not_blank_the_recorded_input():
     stage.process([event])  # second run: hash unchanged, so extraction skips
 
     assert event.extraction_input == recorded
+
+
+class TestTheWorkQueueIsBuiltBeforeItIsWorked:
+    """The stage cannot say "k of n" while it is still discovering n.
+
+    Every skip — synthetic, authored tags, an unchanged hash, out of scope —
+    used to be found inline while iterating, so the size of the job was known
+    only once the job was over. That is fine for a stage nobody watches and
+    useless for one that reports progress: the denominator has to exist before
+    the first model call, not after the last.
+
+    The budget deliberately stays *outside* the queue. It is a wall-clock
+    deadline rather than a property of an event, and a queue that pre-decided
+    what the budget could afford would be guessing at a rate it has not
+    measured yet.
+    """
+
+    @staticmethod
+    def _rankable(event):
+        return event.start_time is None or event.start_time >= _now()
+
+    def _mixed(self):
+        """One of every kind, with three that genuinely want the model."""
+        wanted = [
+            _make_event(event_id="wanted-1", start_time=_now() + timedelta(days=1)),
+            _make_event(event_id="wanted-2", start_time=_now() + timedelta(days=2)),
+            _make_event(event_id="wanted-3", start_time=_now() + timedelta(days=3)),
+        ]
+        synthetic = _make_event(
+            event_id="synthetic", source_type=SYNTHETIC,
+            start_time=_now() + timedelta(days=1),
+        )
+        authored = _make_event(
+            event_id="authored", start_time=_now() + timedelta(days=1),
+            tags=[Tag(text="karaoke", weight=1.0)],
+            metadata={"authored_tags": True},
+        )
+        unchanged = _make_event(event_id="unchanged", start_time=_now() + timedelta(days=1))
+        unchanged.extraction_input_hash = extraction_input_hash(unchanged)
+        out_of_scope = _make_event(event_id="past", start_time=_now() - timedelta(days=2))
+        return wanted + [synthetic, authored, unchanged, out_of_scope]
+
+    def test_the_queue_is_what_the_model_is_actually_asked_for(self):
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+
+        stage.process(self._mixed())
+
+        assert stage.queued == 3
+        assert provider.extract.call_count == 3
+
+    def test_the_denominator_exists_before_the_first_model_call(self):
+        """The whole point of the split. Asserted *inside* the provider, so a
+        stage that counted as it went would report 1 on the first call."""
+        seen = []
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+        provider.extract.side_effect = lambda *a, **k: (
+            seen.append((stage.queued, stage.out_of_scope)),
+            provider.extract.return_value,
+        )[1]
+
+        stage.process(self._mixed())
+
+        assert seen == [(3, 1), (3, 1), (3, 1)], "n and the skips are known up front"
+
+    def test_a_pass_with_nothing_to_do_queues_nothing(self):
+        """A run where every event skips on its hash must report an empty job,
+        not a job of unknown size — four milestones over an empty queue is the
+        noise this whole sprint exists to remove."""
+        unchanged = _make_event(event_id="unchanged")
+        unchanged.extraction_input_hash = extraction_input_hash(unchanged)
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+
+        stage.process([unchanged])
+
+        assert stage.queued == 0
+
+    def test_the_queue_counts_what_the_budget_then_defers(self):
+        """Queued is what the run *wanted*, so it is the denominator progress is
+        measured against. An event the budget defers was still asked for."""
+        get_now, tick = TestTheExtractionBudget._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=5
+        )
+
+        stage.process([
+            _make_event(event_id=f"e{i}", start_time=_now() + timedelta(days=i))
+            for i in range(4)
+        ])
+
+        assert stage.queued == 4
+        assert stage.queued == provider.extract.call_count + stage.deferred
+
+    def test_the_queue_size_resets_between_runs(self):
+        """Same lifetime as `deferred` and `out_of_scope`: it describes the pass
+        that just ran, not every pass this object has ever made."""
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.process([_make_event(event_id="first")])
+        assert stage.queued == 1
+
+        unchanged = _make_event(event_id="unchanged")
+        unchanged.extraction_input_hash = extraction_input_hash(unchanged)
+        stage.process([unchanged])
+
+        assert stage.queued == 0
+
+    def test_the_queue_carries_the_text_it_filtered_on(self):
+        """Built once *before* the model call, not once per filter.
+
+        Not "once per event" full stop: `_extract` deliberately rebuilds it
+        afterwards, because extraction can change its own input — the venue it
+        fills is part of `extraction_input`. That second build is the recorded
+        one. This pins the first: at the moment the model is asked, the text
+        has been assembled exactly once.
+        """
+        import src.processing.extraction_stage as module
+
+        calls = []
+        at_call_time = []
+        real = module.extraction_input
+
+        def counting(event):
+            calls.append(event.event_id)
+            return real(event)
+
+        provider = _make_provider()
+        provider.extract.side_effect = lambda *a, **k: (
+            at_call_time.append(calls.count("wanted-1")),
+            provider.extract.return_value,
+        )[1]
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        stage.set_scope_fn(self._rankable)
+        module.extraction_input = counting
+        try:
+            stage.process(self._mixed())
+        finally:
+            module.extraction_input = real
+
+        assert at_call_time[0] == 1, "the filter's build is what the model gets"

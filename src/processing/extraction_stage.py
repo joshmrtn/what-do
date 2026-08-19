@@ -147,6 +147,12 @@ class ExtractionStage:
         #: them. Same lifetime, and the pair reads as one sentence: what the
         #: budget could not buy, and what it should never have been asked to.
         self.out_of_scope = 0
+        #: How many events the last `process` set out to extract — the
+        #: denominator progress is measured against, known before the first
+        #: model call rather than after the last. An event the budget defers is
+        #: counted here too: it is work this run wanted, and `deferred` is what
+        #: says it did not get it.
+        self.queued = 0
 
     def set_save_fn(self, save_fn: Callable[[Event], None] | None) -> None:
         """Set where checkpoints go, or None to disable them.
@@ -184,27 +190,15 @@ class ExtractionStage:
         self.out_of_scope = 0
         deadline = self._deadline()
 
-        # Iterated in priority order, returned in the caller's. The orchestrator
-        # hands this same list to embedding and to the save, so re-ordering it
-        # is a side effect nothing asked for.
-        for event in _extraction_order(events):
-            if event.is_synthetic or _has_authored_tags(event):
-                continue
-            text = extraction_input(event)
-            if event.extraction_input_hash == input_hash(text):
-                continue
-            # After the hash check, not before it, so the count means "stale and
-            # out of scope" — the work actually saved. Before it, the same skip
-            # would also count every past event already extracted: ~470 against
-            # a real saving of 124, a number describing nothing. Hashing a short
-            # string is free; a count that can be trusted is not.
-            if self._scope_fn is not None and not self._scope_fn(event):
-                self.out_of_scope += 1
-                continue
-            # After the skips, so an event that never reaches the model costs
-            # nothing against a budget denominated in model time. Before the
-            # call rather than during it: one event may overshoot, which is far
-            # cheaper than abandoning minutes already spent.
+        queue = self._build_queue(events)
+        self.queued = len(queue)
+
+        for event, text in queue:
+            # The one filter that cannot move into the queue: it is a wall-clock
+            # deadline rather than a property of an event, so what it can afford
+            # depends on how long the events ahead of it took. Checked before
+            # the call rather than during it — one event may overshoot, which is
+            # far cheaper than abandoning minutes already spent.
             if deadline is not None and self._get_now() >= deadline:
                 self.deferred += 1
                 continue
@@ -228,6 +222,43 @@ class ExtractionStage:
             )
 
         return events
+
+    def _build_queue(self, events: list[Event]) -> list[tuple[Event, str]]:
+        """The events this pass will spend model time on, and the text to send.
+
+        Split out from the loop so the size of the job exists *before* the first
+        model call. A stage that discovers its skips as it goes cannot say "k of
+        n" — n is only known once there is no work left to report on, which is
+        exactly when nobody needs to hear it.
+
+        In priority order — soonest first. The caller's list is returned
+        untouched by `process`, because the orchestrator hands that same list to
+        embedding and to the save, so re-ordering it is a side effect nothing
+        asked for.
+
+        Returns:
+            `(event, extraction_input)` pairs, in the order they will run. The
+            text rides along because it is what the filter already built: the
+            assembly is not free, and two places building it separately is two
+            places that could disagree about what the model was asked.
+        """
+        queue: list[tuple[Event, str]] = []
+        for event in _extraction_order(events):
+            if event.is_synthetic or _has_authored_tags(event):
+                continue
+            text = extraction_input(event)
+            if event.extraction_input_hash == input_hash(text):
+                continue
+            # After the hash check, not before it, so the count means "stale and
+            # out of scope" — the work actually saved. Before it, the same skip
+            # would also count every past event already extracted: ~470 against
+            # a real saving of 124, a number describing nothing. Hashing a short
+            # string is free; a count that can be trusted is not.
+            if self._scope_fn is not None and not self._scope_fn(event):
+                self.out_of_scope += 1
+                continue
+            queue.append((event, text))
+        return queue
 
     def _deadline(self) -> datetime | None:
         """When this stage must stop starting new work, or None if unbounded."""
