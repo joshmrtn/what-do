@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+import requests
 
 from src.config import ConfigError, NetworkConfig, NetworkPolicy
 from src.network.policy import RequestPolicy
@@ -492,5 +493,141 @@ class TestLogging:
         assert HOST in retries[0]
 
 
+class TestWhatTheProviderSaid:
+    """A refusal should say why, not only that.
+
+    Open-Meteo answered 400 on every batch run for two days and the log recorded
+    `400 Client Error: Bad Request for url: ...` — the question, never the
+    answer. The reason was in the response body the whole time, and reading it
+    meant re-issuing the request by hand:
+
+        {"error":true,"reason":"Parameter 'start_date' is out of allowed range
+                                from 2026-05-18 to 2026-09-03"}
+
+    Logged, that one line names both halves — the date we asked for is already
+    in the URL — and the bound is diagnosed on the night it broke.
+
+    Deliberately **not** parsed. A provider's error format is theirs to change,
+    and a bound is a judgement made when the call site is written, never
+    something the code revises at runtime from an error message.
+    """
+
+    def test_the_response_body_is_logged_with_the_failure(self, clock, logger):
+        reason = '{"error":true,"reason":"start_date is out of allowed range"}'
+
+        self._give_up(clock, logger, _raising_with_response(reason))
+
+        assert reason in self._failure(logger)
+
+    def test_a_real_requests_error_carries_its_body_through(self, clock, logger):
+        """The shape this exists for, from the library that actually raises it.
+
+        The policy is transport-agnostic by design and reads the response
+        defensively, so the duck-typed case above is its real contract. This
+        pins the one implementation that matters against the genuine object,
+        because a defensive read that quietly finds nothing looks identical to
+        a provider that said nothing.
+        """
+        response = requests.Response()
+        response.status_code = 400
+        response._content = b'{"reason":"out of allowed range"}'
+        error = requests.HTTPError("400 Client Error: Bad Request", response=response)
+
+        self._give_up(clock, logger, _raising_error(error))
+
+        assert "out of allowed range" in self._failure(logger)
+
+    def test_a_failure_carrying_no_response_logs_as_it_always_did(self, clock, logger):
+        """A timeout and a DNS error have no body, and must not acquire one.
+
+        The regression case: the policy wraps arbitrary callables, so `response`
+        is an attribute it may not find rather than one it can assume.
+        """
+        self._give_up(clock, logger, _raising)
+
+        message = self._failure(logger)
+        assert "503 unavailable" in message
+        assert "said" not in message
+
+    def test_an_empty_body_adds_nothing(self, clock, logger):
+        """Nothing to report reads as nothing, not as an empty quotation."""
+        self._give_up(clock, logger, _raising_with_response("   "))
+
+        assert "said" not in self._failure(logger)
+
+    def test_a_long_body_is_truncated(self, clock, logger):
+        """An HTML error page must not flood a batch log."""
+        self._give_up(clock, logger, _raising_with_response("x" * 5_000))
+
+        message = self._failure(logger)
+        assert len(message) < 1_000
+        assert message.endswith("…")
+
+    def test_a_body_is_flattened_onto_one_line(self, clock, logger):
+        """The log is one JSON object a line, and stays readable as one."""
+        self._give_up(clock, logger, _raising_with_response("first\n\n  second"))
+
+        assert "first second" in self._failure(logger)
+
+    def test_a_retry_does_not_repeat_the_body(self, clock, logger):
+        """Three attempts should not mean three copies of the same error page.
+
+        The give-up line is the one a person reads. A retry line says only that
+        we are trying again, which needs no explanation from the provider.
+        """
+        network = _network(max_attempts=2, min_interval_seconds=0.0)
+
+        with pytest.raises(_RefusedWithBody):
+            _policy(clock, logger, network).call(
+                host=HOST, perform=_raising_with_response("the reason"),
+                is_transient=_always_transient, cache=RecordingCache(),
+                label="example",
+            )
+
+        retries = [m for level, m in logger.messages if level == "warning"]
+        assert retries and all("the reason" not in line for line in retries)
+
+    @staticmethod
+    def _give_up(clock, logger, perform) -> None:
+        with pytest.raises(Exception):
+            _policy(clock, logger, _network(max_attempts=1)).call(
+                host=HOST, perform=perform, is_transient=_never_transient,
+                cache=RecordingCache(), label="example",
+            )
+
+    @staticmethod
+    def _failure(logger) -> str:
+        failures = [m for level, m in logger.messages if level == "error"]
+        assert len(failures) == 1
+        return failures[0]
+
+
 def _raising(timeout: float) -> str:
     raise RuntimeError("503 unavailable")
+
+
+class _RefusedWithBody(Exception):
+    """An error carrying a response, as every HTTP library's does."""
+
+    def __init__(self, body: str) -> None:
+        super().__init__("400 Client Error: Bad Request")
+        self.response = _ResponseWithText(body)
+
+
+class _ResponseWithText:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def _raising_with_response(body: str):
+    def perform(timeout: float) -> str:
+        raise _RefusedWithBody(body)
+
+    return perform
+
+
+def _raising_error(error: BaseException):
+    def perform(timeout: float) -> str:
+        raise error
+
+    return perform

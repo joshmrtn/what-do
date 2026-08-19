@@ -162,7 +162,48 @@ class RequestPolicy:
         if self._logger is None:
             return
         self._logger.error(
-            f"{label}: {host} failed after {attempt} attempt(s) ({error})",
+            f"{label}: {host} failed after {attempt} attempt(s) ({error})"
+            f"{_what_the_provider_said(error)}",
             component="network",
             duration_ms=0,
         )
+
+
+#: How much of a refused response to keep. Long enough for a JSON error object
+#: — the ones worth reading state a reason and a permitted range in well under
+#: this — and short enough that an HTML error page cannot flood a batch log.
+MAX_LOGGED_BODY = 500
+
+
+def _what_the_provider_said(error: BaseException) -> str:
+    """The response body behind a failure, ready to append to a log line.
+
+    Worth having because an exception says what we asked and not what came
+    back. Open-Meteo refused one date on every run for two nights and logged
+    `400 Client Error: Bad Request for url: ...`; the body said *"Parameter
+    'start_date' is out of allowed range from 2026-05-18 to 2026-09-03"*, which
+    is the entire diagnosis, and reading it meant re-issuing the request by
+    hand.
+
+    Reported verbatim and never parsed. A provider's error format belongs to
+    the provider, and a bound is a judgement made where the call site is
+    written — not something the code revises at runtime from an error message.
+
+    Read defensively: this policy wraps arbitrary callables including vendor
+    SDKs, so `response` is an attribute an error may happen to carry, never one
+    it can be assumed to have.
+
+    Returns:
+        A parenthetical to append, or an empty string when there is no body —
+        which reads as nothing at all rather than as an empty quotation.
+    """
+    response = getattr(error, "response", None)
+    text = getattr(response, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    # Collapsed onto one line: the log is one JSON object per line, and an HTML
+    # error page's newlines survive escaping to make it unreadable as one.
+    flattened = " ".join(text.split())
+    if len(flattened) > MAX_LOGGED_BODY:
+        flattened = flattened[:MAX_LOGGED_BODY] + "…"
+    return f" — the provider said: {flattened}"
