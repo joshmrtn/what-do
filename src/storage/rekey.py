@@ -81,8 +81,14 @@ def rekey_to_content_ids(db_path: Path | str, *, source: str) -> RekeyOutcome:
         # reject the first delete. Deferring holds the check to the commit,
         # where `foreign_key_check` below still has to pass first.
         conn.execute("PRAGMA defer_foreign_keys = ON")
+        # Read before anything moves: the invariant is that no event *loses*
+        # its last candidate, which cannot be checked against the end state
+        # alone. Synthetic activities enter the pipeline as pre-structured
+        # events and never had one — six of them live — so a global check
+        # would refuse a re-key that is doing no harm.
+        claimants = _events_holding_candidates(conn)
         outcome = _rekey(conn, source)
-        _verify(conn, source, outcome)
+        _verify(conn, source, outcome, claimants)
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -302,7 +308,20 @@ def _shared_candidates(conn: sqlite3.Connection, survivors: set[str]) -> int:
     )
 
 
-def _verify(conn: sqlite3.Connection, source: str, outcome: RekeyOutcome) -> None:
+def _events_holding_candidates(conn: sqlite3.Connection) -> set[str]:
+    """Events that had at least one candidate before anything moved."""
+    return {
+        row[0]
+        for row in conn.execute("SELECT DISTINCT event_id FROM event_source_candidates")
+    }
+
+
+def _verify(
+    conn: sqlite3.Connection,
+    source: str,
+    outcome: RekeyOutcome,
+    claimants: set[str],
+) -> None:
     """Everything that must hold, checked while a rollback is still possible."""
     dangling = conn.execute("PRAGMA foreign_key_check").fetchall()
     if dangling:
@@ -327,14 +346,11 @@ def _verify(conn: sqlite3.Connection, source: str, outcome: RekeyOutcome) -> Non
         if row_id != expected:
             raise RekeyFailed(f"row {row_id!r} is not keyed on its own content")
 
-    orphaned = conn.execute(
-        "SELECT COUNT(*) FROM events e WHERE NOT EXISTS ("
-        "  SELECT 1 FROM event_source_candidates l WHERE l.event_id = e.id)"
-    ).fetchone()[0]
-    if orphaned:
+    stranded = claimants - _events_holding_candidates(conn)
+    if stranded:
         raise RekeyFailed(
-            f"{orphaned} event(s) left with no candidate — reconcile would mint "
-            "duplicates for every one of them"
+            f"{len(stranded)} event(s) lost their last candidate — reconcile "
+            "would mint a duplicate for every one of them"
         )
 
 

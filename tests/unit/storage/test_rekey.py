@@ -14,7 +14,13 @@ import pytest
 
 from src.ingestion.candidate_id import derive_content_id
 from src.models.event_candidate import EventCandidate
-from src.storage.rekey import RekeyFailed, rekey_to_content_ids
+from src.storage.rekey import (
+    RekeyFailed,
+    RekeyOutcome,
+    _events_holding_candidates,
+    _verify,
+    rekey_to_content_ids,
+)
 from src.storage.sqlite.candidates import SqliteCandidateRepository
 from src.storage.sqlite.connection import connect, init_db
 
@@ -444,34 +450,106 @@ class TestTheVerificationRefusesToCommit:
     """Checked while a rollback is still possible. The `event_scores` rebuild
     shipped a broken database by verifying after the commit."""
 
-    def test_an_event_left_with_no_candidate_aborts(self, db):
-        _store(db, _candidate("uid-1"))
-        _link(db, "event-1", "uid-1")
-        # An event whose only candidate belongs to nothing this re-key touches,
-        # and which therefore cannot survive it.
-        _link(db, "event-2", "missing-candidate")
+    def test_an_event_that_never_had_a_candidate_is_not_an_alarm(self, db):
+        """Synthetic activities enter the pipeline as pre-structured events,
+        after dedup, so they have no candidates and never did. The invariant is
+        that nothing *loses* its last candidate — a global check reads the six
+        `synthetic:evening_walk` rows in the live database as damage and refuses
+        a re-key that is doing no harm at all."""
+        _store(db, _candidate("uid-1"), _candidate("uid-2"))
+        _link(db, "event-1", "uid-1", "uid-2")
         with connect(db) as conn:
             conn.execute(
-                "DELETE FROM event_source_candidates WHERE candidate_id = ?",
-                ("missing-candidate",),
+                "INSERT INTO events (id, title, source_type, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("synthetic:evening_walk:2026-08-18", "Evening walk", "synthetic",
+                 NOW.isoformat(), NOW.isoformat()),
             )
             conn.commit()
 
-        with pytest.raises(RekeyFailed, match="no candidate"):
+        outcome = rekey_to_content_ids(db, source=SOURCE)
+
+        assert outcome.candidates_after == 1
+
+    def test_a_stranded_event_is_refused(self, db):
+        """Unreachable while `_rewrite_links` is correct, which is the point: it
+        is the backstop for a bug in an operation that runs unattended against
+        the live database. Exercised directly, because contriving a state that
+        reaches it through the public call would mean breaking the very code the
+        check is guarding."""
+        _store(db, _candidate("uid-1"))
+        _link(db, "event-1", "uid-1")
+        rekey_to_content_ids(db, source=SOURCE)
+
+        with connect(db) as conn:
+            claimants = _events_holding_candidates(conn)
+            conn.execute("DELETE FROM event_source_candidates")
+
+            with pytest.raises(RekeyFailed, match="lost their last candidate"):
+                _verify(
+                    conn,
+                    SOURCE,
+                    RekeyOutcome(SOURCE, 1, 1, 0, 0, 0, 0, 0),
+                    claimants,
+                )
+
+    def test_a_row_not_keyed_on_its_own_content_is_refused(self, db):
+        """A survivor whose id is not what its own content derives would never
+        be recognised again by the adapter that wrote it — it would be re-minted
+        every night, which is the defect this operation exists to end."""
+        _store(db, _candidate("uid-1"))
+        _link(db, "event-1", "uid-1")
+
+        with connect(db) as conn:
+            with pytest.raises(RekeyFailed, match="not keyed on its own content"):
+                _verify(
+                    conn,
+                    SOURCE,
+                    RekeyOutcome(SOURCE, 1, 1, 0, 0, 0, 0, 0),
+                    _events_holding_candidates(conn),
+                )
+
+    def test_a_link_rewrite_that_loses_links_is_caught(self, db, monkeypatch):
+        """The guard has to compare against the state *before* anything moved.
+        Read afterwards it compares the end state with itself and can never
+        fail — a check that is present, passing, and vacuous.
+
+        Simulated by a `_rewrite_links` that drops the old links without laying
+        down the new ones, which is the shape of the bug this backstops.
+        """
+        _store(db, _candidate("uid-1"), _candidate("uid-2"))
+        _link(db, "event-1", "uid-1", "uid-2")
+
+        def _lose_them(conn, mapping):
+            conn.executemany(
+                "DELETE FROM event_source_candidates WHERE candidate_id = ?",
+                [(old,) for old in mapping],
+            )
+
+        monkeypatch.setattr("src.storage.rekey._rewrite_links", _lose_them)
+
+        with pytest.raises(RekeyFailed, match="lost their last candidate"):
             rekey_to_content_ids(db, source=SOURCE)
 
-    def test_a_refused_re_key_writes_nothing(self, db):
-        _store(db, _candidate("uid-1"))
-        _link(db, "event-1", "uid-1")
-        _link(db, "event-2", "missing-candidate")
-        with connect(db) as conn:
-            conn.execute(
-                "DELETE FROM event_source_candidates WHERE candidate_id = ?",
-                ("missing-candidate",),
-            )
-            conn.commit()
+        assert _ids(db) == {"uid-1", "uid-2"}
+
+    def test_a_failed_verification_writes_nothing(self, db, monkeypatch):
+        """The transaction is the safety net. Verifying after the commit is how
+        the `event_scores` rebuild shipped a broken database."""
+        _store(db, _candidate("uid-1"), _candidate("uid-2"))
+        _link(db, "event-1", "uid-1", "uid-2")
+
+        monkeypatch.setattr(
+            "src.storage.rekey._verify",
+            lambda *a, **k: (_ for _ in ()).throw(RekeyFailed("refused")),
+        )
 
         with pytest.raises(RekeyFailed):
             rekey_to_content_ids(db, source=SOURCE)
 
-        assert _ids(db) == {"uid-1"}
+        assert _ids(db) == {"uid-1", "uid-2"}
+        with connect(db) as conn:
+            links = conn.execute(
+                "SELECT COUNT(*) FROM event_source_candidates"
+            ).fetchone()[0]
+        assert links == 2
