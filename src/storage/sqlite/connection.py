@@ -328,6 +328,25 @@ CREATE TABLE IF NOT EXISTS curve_state (
     provenance        TEXT
 );
 
+-- Accumulated evidence about whether a source's publisher can identify its own
+-- listings, and the one-way latch that acts on it. Derived: recomputable from
+-- `event_candidates` history, which is why it lives here and the human's policy
+-- lives in config.
+CREATE TABLE IF NOT EXISTS source_identity_state (
+    source           TEXT PRIMARY KEY,
+    -- Churned listings summed over every qualifying run, never reset. A streak
+    -- is reset by a quiet night, and a feed churning every other night would
+    -- never reach two consecutive runs while duplicating for ever.
+    churn_evidence   INTEGER NOT NULL DEFAULT 0,
+    qualifying_runs  INTEGER NOT NULL DEFAULT 0,
+    -- When the latch fired. One-way: once a publisher's ids have been shown to
+    -- identify nothing, they are never trusted again. Content-keyed ids read 0%
+    -- churn by construction, so anything re-evaluating both ways would
+    -- oscillate, re-keying and minting duplicates each time.
+    latched_at       TEXT,
+    updated_at       TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS event_tags (
     event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     position INTEGER NOT NULL,
