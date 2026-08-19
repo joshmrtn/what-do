@@ -1635,3 +1635,48 @@ def _policy_block(**overrides):
     }
     block.update(overrides)
     return block
+
+
+class TestObservabilityConfig:
+    """How loud a running batch is, and when silence becomes suspicious.
+
+    Three numbers rather than one because they answer different questions: how
+    *often* a long stage says something, how long it may say nothing at all,
+    and how long an item may sit in the model's hands before that stops being
+    slow and starts being stuck.
+    """
+
+    def test_defaults_when_the_section_is_absent(self, tmp_path):
+        cfg = _load(tmp_path, {})
+        assert cfg.observability.progress_milestone_fraction == 0.25
+        assert cfg.observability.progress_heartbeat_minutes == 20
+        assert cfg.observability.stall_after_minutes == 15
+
+    def test_values_are_read_from_the_file(self, tmp_path):
+        cfg = _load(tmp_path, {
+            "observability": {
+                "progress_milestone_fraction": 0.1,
+                "progress_heartbeat_minutes": 5,
+                "stall_after_minutes": 45,
+            }
+        })
+        assert cfg.observability.progress_milestone_fraction == 0.1
+        assert cfg.observability.progress_heartbeat_minutes == 5
+        assert cfg.observability.stall_after_minutes == 45
+
+    @pytest.mark.parametrize("fraction", [0.0, -0.25, 1.5])
+    def test_a_milestone_fraction_outside_the_unit_interval_is_refused(
+        self, tmp_path, fraction
+    ):
+        """Zero would divide the queue into infinitely many milestones and
+        above one would never fire at all — both are a progress log that has
+        silently stopped working, which is the thing being fixed."""
+        with pytest.raises(ConfigError, match="progress_milestone_fraction"):
+            _load(tmp_path, {"observability": {"progress_milestone_fraction": fraction}})
+
+    @pytest.mark.parametrize(
+        "key", ["progress_heartbeat_minutes", "stall_after_minutes"]
+    )
+    def test_a_non_positive_interval_is_refused(self, tmp_path, key):
+        with pytest.raises(ConfigError, match=key):
+            _load(tmp_path, {"observability": {key: 0}})

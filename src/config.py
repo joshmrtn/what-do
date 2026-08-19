@@ -542,6 +542,29 @@ class NetworkConfig:
 
 
 @dataclass
+class ObservabilityConfig:
+    """How much a long-running batch says about itself while it runs.
+
+    Extraction is minutes an event on local hardware and seconds an event
+    against a hosted API, so a cadence expressed only in items reads badly at
+    one speed and a cadence expressed only in time reads badly at the other.
+    The two fire together, whichever comes first.
+    """
+
+    #: Emit a progress line every this much of the queue. At 0.25 an
+    #: eight-hour extraction speaks four times, which is the shape of the run;
+    #: the heartbeat below is what makes it proof of life.
+    progress_milestone_fraction: float = 0.25
+    #: …and never let a working stage go longer than this without saying so.
+    progress_heartbeat_minutes: int = 20
+    #: An item in the model's hands this long is stuck rather than slow.
+    #: Deliberately one number rather than a multiple of the observed rate: at
+    #: 65s an event it is already ~14x the mean, and against a fast provider a
+    #: stall shows up as the run overrunning long before this matters.
+    stall_after_minutes: int = 15
+
+
+@dataclass
 class AppConfig:
     location: LocationConfig
     scraping: ScrapingConfig
@@ -553,6 +576,7 @@ class AppConfig:
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
     view: ViewConfig = field(default_factory=ViewConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     day_starts_at: time = DEFAULT_DAY_STARTS_AT
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
@@ -580,6 +604,19 @@ def _positive(raw: dict[str, Any], key: str, default: int) -> int:
     value = int(raw.get(key, default))
     if value < 1:
         raise ConfigError(f"Invalid view.{key}: {value} — must be positive")
+    return value
+
+
+def _positive_minutes(raw: dict[str, Any], key: str, default: int) -> int:
+    """An `observability` interval, which is meaningless at zero or below.
+
+    Zero silence between heartbeats is a line per item, and zero minutes before
+    a stall is every in-flight item reported as stuck — each is the reporting
+    switched off by a number that looks like a setting.
+    """
+    value = int(raw.get(key, default))
+    if value < 1:
+        raise ConfigError(f"Invalid observability.{key}: {value} — must be positive")
     return value
 
 
@@ -1129,6 +1166,21 @@ def load_config(
         match_limit=_positive(view_data, "match_limit", 10),
     )
 
+    obs_data = data.get("observability", {})
+    fraction = float(obs_data.get("progress_milestone_fraction", 0.25))
+    if not 0.0 < fraction <= 1.0:
+        raise ConfigError(
+            f"Invalid observability.progress_milestone_fraction: {fraction} — "
+            "must be greater than 0 and at most 1"
+        )
+    observability = ObservabilityConfig(
+        progress_milestone_fraction=fraction,
+        progress_heartbeat_minutes=_positive_minutes(
+            obs_data, "progress_heartbeat_minutes", 20
+        ),
+        stall_after_minutes=_positive_minutes(obs_data, "stall_after_minutes", 15),
+    )
+
     scraping = ScrapingConfig(
         lookback_days=int(scraping_data.get("lookback_days", 30)),
         horizon_days=horizon_days,
@@ -1241,6 +1293,7 @@ def load_config(
         sources=_load_sources(data.get("sources") or {}),
         models=_load_models(data.get("models") or {}),
         view=view,
+        observability=observability,
         day_starts_at=_load_day_starts_at(data),
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),

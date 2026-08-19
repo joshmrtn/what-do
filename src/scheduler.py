@@ -41,6 +41,7 @@ from src.storage.rekey import rekey_to_content_ids
 from src.storage.snapshot import snapshot_database
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
+from src.observability.reporter import ProgressLog
 from src.models.event_candidate import EventCandidate
 from src.models.event_score import EventScore
 from src.models.preference_revision import PreferenceRevision
@@ -293,6 +294,18 @@ def run_batch(
         if not dry_run and events:
             events_repo.save(events)
 
+    def _progress_log(_stage_name: str) -> ProgressLog:
+        """One policy per stage, because each keeps its own reckoning.
+
+        Sharing an instance would carry extraction's start time and milestone
+        into embedding, which runs after it and against a different queue.
+        """
+        return ProgressLog(
+            logger,
+            milestone_fraction=config.observability.progress_milestone_fraction,
+            heartbeat=timedelta(minutes=config.observability.progress_heartbeat_minutes),
+        )
+
     def _save_one(event: Event) -> None:
         """Persist a single freshly extracted event.
 
@@ -416,6 +429,11 @@ def run_batch(
     # deliberately unscoped. Measured 2026-08-14: a whole 480-minute budget
     # went on events that had already happened.
     extraction_stage.set_scope_fn(in_scope)
+    # The two stages that can run long enough to look dead. Cadence lives here
+    # rather than in either stage: the stages report every item and decide
+    # nothing, so how loud a run is stays one decision in one place — which is
+    # what has to change the day extraction stops taking minutes an event.
+    extraction_stage.set_progress_fn(_progress_log("extraction"))
     events = _stage("extraction", lambda: extraction_stage.process(events), default=events)
     # Read off the stage rather than counted here: an event with no hash may
     # have been deferred by the budget or refused by an unavailable provider,
@@ -438,6 +456,7 @@ def run_batch(
         # live ones, in the same transaction, carrying their supersession.
         _stage("event persistence", lambda: events_repo.replace([], events + displaced))
 
+    embedding_stage.set_progress_fn(_progress_log("embedding"))
     embedded = _stage("embedding", lambda: embedding_stage.process(events))
     if embedded is None:
         # Ranking on absent vectors produces meaningless order, and it would be

@@ -653,7 +653,7 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
     result = run_batch(
         config=_config(),
         db_path=db,
-        logger=get_logger("batch_test", stream=io.StringIO()),
+        logger=kwargs.pop("logger", get_logger("batch_test", stream=io.StringIO())),
         # Overridable so a test can drive the batch's clock away from the one the
         # stages carry. While the two were the same instant, an assertion that
         # named the run clock passed against code reading the event's.
@@ -2128,3 +2128,57 @@ class TestTheChurnLatchInTheBatch:
             dry_run=True,
             identity_state_repository=SqliteIdentityStateRepository(db),
         )
+
+
+# ----------------------------------------------------------------------
+# Progress
+# ----------------------------------------------------------------------
+
+
+class TestTheBatchSaysWhereItHasGot:
+    """A batch takes eight hours and, before this, wrote its first line at
+    02:00 and its next at 14:01.
+
+    Measured on the 2026-08-18 run: fifty-one lines, of which the only two in
+    the middle five hours were extraction *failure* warnings. The only proof
+    the run was alive was that something had gone wrong in it.
+    """
+
+    @staticmethod
+    def _watch(db, **kwargs):
+        stream = io.StringIO()
+        # A name of its own. `_run`'s own default builds a logger called
+        # `batch_test` whichever way the argument goes — a default expression is
+        # evaluated eagerly — and stdlib loggers are singletons by name, so
+        # sharing the name detaches this stream from the handler.
+        result, fakes, saves, recs = _run(
+            db, logger=get_logger("batch_progress_test", stream=stream), **kwargs
+        )
+        return result, stream.getvalue()
+
+    def test_extraction_reports_its_progress(self, db):
+        _, log = self._watch(db)
+
+        assert "extraction 1/1 (100%)" in log
+
+    def test_embedding_reports_its_progress(self, db):
+        _, log = self._watch(db)
+
+        assert "embedding 1/1 (100%)" in log
+
+    def test_the_line_carries_the_budget_when_there_is_one(self, db):
+        """`--status` is the granular answer; the log is what is left behind
+        for the morning, and a night that ran out of budget should read as
+        having run out rather than as having stopped."""
+        stage = ExtractionStage(
+            _ExtractionModel(), None, _stage_log(), get_now=lambda: NOW,
+            budget_minutes=90,
+        )
+        _, log = self._watch(db, deps={"extraction_stage": _StageSpy(stage)})
+
+        assert "of budget left" in log
+
+    def test_an_unbounded_run_says_nothing_about_a_budget(self, db):
+        _, log = self._watch(db)
+
+        assert "budget" not in log

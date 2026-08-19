@@ -8,12 +8,24 @@ from __future__ import annotations
 
 import hashlib
 
+from datetime import datetime, timezone
 from typing import Callable
 
 from src.models.event import Event
+from src.observability.reporter import FINISHED, STARTED, Progress, ProgressFn
 from src.scoring.embeddings import EmbeddingError, EmbeddingProvider
 from src.utils.logging import StructuredLogger
 from src.utils.vectors import encode_vector
+
+
+def _utc_now() -> datetime:
+    """The fallback clock for a stage nobody injected one into.
+
+    Aware, and deliberately so: the only thing this stage does with time is
+    stamp a progress report, and a naive default is the shape that killed the
+    first live fetch — production the one path no test ever took.
+    """
+    return datetime.now(timezone.utc)
 
 
 def embedding_input_hash(event: Event) -> str:
@@ -60,10 +72,22 @@ class EmbeddingStage:
         provider: EmbeddingProvider,
         logger: StructuredLogger,
         preload: Callable[[], dict[str, bytes]] | None = None,
+        get_now: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._provider = provider
         self._logger = logger
         self._preload = preload
+        self._get_now = get_now
+        self._progress_fn: ProgressFn | None = None
+
+    def set_progress_fn(self, progress_fn: ProgressFn | None) -> None:
+        """Set where per-item progress goes, or None to run unwatched.
+
+        The same seam `ExtractionStage` exposes, and deliberately the same
+        protocol: a second shape for the second long stage is how two sinks
+        that must agree stop agreeing.
+        """
+        self._progress_fn = progress_fn
 
     def process(self, events: list[Event]) -> list[Event]:
         """Embed the tags and summary of each event.
@@ -82,10 +106,48 @@ class EmbeddingStage:
                 duration_ms=0,
             )
 
-        for event in events:
+        # Built before it is worked, for the reason extraction's is: a warm
+        # corpus reuses almost every vector, so the number of events and the
+        # number that need a model call differ by an order of magnitude, and
+        # only the second is progress.
+        queue = [event for event in events if self._needs_embedding(event)]
+
+        for done, event in enumerate(queue):
+            self._report(STARTED, event, done=done, total=len(queue))
             self._embed_event(event, memo)
+            self._report(FINISHED, event, done=done + 1, total=len(queue))
 
         return events
+
+    def _needs_embedding(self, event: Event) -> bool:
+        """Whether a model call is owed for this event.
+
+        Marks the tagless as skipped on the way past, because that is a
+        conclusion about the event rather than a step being deferred — 365 of
+        1935 stored events carry no tags at all, and they are not work.
+        """
+        if event.tag_embeddings and event.embedding_input_hash == embedding_input_hash(event):
+            return False
+        if not event.tags:
+            event.metadata["embedding_skipped"] = True
+            return False
+        return True
+
+    def _report(self, phase: str, event: Event, *, done: int, total: int) -> None:
+        """Tell whoever is watching where the pass has got to."""
+        if self._progress_fn is None:
+            return
+        self._progress_fn(
+            Progress(
+                stage="embedding",
+                done=done,
+                total=total,
+                item_id=event.event_id,
+                label=event.title or "(untitled)",
+                phase=phase,
+                now=self._get_now(),
+            )
+        )
 
     def _embed_event(self, event: Event, memo: dict[str, bytes]) -> None:
         """Embed one event's tags and summary, updating it in place."""

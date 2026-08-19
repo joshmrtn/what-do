@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from src.models.event import Event
+from src.observability.reporter import FINISHED, STARTED, Progress, ProgressFn
 from src.normalization.normalizer import normalize_venue
 from src.processing.extraction_input import (
     extraction_input,
@@ -139,6 +140,7 @@ class ExtractionStage:
         self._save_fn = save_fn
         self._budget_minutes = budget_minutes
         self._scope_fn: Callable[[Event], bool] | None = None
+        self._progress_fn: ProgressFn | None = None
         #: How many events the last `process` wanted to extract and could
         #: not, because the budget ran out. Describes the run just
         #: finished, so it is reset at the top of every pass.
@@ -161,6 +163,16 @@ class ExtractionStage:
         the stage — and a dry run sets None because it persists nothing at all.
         """
         self._save_fn = save_fn
+
+    def set_progress_fn(self, progress_fn: ProgressFn | None) -> None:
+        """Set where per-item progress goes, or None to run unwatched.
+
+        Orchestrator-owned for the same reason `set_save_fn` is: the stage
+        reports "k of n, at t" and decides nothing about cadence, format or
+        destination. Left unset it says nothing, which is what every test that
+        does not care about progress wants.
+        """
+        self._progress_fn = progress_fn
 
     def set_scope_fn(self, scope_fn: Callable[[Event], bool] | None) -> None:
         """Set which events are worth spending model time on.
@@ -202,8 +214,13 @@ class ExtractionStage:
             if deadline is not None and self._get_now() >= deadline:
                 self.deferred += 1
                 continue
+            self._report(STARTED, event, done=extracted, deadline=deadline)
             self._extract(event, text)
             extracted += 1
+            # Reported whether or not the model answered. A stage that only
+            # reported its wins would leave a failed event in flight for ever,
+            # and `--status` would call the run stalled on it.
+            self._report(FINISHED, event, done=extracted, deadline=deadline)
             self._checkpoint(event, extracted=extracted)
 
         if self.deferred:
@@ -222,6 +239,25 @@ class ExtractionStage:
             )
 
         return events
+
+    def _report(
+        self, phase: str, event: Event, *, done: int, deadline: datetime | None
+    ) -> None:
+        """Tell whoever is watching where the pass has got to."""
+        if self._progress_fn is None:
+            return
+        self._progress_fn(
+            Progress(
+                stage="extraction",
+                done=done,
+                total=self.queued,
+                item_id=event.event_id,
+                label=event.title or "(untitled)",
+                phase=phase,
+                now=self._get_now(),
+                deadline=deadline,
+            )
+        )
 
     def _build_queue(self, events: list[Event]) -> list[tuple[Event, str]]:
         """The events this pass will spend model time on, and the text to send.

@@ -279,3 +279,73 @@ def test_unchanged_tags_are_not_re_embedded():
     stage.process([event])
 
     assert len(provider.calls) == first
+
+
+class TestTheStageReportsEachItem:
+    """The same seam extraction has, unchanged.
+
+    Embedding is fast when the corpus is warm — most vectors are reused — and
+    slow the night a prompt change re-tags everything. It is the other stage
+    that can run long enough to look dead, so it reports on the same terms
+    rather than on a second protocol of its own.
+    """
+
+    @staticmethod
+    def _collect():
+        reports = []
+        return reports, reports.append
+
+    def test_each_item_is_bracketed_before_and_after(self):
+        reports, fn = self._collect()
+        stage = _stage(_FakeProvider())
+        stage.set_progress_fn(fn)
+
+        stage.process([_event(event_id="e1")])
+
+        assert [(r.stage, r.phase, r.done, r.total) for r in reports] == [
+            ("embedding", "started", 0, 1), ("embedding", "finished", 1, 1),
+        ]
+
+    def test_the_total_counts_only_what_needs_embedding(self):
+        """A warm corpus reuses almost everything. Reporting against the whole
+        list would show 1800 items and finish at 20, which describes nothing."""
+        reports, fn = self._collect()
+        stage = _stage(_FakeProvider())
+        already = _event(event_id="warm")
+        stage.process([already])          # embeds it, and sets its hash
+        stage.set_progress_fn(fn)
+
+        stage.process([already, _event(event_id="cold")])
+
+        assert {r.total for r in reports} == {1}
+        assert {r.item_id for r in reports} == {"cold"}
+
+    def test_an_event_with_no_tags_is_not_work(self):
+        """It is skipped, not embedded — there is nothing to ask a model for."""
+        reports, fn = self._collect()
+        stage = _stage(_FakeProvider())
+        stage.set_progress_fn(fn)
+
+        stage.process([_event(event_id="bare", tags=[], summary=None)])
+
+        assert reports == []
+
+    def test_the_reported_time_is_the_injected_clock(self):
+        reports, fn = self._collect()
+        stage = EmbeddingStage(
+            provider=_FakeProvider(),
+            logger=get_logger("test", stream=io.StringIO()),
+            get_now=_now,
+        )
+        stage.set_progress_fn(fn)
+
+        stage.process([_event()])
+
+        assert {r.now for r in reports} == {_now()}
+
+    def test_the_stage_runs_unwatched_by_default(self):
+        provider = _FakeProvider()
+
+        _stage(provider).process([_event()])
+
+        assert provider.calls

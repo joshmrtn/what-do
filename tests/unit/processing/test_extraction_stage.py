@@ -1659,3 +1659,132 @@ class TestTheWorkQueueIsBuiltBeforeItIsWorked:
             module.extraction_input = real
 
         assert at_call_time[0] == 1, "the filter's build is what the model gets"
+
+
+class TestTheStageReportsEachItem:
+    """"k of n, at t", and nothing else.
+
+    The stage decides no cadence and knows no sink. What a report becomes — a
+    log line every quarter, a heartbeat file `--status` reads — is the
+    orchestrator's, in one place, because that is the part that changes when
+    extraction stops taking minutes an event and starts taking seconds.
+    """
+
+    @staticmethod
+    def _collect():
+        reports = []
+        return reports, reports.append
+
+    def test_each_item_is_bracketed_before_and_after(self):
+        """Both halves, because a report only on completion names the last
+        event that *survived*. The one that killed the batch is the next."""
+        reports, fn = self._collect()
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_progress_fn(fn)
+
+        stage.process([_make_event(event_id="evt-1", title="Live Jazz Night")])
+
+        assert [(r.phase, r.done, r.total) for r in reports] == [
+            ("started", 0, 1), ("finished", 1, 1),
+        ]
+        assert {r.item_id for r in reports} == {"evt-1"}
+        assert {r.label for r in reports} == {"Live Jazz Night"}
+
+    def test_the_total_is_the_queue_not_the_list(self):
+        """The denominator is work, not events. A batch carries ~2000 stored
+        events and extracts a few hundred; reporting against the list would
+        show a run stuck at 3% all night while doing everything asked of it."""
+        reports, fn = self._collect()
+        unchanged = _make_event(event_id="unchanged")
+        unchanged.extraction_input_hash = extraction_input_hash(unchanged)
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_progress_fn(fn)
+
+        stage.process([unchanged, _make_event(event_id="wanted")])
+
+        assert {r.total for r in reports} == {1}
+
+    def test_a_skipped_event_is_never_reported(self):
+        reports, fn = self._collect()
+        synthetic = _make_event(event_id="synthetic", source_type=SYNTHETIC)
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_progress_fn(fn)
+
+        stage.process([synthetic])
+
+        assert reports == []
+
+    def test_a_deferred_event_is_never_reported(self):
+        """It never started, so there is nothing in flight and nothing done.
+        The budget line already says how many went unbought."""
+        reports, fn = self._collect()
+        get_now, tick = TestTheExtractionBudget._clock(minutes_per_event=4)
+        provider = MagicMock()
+        provider.extract.side_effect = tick
+        stage = ExtractionStage(
+            provider, None, _make_logger(), get_now=get_now, budget_minutes=5
+        )
+        stage.set_progress_fn(fn)
+
+        stage.process([
+            _make_event(event_id=f"e{i}", start_time=_now() + timedelta(days=i))
+            for i in range(4)
+        ])
+
+        assert stage.deferred == 2
+        assert {r.item_id for r in reports} == {"e0", "e1"}
+
+    def test_the_report_carries_the_budget_deadline(self):
+        """So a sink can say how much of the night is left without knowing what
+        a budget is or where it was configured."""
+        reports, fn = self._collect()
+        stage = ExtractionStage(
+            _make_provider(), None, _make_logger(), get_now=_now, budget_minutes=90
+        )
+        stage.set_progress_fn(fn)
+
+        stage.process([_make_event()])
+
+        assert reports[0].deadline == _now() + timedelta(minutes=90)
+
+    def test_an_unbounded_stage_reports_no_deadline(self):
+        reports, fn = self._collect()
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_progress_fn(fn)
+
+        stage.process([_make_event()])
+
+        assert reports[0].deadline is None
+
+    def test_the_reported_time_is_the_injected_clock(self):
+        reports, fn = self._collect()
+        stage = ExtractionStage(_make_provider(), None, _make_logger(), get_now=_now)
+        stage.set_progress_fn(fn)
+
+        stage.process([_make_event()])
+
+        assert {r.now for r in reports} == {_now()}
+
+    def test_the_stage_runs_unwatched_by_default(self):
+        """Nothing in composition is obliged to wire a sink, and a stage that
+        needed one would fail in exactly the place it is least wanted."""
+        provider = _make_provider()
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+
+        stage.process([_make_event()])
+
+        assert provider.extract.call_count == 1
+
+    def test_an_event_that_fails_is_still_finished(self):
+        """Reporting is about the queue, not about success. A stage that only
+        reported wins would leave a failed event permanently in flight, and
+        `--status` would call the batch stalled on it."""
+        reports, fn = self._collect()
+        provider = MagicMock()
+        provider.extract.side_effect = ExtractionError("no reply")
+        stage = ExtractionStage(provider, None, _make_logger(), get_now=_now)
+        stage.set_progress_fn(fn)
+
+        stage.process([_make_event()])
+
+        assert [r.phase for r in reports] == ["started", "finished"]
