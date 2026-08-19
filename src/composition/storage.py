@@ -44,6 +44,8 @@ from src.storage.sqlite.curve_state import SqliteCurveStateRepository
 from src.storage.sqlite.extraction_observations import (
     SqliteExtractionObservationRepository,
 )
+from src.storage.identity_state import IdentityStateStore
+from src.storage.sqlite.identity_state import SqliteIdentityStateRepository
 from src.storage.sqlite.preference_revisions import (
     SqlitePreferenceRevisionRepository,
 )
@@ -102,6 +104,7 @@ class BatchStorage:
     curve_state: CurveStateRepository
     extraction_observations: ExtractionObservationRepository
     preference_revisions: PreferenceRevisionRepository
+    identity_state: IdentityStateStore
 
 
 def build_view_storage(db_path: Path | str, embedding_model: str) -> ViewStorage:
@@ -148,4 +151,5 @@ def build_batch_storage(db_path: Path | str, embedding_model: str) -> BatchStora
         air_quality_cache=SqliteDayCache(db_path, table="air_quality_cache"),
         movie_cache=SqliteMovieCache(db_path),
         http_cache=SqliteHttpCache(db_path),
+        identity_state=SqliteIdentityStateRepository(db_path),
     )

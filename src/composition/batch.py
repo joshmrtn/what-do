@@ -42,7 +42,8 @@ from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
-from src.ingestion.identity import content_id_rule
+from src.ingestion.latch import latched_rule
+from src.storage.identity_state import IdentityStateStore
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.ingestion.calendars.tribe_source import TribeCalendarSource
 from src.ingestion.cinemas.cabot_source import CabotListingSource
@@ -113,6 +114,7 @@ class BatchDependencies:
     curve_state_repository: CurveStateRepository
     extraction_observation_repository: ExtractionObservationRepository
     preference_revision_repository: PreferenceRevisionRepository
+    identity_state_repository: IdentityStateStore
     #: What the preference files said when this run loaded them. Built here
     #: because this is where they are read; `run_batch` records it rather
     #: than rebuilding it, so the run stamps the revision it actually scored
@@ -198,7 +200,7 @@ def build_dependencies(
     # listings. One rule, built once and handed to every adapter that keys a
     # candidate on something the publisher supplied — so there is one place the
     # answer can come from when the churn latch starts supplying it too.
-    uses_content_id = content_id_rule(config.sources)
+    uses_content_id = latched_rule(config.sources, state=storage.identity_state)
 
     # Alternative routes to the same Instagram data, tried in order. Apify is
     # first because it is the only one under contract; the scrapers are the
@@ -451,6 +453,7 @@ def build_dependencies(
         curve_state_repository=storage.curve_state,
         extraction_observation_repository=storage.extraction_observations,
         preference_revision_repository=storage.preference_revisions,
+        identity_state_repository=storage.identity_state,
         preference_revision=preference_revision,
     )
 

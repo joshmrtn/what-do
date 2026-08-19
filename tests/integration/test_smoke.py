@@ -74,6 +74,7 @@ from src.storage.sqlite.extraction_observations import (
 )
 from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
+from src.storage.sqlite.identity_state import SqliteIdentityStateRepository
 from src.storage.sqlite.preference_revisions import (
     SqlitePreferenceRevisionRepository,
 )
@@ -1229,6 +1230,7 @@ def test_batch_smoke(tmp_path: Path) -> None:
             db_path
         ),
         preference_revision_repository=SqlitePreferenceRevisionRepository(db_path),
+        identity_state_repository=SqliteIdentityStateRepository(db_path),
         preference_revision=_a_preference_revision(),
         config=config,
         db_path=db_path,
@@ -1274,6 +1276,7 @@ def test_batch_smoke(tmp_path: Path) -> None:
             db_path
         ),
         preference_revision_repository=SqlitePreferenceRevisionRepository(db_path),
+        identity_state_repository=SqliteIdentityStateRepository(db_path),
         preference_revision=_a_preference_revision(),
         config=config,
         db_path=db_path,

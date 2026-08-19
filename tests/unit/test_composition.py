@@ -24,6 +24,7 @@ from src.ingestion.aggregators.jsonld_source import JsonLdEventSource
 from src.ingestion.calendars.assabet_source import AssabetRssSource
 from src.ingestion.calendars.html_source import HtmlListingSource
 from src.ingestion.calendars.ics_source import IcsCalendarSource
+from src.storage.sqlite.identity_state import SqliteIdentityStateRepository
 from src.ingestion.calendars.moon_source import MoonRssSource
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
@@ -362,3 +363,45 @@ def test_an_unbounded_budget_reaches_the_stage_as_none(paths):
     deps = _build(paths, config=config)
 
     assert deps.extraction_stage._budget_minutes is None
+
+
+class TestTheAdaptersReadTheLatch:
+    """The latch is inert unless composition hands the adapters a rule that
+    knows about it. A rule built from config alone would let the latch fire,
+    announce itself, re-key the stored rows — and then the very next fetch would
+    mint publisher ids all over again."""
+
+    def _feed(self):
+        return _config(
+            sources=SourcesConfig(
+                ics_calendars=[FeedConfig("nsno", "https://x/feed.ics", "nsno_cal")]
+            )
+        )
+
+    def _source(self, paths, config):
+        built = _build(paths, config=config).ingestion_service._independent_sources
+        return next(s for s in built if isinstance(s, IcsCalendarSource))
+
+    def test_a_latched_source_is_built_with_content_ids(self, paths):
+        SqliteIdentityStateRepository(paths["db_path"]).latch(
+            "nsno", at=datetime(2026, 8, 18, tzinfo=timezone.utc)
+        )
+
+        source = self._source(paths, self._feed())
+
+        assert source._uses_content_id("nsno") is True
+
+    def test_an_unlatched_source_keeps_its_publisher_ids(self, paths):
+        source = self._source(paths, self._feed())
+
+        assert source._uses_content_id("nsno") is False
+
+    def test_config_alone_still_decides_where_it_speaks(self, paths):
+        config = _config(
+            sources=SourcesConfig(
+                ics_calendars=[FeedConfig("nsno", "https://x/feed.ics", "nsno_cal")],
+                identity={"nsno": "content"},
+            )
+        )
+
+        assert self._source(paths, config)._uses_content_id("nsno") is True

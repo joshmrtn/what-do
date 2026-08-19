@@ -35,6 +35,10 @@ from src.config import (
 )
 from src.enrichment.service import EnrichmentService
 from src.ingestion.id_churn import ChurnTally
+from src.ingestion.latch import LatchReport, arm_latches
+from src.storage.identity_state import IdentityStateStore
+from src.storage.rekey import rekey_to_content_ids
+from src.storage.snapshot import snapshot_database
 from src.ingestion.ingestion_service import IngestionService, SourceTally
 from src.models.event import Event
 from src.models.event_candidate import EventCandidate
@@ -105,6 +109,9 @@ class BatchResult:
     #: source whose ids re-mint every night cannot be tracked across runs, and
     #: nothing else in the batch would notice.
     churn: dict[str, ChurnTally] = field(default_factory=dict)
+    #: What the churn latch did, if anything. Rare and worth announcing: it
+    #: changes how a source is identified, permanently.
+    latch: LatchReport = field(default_factory=LatchReport)
     #: What the nightly refit decided, or None where it did not run. A gate that
     #: declines and a refit that never ran are the same silence otherwise, and
     #: the batch spent a night in the second state looking like the first.
@@ -140,6 +147,7 @@ def run_batch(
     curve_state_repository: CurveStateRepository,
     extraction_observation_repository: ExtractionObservationRepository,
     preference_revision_repository: PreferenceRevisionRepository,
+    identity_state_repository: IdentityStateStore,
     preference_revision: PreferenceRevision,
 ) -> BatchResult:
     """Run one overnight batch, from ingestion through persisted recommendations.
@@ -312,6 +320,19 @@ def run_batch(
             result.per_source = ingested.per_source
             result.failed_sources = list(ingested.failed_sources)
             result.churn = ingested.churn
+            # After ingestion, deliberately: this run's candidates are already
+            # stored, so re-keying here covers them along with everything that
+            # accumulated before. A dry run persisted nothing, so it has no
+            # rows to re-key and no evidence it is entitled to bank.
+            if not dry_run:
+                result.latch = _arm_identity_latches(
+                    ingested.churn,
+                    state=identity_state_repository,
+                    config=config,
+                    db_path=db_path,
+                    logger=logger,
+                    get_now=get_now,
+                )
             if raw_dump_fn is not None:
                 raw_dump_fn(ingested.raw)
             if dry_run:
@@ -698,6 +719,7 @@ def _summarise(result: BatchResult) -> str:
             )
 
     lines.extend(_churn_lines(result.churn))
+    lines.extend(_latch_lines(result.latch))
     if result.refit is not None:
         lines.append(f"  refit: {result.refit}")
     if result.failed_sources:
@@ -707,6 +729,81 @@ def _summarise(result: BatchResult) -> str:
     for error in result.errors:
         lines.append(f"  error: {error}")
     return "\n".join(lines)
+
+
+def _arm_identity_latches(
+    churn: dict[str, ChurnTally],
+    *,
+    state: IdentityStateStore,
+    config: AppConfig,
+    db_path: Path,
+    logger: StructuredLogger,
+    get_now: Callable[[], datetime],
+) -> LatchReport:
+    """Bank this run's churn evidence, and act on it where it is decisive.
+
+    A latch re-keys thousands of rows unattended, so a snapshot is taken first —
+    the re-key verifies itself inside its transaction and rolls back on failure,
+    but a rollback only covers what it anticipated.
+
+    A failure here must not fail the run. The re-key wrote nothing if it raised,
+    the latch survives in the database, and the next run tries again; losing a
+    whole night's batch over it would be the worse outcome.
+    """
+    report = arm_latches(churn, state=state, sources=config.sources, at=get_now())
+
+    for source in report.latched:
+        logger.warning(
+            f"identity latch: '{source}' re-mints its own ids, so it moves to "
+            "content-derived ids permanently. Re-keying its stored candidates.",
+            component="batch",
+            duration_ms=0,
+        )
+        try:
+            snapshot = snapshot_database(
+                db_path, reason=f"latch-{source}", at=get_now()
+            )
+            logger.info(
+                f"snapshot before re-key: {snapshot}", component="batch", duration_ms=0
+            )
+            outcome = rekey_to_content_ids(db_path, source=source)
+            logger.info(
+                f"re-keyed {source}: {outcome.candidates_before} rows became "
+                f"{outcome.candidates_after}",
+                component="batch",
+                duration_ms=0,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
+            logger.error(
+                f"re-key failed for '{source}': {exc}",
+                component="batch",
+                duration_ms=0,
+            )
+
+    for source in report.pinned_but_churning:
+        logger.warning(
+            f"'{source}' is pinned to its publisher's ids and is churning "
+            "anyway. The pin suppresses the latch, not the measurement.",
+            component="batch",
+            duration_ms=0,
+        )
+
+    return report
+
+
+def _latch_lines(report: LatchReport) -> list[str]:
+    """Announce a latch loudly. It changes a source's identity permanently."""
+    lines: list[str] = []
+    for source in report.latched:
+        lines.append(
+            f"  identity latch: {source} moved to content-derived ids "
+            "(its own ids re-mint)"
+        )
+    for source in report.pinned_but_churning:
+        lines.append(
+            f"  identity: {source} is pinned to publisher ids and churning anyway"
+        )
+    return lines
 
 
 def _churn_lines(churn: dict[str, ChurnTally]) -> list[str]:
@@ -879,6 +976,7 @@ def run(
             curve_state_repository=dependencies.curve_state_repository,
             extraction_observation_repository=dependencies.extraction_observation_repository,
             preference_revision_repository=dependencies.preference_revision_repository,
+            identity_state_repository=dependencies.identity_state_repository,
             preference_revision=dependencies.preference_revision,
             logger=logger,
             run_date=run_date,

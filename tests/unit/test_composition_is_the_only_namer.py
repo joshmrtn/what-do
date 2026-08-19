@@ -62,6 +62,10 @@ _RAW_CONNECTION = {
     # The module-level storage functions the repositories wrap rather than
     # restate. Goes when nothing calls them directly.
     "storage/events.py",
+    # A physical copy of the database file. Not a repository over a table —
+    # `VACUUM INTO` is the storage engine by definition, on the same terms as
+    # the schema checker. Taken before the churn latch re-keys unattended.
+    "storage/snapshot.py",
     # The two escape hatches, for the batched-transaction reason above.
     "ingestion/ingestion_service.py",
     "ingestion/venue_discovery.py",

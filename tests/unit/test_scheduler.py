@@ -48,7 +48,8 @@ from src.scoring.similarity_stage import SimilarityStage
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.weather import WeatherProvider
 from src.storage.memory.day_cache import InMemoryDayCache
-from src.storage.sqlite.connection import init_db
+from src.storage.sqlite.connection import connect, init_db
+from src.storage.sqlite.identity_state import SqliteIdentityStateRepository
 from src.storage.events import load_events, save_events
 from src.models.event_score import EventScore
 from src.models.ranking import Ranking
@@ -647,6 +648,7 @@ def _run(db, *, candidates=None, stored_candidates=None, deps=None, **kwargs):
         "preference_revision_repository", SqlitePreferenceRevisionRepository(db)
     )
     kwargs.setdefault("preference_revision", _a_preference_revision())
+    kwargs.setdefault("identity_state_repository", SqliteIdentityStateRepository(db))
 
     result = run_batch(
         config=_config(),
@@ -1330,6 +1332,7 @@ def test_a_hard_crash_leaves_the_run_unfinished(db):
             curve_state_repository=SqliteCurveStateRepository(db),
             extraction_observation_repository=SqliteExtractionObservationRepository(db),
             preference_revision_repository=SqlitePreferenceRevisionRepository(db),
+            identity_state_repository=SqliteIdentityStateRepository(db),
             preference_revision=_a_preference_revision(),
             embedding_stage=_embedding_stage(),
             semantic_deduplicator=_DedupSpy(SemanticDeduplicationEngine()),
@@ -1996,3 +1999,132 @@ def test_a_dry_run_records_no_revision(db):
         conn.close()
 
     assert revisions[0] == 0
+
+
+class TestTheChurnLatchInTheBatch:
+    """A log line only works if somebody reads it. The batch acts on the
+    measurement instead: once a publisher's ids are decisively worthless the
+    source is moved onto content ids, its stored rows are re-keyed in the same
+    run, and a snapshot is taken first because nobody is watching at 02:00.
+    """
+
+    def _churning_run(self, db, day: int):
+        """One run of a feed that re-mints every id it publishes."""
+        when = NOW + timedelta(days=day)
+        candidates = [
+            _candidate(
+                f"nsno:uid-{day}-{n}",
+                title=f"Show {n}",
+                source="nsno",
+                source_type="nsno",
+                discovered_at=when,
+                start_time=NOW + timedelta(days=40 + n),
+            )
+            for n in range(15)
+        ]
+        return _run(
+            db,
+            candidates=candidates,
+            deps={"ingestion_service": _ingestion_service(db, sources={"nsno": candidates})},
+            get_now=lambda: when,
+            ingest_only=True,
+            identity_state_repository=SqliteIdentityStateRepository(db),
+        )
+
+    def test_a_churning_feed_is_latched_and_re_keyed(self, db):
+        for day in range(3):
+            result, *_ = self._churning_run(db, day)
+
+        assert SqliteIdentityStateRepository(db).latched() == {"nsno"}
+        with connect(db) as conn:
+            ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM event_candidates WHERE source = 'nsno'"
+                )
+            ]
+        assert ids
+        assert not any("uid-" in i for i in ids)
+
+    def test_the_duplicates_are_collapsed_not_merely_stopped(self, db):
+        """Three nights of a re-minting feed is 45 rows for 15 listings. The
+        latch has to clear what accumulated, not only stop the bleeding."""
+        for day in range(3):
+            self._churning_run(db, day)
+
+        with connect(db) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM event_candidates WHERE source = 'nsno'"
+            ).fetchone()[0]
+        assert count == 15
+
+    def test_a_snapshot_is_taken_before_the_re_key(self, db):
+        for day in range(3):
+            self._churning_run(db, day)
+
+        snapshots = list(db.parent.glob("*-latch-nsno.db"))
+        assert len(snapshots) == 1
+
+    def test_the_run_reports_what_it_latched(self, db):
+        for day in range(3):
+            result, *_ = self._churning_run(db, day)
+
+        assert result.latch.latched == ["nsno"]
+
+    def test_a_stable_feed_is_never_latched(self, db):
+        stable = [
+            _candidate(f"stable:{n}", title=f"Show {n}", source="stable",
+                       source_type="stable",
+                       start_time=NOW + timedelta(days=40 + n))
+            for n in range(15)
+        ]
+        for day in range(4):
+            _run(
+                db,
+                candidates=stable,
+                deps={"ingestion_service": _ingestion_service(db, sources={"stable": stable})},
+                get_now=lambda: NOW + timedelta(days=day),
+                ingest_only=True,
+                identity_state_repository=SqliteIdentityStateRepository(db),
+            )
+
+        assert SqliteIdentityStateRepository(db).latched() == set()
+        assert not list(db.parent.glob("*-latch-*.db"))
+
+    def test_a_dry_run_latches_nothing(self, db):
+        """A dry run promises to persist nothing, and that has to include the
+        latch — which would otherwise re-key thousands of rows during a run
+        invoked precisely to avoid touching anything.
+
+        Poised deliberately: one real run banks evidence but not enough, so the
+        dry run is the one that would tip it. A dry run from an empty database
+        measures nothing and would pass whatever the guard did."""
+        # Two real runs: the first stores everything and matches nothing, so
+        # the second is the first to bank any evidence at all — and one run's
+        # worth is short of the bar.
+        self._churning_run(db, 0)
+        self._churning_run(db, 1)
+        assert SqliteIdentityStateRepository(db).latched() == set()
+
+        self._churning_run_dry(db, 2)
+
+        assert SqliteIdentityStateRepository(db).latched() == set()
+        assert SqliteIdentityStateRepository(db).get("nsno").qualifying_runs == 1
+
+    def _churning_run_dry(self, db, day: int):
+        when = NOW + timedelta(days=day)
+        candidates = [
+            _candidate(f"nsno:uid-{day}-{n}", title=f"Show {n}", source="nsno",
+                       source_type="nsno", discovered_at=when,
+                       start_time=NOW + timedelta(days=40 + n))
+            for n in range(15)
+        ]
+        return _run(
+            db,
+            candidates=candidates,
+            deps={"ingestion_service": _ingestion_service(db, sources={"nsno": candidates})},
+            get_now=lambda: when,
+            ingest_only=True,
+            dry_run=True,
+            identity_state_repository=SqliteIdentityStateRepository(db),
+        )
