@@ -26,8 +26,15 @@ from src.config import (
 from src.config import ObservabilityConfig
 from src.models.run import RunRecord
 from src.observability.heartbeat import Heartbeat, Item
-from src.presentation.cli import ViewSettings, default_view_settings, run
+from src.presentation.cli import (
+    ViewSettings,
+    _default_crash_report,
+    default_view_settings,
+    run,
+)
 from src.presentation.status import StatusInputs
+from src.storage.sqlite.connection import init_db
+from src.storage.sqlite.runs import SqliteRunRepository
 from src.scoring.similarity import Reason
 
 TZ = timezone(timedelta(hours=-4))
@@ -144,6 +151,9 @@ class _Harness:
         self.requested_embedding_model: str | None = None
         self.load_ranked_calls = 0
         self.load_events_calls = 0
+        #: Every crash `--status` reported, as (run_id, when). A spy, so a test
+        #: can assert the write happened without one reaching a database.
+        self.crashes_reported: list[tuple[str, datetime]] = []
 
     def _load_ranked(self, db_path, run_date=None, embedding_model=None):
         self.load_ranked_calls += 1
@@ -158,7 +168,20 @@ class _Harness:
         self.load_events_calls += 1
         return self.events
 
+    def _report_crash(self, db_path, run_id, reported_at) -> None:
+        self.crashes_reported.append((run_id, reported_at))
+
     def invoke(self, *argv: str, probe_status=None, read_progress=None) -> int:
+        """Every seam `run()` has, substituted.
+
+        The three freshness collaborators are inert by default rather than
+        absent. Left on their production defaults they build real repositories
+        against `DEFAULT_DB_PATH` — which is how thirty-five tests in this file
+        came to read the developer's live database on every run, invisibly,
+        for as long as the rescore seam existed. `tests/live_db_guard.py` now
+        refuses that, and this is the other half: a seam that exists is a seam
+        this harness fills.
+        """
         return run(
             list(argv),
             get_now=lambda: self.now,
@@ -168,6 +191,10 @@ class _Harness:
             load_pairs=self._load_ranked,
             load_all_events=self._load_events,
             db_ready=lambda _: self.db_ready,
+            check_freshness=lambda *a, **k: None,
+            rescore=lambda *a, **k: None,
+            load_rescore=lambda *a, **k: None,
+            report_crash=self._report_crash,
             **({} if probe_status is None else {"probe_status": probe_status}),
             **({} if read_progress is None else {"read_progress": read_progress}),
         )
@@ -734,6 +761,61 @@ class TestStatus:
         assert code == 0
         assert harness.out.startswith("running")
 
+    def test_showing_a_crash_footnote_records_that_it_was_shown(self):
+        """The write that lets the footnote clear, at the seam that performs it.
+
+        Without it the note is permanent: the run of 2026-08-12 was still on
+        every `--status` a week later, by which time everything it missed had
+        been re-ingested or had simply happened.
+        """
+        crash = RunRecord(run_id="run-old", started_at=NOW - timedelta(days=7))
+        latest = RunRecord(
+            run_id="run-new", started_at=NOW - timedelta(hours=8),
+            completed_at=NOW - timedelta(hours=1), outcome="success",
+        )
+        harness = _Harness()
+
+        harness.invoke(
+            "--status",
+            probe_status=lambda db_path: self._inputs(
+                lock_held=False, open_run=crash, latest_run=latest
+            ),
+        )
+
+        assert "never finished" in harness.out
+        assert harness.crashes_reported == [("run-old", NOW)]
+
+    def test_a_status_with_nothing_to_footnote_records_nothing(self):
+        harness = _Harness()
+
+        harness.invoke("--status", probe_status=lambda db_path: self._inputs())
+
+        assert harness.crashes_reported == []
+
+    def test_the_stamp_happens_after_the_notice_is_printed(self):
+        """A crash between the two must lose the stamp, never the notice.
+
+        Stamping first and dying before the print would mark a crash reported
+        that nobody ever saw — the one outcome worse than reporting it twice.
+        """
+        printed_when_stamped = []
+        crash = RunRecord(run_id="run-old", started_at=NOW - timedelta(days=7))
+        latest = RunRecord(
+            run_id="run-new", started_at=NOW - timedelta(hours=8),
+            completed_at=NOW - timedelta(hours=1), outcome="success",
+        )
+        harness = _Harness()
+        harness._report_crash = lambda *a: printed_when_stamped.append(harness.out)
+
+        harness.invoke(
+            "--status",
+            probe_status=lambda db_path: self._inputs(
+                lock_held=False, open_run=crash, latest_run=latest
+            ),
+        )
+
+        assert printed_when_stamped and "never finished" in printed_when_stamped[0]
+
     def test_it_never_loads_a_ranking(self):
         """It is asked while a batch is mid-run, when reading the ranking is
         both irrelevant and the slowest thing the CLI does."""
@@ -824,3 +906,42 @@ class TestTheStaleBannerSaysWhyItIsStale:
 
         assert code == 0
         assert "Tonight Early" in harness.out
+
+
+class TestRecordingThatACrashWasReported:
+    """`_default_crash_report` is the read path's one write, so it fails quietly.
+
+    The notice is already on screen by the time it runs. A database that cannot
+    be written should therefore cost a repeated footnote and nothing else —
+    letting it raise would make reporting a crash the cause of a second one.
+    """
+
+    def test_a_missing_database_is_not_created(self, tmp_path):
+        """`sqlite3.connect` makes a zero-byte file for any path it is handed,
+        and a stray one then fails with `no such table` on the next read."""
+        absent = tmp_path / "never-existed.db"
+
+        _default_crash_report(absent, "run-old", NOW)
+
+        assert not absent.exists()
+
+    def test_an_unwritable_database_does_not_raise(self, tmp_path):
+        db = tmp_path / "readonly.db"
+        init_db(db)
+        db.chmod(0o444)
+
+        try:
+            _default_crash_report(db, "run-old", NOW)
+        finally:
+            db.chmod(0o644)
+
+    def test_a_writable_database_records_the_report(self, tmp_path):
+        """The other half: quiet on failure must not mean quiet on success."""
+        db = tmp_path / "runs.db"
+        init_db(db)
+        repo = SqliteRunRepository(db)
+        run_id = repo.start(NOW - timedelta(days=7))
+
+        _default_crash_report(db, run_id, NOW)
+
+        assert repo.get(run_id).crash_reported_at == NOW

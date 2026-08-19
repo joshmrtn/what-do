@@ -51,6 +51,24 @@ class StatusInputs:
     latest_run: RunRecord | None
 
 
+@dataclass(frozen=True)
+class StatusReport:
+    """What to print, and what printing it has just told someone.
+
+    The second half exists because the crash footnote clears once it has been
+    read, which needs a write — and `render_status` is a pure function that
+    should stay one. It names the decision instead of taking the action, so the
+    caller can record it without re-deriving *did the note appear*, a condition
+    that would then live in two places and drift.
+    """
+
+    text: str
+    #: The run whose death this text has just footnoted, if it did. The caller
+    #: marks it reported, **after** printing: a crash between the two must lose
+    #: the stamp rather than the notice.
+    crash_reported: str | None = None
+
+
 def probe_status(
     runs: RunRepository | None,
     *,
@@ -99,7 +117,7 @@ def render_status(
     now: datetime,
     stall_after: timedelta,
     zone: tzinfo = timezone.utc,
-) -> str:
+) -> StatusReport:
     """Describe what the batch is doing, in the terms a person would ask it.
 
     Args:
@@ -121,27 +139,31 @@ def render_status(
             for it is the kind of wrong that looks right.
 
     Returns:
-        A multi-line summary. Never raises on partial information — every
-        unknown reads as an unknown rather than as an alarm.
+        The multi-line summary, and any crash the summary has just footnoted.
+        Never raises on partial information — every unknown reads as an unknown
+        rather than as an alarm.
     """
     live = heartbeat if _is_live(heartbeat, heartbeat_run) else None
 
     if lock_held:
         if live is None:
-            return _lines("running", ["no progress reported yet — still starting up"])
+            return StatusReport(
+                _lines("running", ["no progress reported yet — still starting up"])
+            )
         stalled_for = _stalled_for(live, now, stall_after)
         if stalled_for is not None:
-            return _lines("stalled", _stall_detail(live, stalled_for))
-        return _lines("running", _progress_detail(live, now))
+            return StatusReport(_lines("stalled", _stall_detail(live, stalled_for)))
+        return StatusReport(_lines("running", _progress_detail(live, now)))
 
     if live is not None:
-        return _lines("died", _death_detail(live, now, zone))
+        return StatusReport(_lines("died", _death_detail(live, now, zone)))
     if _died_without_reporting(open_run, latest_run):
-        return _lines("died", [
+        return StatusReport(_lines("died", [
             "a run is open in run_history and no process holds the lock,",
             "and it died before it reported any progress — see logs/batch-latest.log",
-        ])
-    return _lines("idle", _idle_detail(latest_run, open_run, now, zone))
+        ]))
+    detail, footnoted = _idle_detail(latest_run, open_run, now, zone)
+    return StatusReport(_lines("idle", detail), crash_reported=footnoted)
 
 
 def _is_live(heartbeat: Heartbeat | None, run: RunRecord | None) -> bool:
@@ -323,22 +345,50 @@ def _idle_detail(
     open_run: RunRecord | None,
     now: datetime,
     zone: tzinfo,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
+    """The idle lines, and the crash they footnote if they footnote one."""
     if latest is None:
-        return ["no batch has ever run against this database"]
+        return ["no batch has ever run against this database"], None
     if latest.completed_at is None:
-        return [f"a run started {format_duration(now - latest.started_at)} ago"]
+        return [f"a run started {format_duration(now - latest.started_at)} ago"], None
     detail = [
         f"last run {latest.started_at.astimezone(zone):%Y-%m-%d %H:%M} → "
         f"{latest.completed_at.astimezone(zone):%H:%M}, "
         f"{latest.outcome}, {format_duration(now - latest.completed_at)} ago"
     ]
     detail.extend(f"  {error}" for error in latest.errors)
-    if open_run is not None and open_run.run_id != latest.run_id:
-        # Named, not hidden: `open_run` exists so an unexamined crash cannot be
-        # lost. A footnote is where it belongs once later runs have succeeded.
-        detail.append(
-            f"note: the run of {open_run.started_at.astimezone(zone):%Y-%m-%d} "
-            "never finished"
-        )
-    return detail
+    crash = _worth_footnoting(open_run, latest)
+    if crash is None:
+        return detail, None
+    # Named, not hidden: `open_run` exists so an unexamined crash cannot be
+    # lost. A footnote is where it belongs once later runs have succeeded — and
+    # printing it is what makes it read, so it is reported back to be stamped.
+    detail.append(
+        f"note: the run of {crash.started_at.astimezone(zone):%Y-%m-%d} "
+        "never finished"
+    )
+    return detail, crash.run_id
+
+
+def _worth_footnoting(
+    open_run: RunRecord | None, latest: RunRecord
+) -> RunRecord | None:
+    """The unfinished run still worth mentioning, if there is one.
+
+    Two conditions, and they answer different questions. The run must not be
+    the latest one — while it is, the states above report it directly and
+    unconditionally, so a footnote would be the same news twice. And it must
+    not already have been reported: a death examined once has been examined,
+    and a week-old crash still footnoting a run of successes is noise rather
+    than a warning.
+
+    Any *completed* later run clears it, whatever its outcome. When the latest
+    run is `partial` or `failed`, the line above already carries that outcome
+    and its errors — adding an older death underneath reports a stale problem
+    on a display that is describing a current one. Requiring `success` would
+    also pin the note for as long as a bad patch lasted, which is the
+    stuck-forever behaviour this exists to remove.
+    """
+    if open_run is None or open_run.run_id == latest.run_id:
+        return None
+    return open_run if open_run.crash_reported_at is None else None

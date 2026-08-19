@@ -68,6 +68,13 @@ class InMemoryRunRepository:
             skipped_sources=list(skipped_sources or []),
         )
 
+    def mark_crash_reported(self, run_id: str, reported_at: datetime) -> None:
+        """Record that this run's death has been reported. First report wins."""
+        existing = self._runs.get(run_id)
+        if existing is None or existing.crash_reported_at is not None:
+            return
+        self._runs[run_id] = replace(existing, crash_reported_at=reported_at)
+
     def open_run(self) -> RunRecord | None:
         """The most recent run that began and never finished, if any."""
         unfinished = [r for r in self._runs.values() if r.completed_at is None]

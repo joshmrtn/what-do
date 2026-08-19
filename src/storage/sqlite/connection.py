@@ -433,7 +433,13 @@ CREATE TABLE IF NOT EXISTS run_history (
     -- records the scoring ones: a verdict is a function of numbers that will
     -- be tuned, and a retuned threshold otherwise reinterprets every label
     -- already stored. Wired by the dedup provenance work.
-    dedup_config           TEXT
+    dedup_config           TEXT,
+    -- When this run's death was first reported. `--status` footnotes an
+    -- unfinished run so an unexamined crash is not lost; without somewhere to
+    -- record that it has been read, the footnote never leaves. Declared last
+    -- deliberately: the live database gets this column by ALTER TABLE, which
+    -- appends, and `what-do-check-schema` compares column order.
+    crash_reported_at      TEXT
 );
 
 -- Every comparison the dedup passes made, not only the ones that merged.

@@ -57,7 +57,7 @@ what-do-check-config = "src.config_check:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-p tests.tier_plugin -p pytester --strict-markers -m 'not external'"
+addopts = "-p tests.tier_plugin -p tests.live_db_guard -p pytester --strict-markers -m 'not external'"
 # Tiers are named for the reason to run a test, not for what it costs.
 # `model` is gone: asking whether a model is any good is the bench's job
 # (`what-do-bench`, issue #2), and a marker for it made `tests/model/` a second

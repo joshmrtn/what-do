@@ -13,7 +13,8 @@ from src.storage.sqlite.connection import connect
 
 _COLUMNS = (
     "id, started_at, completed_at, duration_ms, outcome, "
-    "steps_completed, errors, skipped_sources, scoring_config, preference_revision_id"
+    "steps_completed, errors, skipped_sources, scoring_config, preference_revision_id, "
+    "crash_reported_at"
 )
 
 
@@ -36,6 +37,7 @@ def _to_record(row: tuple[Any, ...]) -> RunRecord:
         skipped_sources=json.loads(row[7]) if row[7] else [],
         scoring_config=row[8],
         preference_revision_id=row[9],
+        crash_reported_at=datetime.fromisoformat(row[10]) if row[10] else None,
     )
 
 
@@ -108,6 +110,28 @@ class SqliteRunRepository:
                     outcome,
                     run_id,
                 ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_crash_reported(self, run_id: str, reported_at: datetime) -> None:
+        """Record that this run's death has been reported to someone.
+
+        Only the first report is kept — the `IS NULL` guard makes a second call
+        a no-op in SQL rather than a rule a caller has to remember. The question
+        the column answers is *has anyone been told*, and overwriting would lose
+        when they were.
+
+        An unknown `run_id` updates nothing rather than raising, matching
+        `finish`: reporting a crash must never be what crashes.
+        """
+        conn = connect(self._db_path)
+        try:
+            conn.execute(
+                "UPDATE run_history SET crash_reported_at = ? "
+                "WHERE id = ? AND crash_reported_at IS NULL",
+                (reported_at.isoformat(), run_id),
             )
             conn.commit()
         finally:

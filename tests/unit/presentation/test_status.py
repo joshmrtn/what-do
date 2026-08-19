@@ -46,7 +46,8 @@ def _run(**kwargs) -> RunRecord:
     return RunRecord(**defaults)
 
 
-def _render(**kwargs) -> str:
+def _report(**kwargs):
+    """The whole report: the text, and any crash the text has now reported."""
     defaults = dict(
         lock_held=True,
         heartbeat=_beat(),
@@ -59,6 +60,11 @@ def _render(**kwargs) -> str:
     )
     defaults.update(kwargs)
     return render_status(**defaults)
+
+
+def _render(**kwargs) -> str:
+    """Just the text, which is what most of these tests are about."""
+    return _report(**kwargs).text
 
 
 class TestRunning:
@@ -203,6 +209,75 @@ class TestDied:
         assert "2026-08-12" in out
         assert "never finished" in out
 
+    def test_a_crash_already_reported_is_not_mentioned_again(self):
+        """The other half of the same judgement.
+
+        A death nobody has examined must not be lost; a death examined a week
+        ago must not still be footnoting a status line whose own news is that
+        the last seven runs succeeded. Every event that run missed has since
+        been re-ingested or has simply happened.
+        """
+        crash = _run(
+            run_id="run-old",
+            started_at=_START - timedelta(days=6),
+            crash_reported_at=_at(500),
+        )
+        out = _render(
+            lock_held=False, heartbeat=None, heartbeat_run=None,
+            open_run=crash, latest_run=_run(run_id="run-new", completed_at=_at(480),
+                                            outcome="success"),
+            now=_at(600),
+        )
+
+        assert out.startswith("idle")
+        assert "never finished" not in out
+
+    def test_printing_the_note_is_what_reports_the_crash(self):
+        """The decision is made once, where the note is written.
+
+        Returned rather than acted on, because the caller owns the write and
+        this function stays pure — and re-deriving *did it show the note* at the
+        call site would put the condition in two places to drift apart.
+        """
+        crash = _run(run_id="run-old", started_at=_START - timedelta(days=6))
+
+        report = _report(
+            lock_held=False, heartbeat=None, heartbeat_run=None,
+            open_run=crash, latest_run=_run(run_id="run-new", completed_at=_at(480),
+                                            outcome="success"),
+            now=_at(600),
+        )
+
+        assert "never finished" in report.text
+        assert report.crash_reported == "run-old"
+
+    def test_a_crash_already_reported_is_not_reported_twice(self):
+        crash = _run(
+            run_id="run-old",
+            started_at=_START - timedelta(days=6),
+            crash_reported_at=_at(500),
+        )
+
+        report = _report(
+            lock_held=False, heartbeat=None, heartbeat_run=None,
+            open_run=crash, latest_run=_run(run_id="run-new", completed_at=_at(480),
+                                            outcome="success"),
+            now=_at(600),
+        )
+
+        assert report.crash_reported is None
+
+    def test_an_idle_line_with_no_crash_reports_nothing(self):
+        finished = _run(completed_at=_at(480), outcome="success")
+
+        report = _report(
+            lock_held=False, heartbeat=None, heartbeat_run=None,
+            open_run=None, latest_run=finished, now=_at(600),
+        )
+
+        assert report.text.startswith("idle")
+        assert report.crash_reported is None
+
     def test_a_leftover_from_a_finished_run_is_not_a_death(self):
         """A file whose run has a `completed_at` is the remains of a batch that
         finished and could not clean up. Reading that as a death would cry wolf
@@ -267,6 +342,31 @@ class TestIdle:
         )
 
         assert "no batch has ever run" in out
+
+
+class TestOnlyTheFootnoteReportsACrash:
+    """A live batch is not a report that an old one died.
+
+    The three other states each say something about a crash — `died` names the
+    event it was on when it went. None of them prints the footnote, so none of
+    them may mark it read: doing so would clear a notice on the strength of a
+    line that never appeared.
+    """
+
+    def test_a_running_batch_reports_nothing(self):
+        assert _report().crash_reported is None
+
+    def test_a_stalled_batch_reports_nothing(self):
+        report = _report(now=_at(400))
+
+        assert report.text.startswith("stalled")
+        assert report.crash_reported is None
+
+    def test_a_death_reports_nothing(self):
+        report = _report(lock_held=False, now=_at(300))
+
+        assert report.text.startswith("died")
+        assert report.crash_reported is None
 
 
 class TestWhatCannotBeRead:

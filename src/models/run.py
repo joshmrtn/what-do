@@ -48,3 +48,9 @@ class RunRecord:
     #: of the same guarantee: the constants above say how the arithmetic ran,
     #: and this says what it ran against. None for the runs that predate it.
     preference_revision_id: str | None = None
+    #: When this run's death was first reported to someone. `--status` footnotes
+    #: an unfinished run so an unexamined crash cannot be lost, and this is what
+    #: lets the footnote clear after it has been read rather than staying on
+    #: screen for ever. None means never reported, which is every finished run
+    #: and every crash nobody has looked at yet.
+    crash_reported_at: datetime | None = None

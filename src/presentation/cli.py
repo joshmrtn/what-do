@@ -93,6 +93,10 @@ def _default_now() -> datetime:
 PairLoader = Callable[..., list[RankedEvent]]
 #: Reads the live batch state for `--status`, given the database to ask about.
 StatusProbe = Callable[[Path], StatusInputs]
+#: Records that a crash footnote has been shown, so it stops being shown. Its
+#: own seam rather than a repository handle on `StatusInputs`, which is a value
+#: precisely so the four states can be arranged without a live database.
+CrashReporter = Callable[[Path, str, datetime], None]
 #: Reads the heartbeat alone, for the stale banner. No lock probe: the listing
 #: is the hot path and every probe holds the batch lock for a few microseconds.
 ProgressReader = Callable[[], "Heartbeat | None"]
@@ -107,6 +111,22 @@ def _default_status(db_path: Path) -> StatusInputs:
     """
     runs = build_run_repository(db_path) if has_schema(db_path) else None
     return probe_status(runs)
+
+
+def _default_crash_report(db_path: Path, run_id: str, reported_at: datetime) -> None:
+    """Record that `--status` has now shown this crash to someone.
+
+    The one write on the read path, and the only reason it is allowed to fail
+    quietly: the notice has already been printed by the time this runs, so a
+    database that cannot be written costs a repeated footnote and nothing else.
+    Letting it raise would turn reporting a crash into a second crash.
+    """
+    if not has_schema(db_path):
+        return
+    try:
+        build_run_repository(db_path).mark_crash_reported(run_id, reported_at)
+    except Exception:  # noqa: BLE001 - a read must not fail on a bookkeeping write
+        pass
 
 def _default_pairs(
     db_path: Path,
@@ -977,6 +997,7 @@ def run(
     rescore: Rescorer = _default_rescore,
     load_rescore: RescoreLoader = _default_rescore_record,
     probe_status: StatusProbe = _default_status,
+    report_crash: CrashReporter = _default_crash_report,
     read_progress: ProgressReader = read_heartbeat,
 ) -> int:
     """Run one CLI invocation and return its exit code.
@@ -1007,6 +1028,9 @@ def run(
         probe_status: Reads the lock, the heartbeat and the run rows for
             `--status`. Injected on the same terms as the loaders, so the four
             states can be tested without arranging a real dying batch.
+        report_crash: Records that a crash footnote has been shown, so it stops
+            being shown. The read path's one write, and injected so a test can
+            watch it happen without a database.
         read_progress: Reads the heartbeat for the stale banner, so a listing
             older than tonight can say whether a batch is working on it.
 
@@ -1029,7 +1053,7 @@ def run(
     if args.status:
         return _cmd_status(
             args, out, get_now=get_now, probe=probe_status,
-            settings=load_view_settings(),
+            report_crash=report_crash, settings=load_view_settings(),
         )
 
     return _cmd_recommend(
@@ -1054,6 +1078,7 @@ def _cmd_status(
     *,
     get_now: Callable[[], datetime],
     probe: StatusProbe,
+    report_crash: CrashReporter,
     settings: ViewSettings,
 ) -> int:
     """Print what the batch is doing. Always exits 0.
@@ -1062,20 +1087,24 @@ def _cmd_status(
     wanted — a shell pipeline watching a run — where a failed batch is news to
     report, not an error in the reporting.
     """
-    inputs = probe(Path(args.db) if args.db else DEFAULT_DB_PATH)
-    print(
-        render_status(
-            lock_held=inputs.lock_held,
-            heartbeat=inputs.heartbeat,
-            heartbeat_run=inputs.heartbeat_run,
-            open_run=inputs.open_run,
-            latest_run=inputs.latest_run,
-            now=get_now(),
-            stall_after=timedelta(minutes=settings.observability.stall_after_minutes),
-            zone=settings.zone,
-        ),
-        file=stdout,
+    db_path = Path(args.db) if args.db else DEFAULT_DB_PATH
+    inputs = probe(db_path)
+    now = get_now()
+    report = render_status(
+        lock_held=inputs.lock_held,
+        heartbeat=inputs.heartbeat,
+        heartbeat_run=inputs.heartbeat_run,
+        open_run=inputs.open_run,
+        latest_run=inputs.latest_run,
+        now=now,
+        stall_after=timedelta(minutes=settings.observability.stall_after_minutes),
+        zone=settings.zone,
     )
+    print(report.text, file=stdout)
+    # After printing, never before: a failure in between must cost the stamp
+    # rather than the notice, so the crash is reported twice instead of never.
+    if report.crash_reported is not None:
+        report_crash(db_path, report.crash_reported, now)
     return 0
 
 

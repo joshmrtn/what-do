@@ -192,6 +192,21 @@ class RunRepository(Protocol):
         """
         ...
 
+    def mark_crash_reported(self, run_id: str, reported_at: datetime) -> None:
+        """Record that this run's death has been reported to someone.
+
+        The counterpart to `open_run`. That one makes sure a crash is not lost;
+        this one makes sure the notice does not outlive its usefulness, so a
+        death from last week stops footnoting a status line that is otherwise
+        reporting healthy runs.
+
+        Only the first report is kept: the question is *has anyone been told*,
+        and a second telling must not lose when the first happened. An unknown
+        `run_id` updates nothing rather than raising, matching `finish` —
+        reporting a crash must never be what crashes.
+        """
+        ...
+
     def open_run(self) -> RunRecord | None:
         """The most recent run that began and never finished, if any.
 

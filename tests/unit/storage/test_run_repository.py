@@ -289,3 +289,57 @@ class TestTheLatestRun:
 
         assert repo.latest().run_id == run_id
         assert repo.latest().completed_at is None
+
+
+class TestReportingACrash:
+    """A crash is announced once, and then it is old news.
+
+    `--status` footnotes an unfinished run once a later run exists, so a death
+    nobody examined cannot be lost. Left to itself that footnote never leaves:
+    the run of 2026-08-12 was still on screen a week later, by which point every
+    event it missed had been re-ingested or had simply happened.
+
+    Stamping it is what lets the footnote clear without inventing an
+    acknowledgement command. The stamp lives on the run because that is what it
+    is a fact about.
+    """
+
+    def test_a_run_has_not_been_reported_when_it_starts(self, repo, revisions):
+        run_id = repo.start(_START, preference_revision_id=_a_revision(revisions))
+
+        assert repo.get(run_id).crash_reported_at is None
+
+    def test_reporting_a_crash_records_when(self, repo, revisions):
+        run_id = repo.start(_START, preference_revision_id=_a_revision(revisions))
+        seen_at = _START + timedelta(days=7, hours=11)
+
+        repo.mark_crash_reported(run_id, seen_at)
+
+        assert repo.get(run_id).crash_reported_at == seen_at
+
+    def test_the_first_report_is_the_one_kept(self, repo, revisions):
+        """The question is *has this been told to anyone*, so a second telling
+        must not overwrite when the first happened."""
+        run_id = repo.start(_START, preference_revision_id=_a_revision(revisions))
+        first = _START + timedelta(days=1)
+
+        repo.mark_crash_reported(run_id, first)
+        repo.mark_crash_reported(run_id, _START + timedelta(days=30))
+
+        assert repo.get(run_id).crash_reported_at == first
+
+    def test_an_unknown_run_id_is_ignored_rather_than_raising(self, repo):
+        """Matching `finish`: reporting must never be what kills the reporter."""
+        repo.mark_crash_reported("no-such-run", _START)
+
+    def test_the_stamp_survives_finishing_the_run(self, repo, revisions):
+        """A run reported as dead and later completed by hand keeps both facts."""
+        run_id = repo.start(_START, preference_revision_id=_a_revision(revisions))
+        seen_at = _START + timedelta(days=2)
+        repo.mark_crash_reported(run_id, seen_at)
+
+        repo.finish(run_id, outcome="failed", completed_at=_START + timedelta(days=3))
+
+        record = repo.get(run_id)
+        assert record.crash_reported_at == seen_at
+        assert record.outcome == "failed"
