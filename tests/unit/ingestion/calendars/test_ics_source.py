@@ -11,6 +11,7 @@ import pytest
 
 from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
+from src.ingestion.candidate_id import derive_content_id
 from src.ingestion.calendars.ics_source import IcsCalendarSource
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
@@ -171,6 +172,42 @@ class TestWhenThePublishersUidsAreNotTrusted:
 
         assert len(results) == 3
         assert len({c.id for c in results}) == 3
+
+    def test_an_all_day_listing_is_keyed_on_the_start_it_stores(self, cache):
+        """`_place_start` moves an all-day event off midnight and onto its own
+        night, and `__post_init__` canonicalises to UTC. An id derived before
+        either step describes a value the row never holds, so the listing is
+        re-minted on every fetch — measured live, one all-day listing came back
+        as a brand new row the first fetch after the re-key."""
+        all_day = _calendar(
+            "UID:allday@google.com\r\n"
+            "SUMMARY:​[The Rhumb Line\\, Gloucester\\, Music] Auditions\r\n"
+            "DTSTART;VALUE=DATE:20260810\r\n"
+            "DTEND;VALUE=DATE:20260811\r\n"
+            "STATUS:CONFIRMED"
+        )
+
+        candidate = _make_source(
+            cache, session=_session(_response(all_day)), content_ids=True
+        ).fetch()[0]
+
+        assert candidate.id == derive_content_id(
+            source=candidate.source,
+            title=candidate.title,
+            venue=candidate.venue,
+            start=candidate.start_time,
+        )
+
+    def test_every_candidate_is_keyed_on_its_own_stored_fields(self, cache):
+        """The invariant, stated once: the id is a function of what the row
+        holds. It is the same thing the re-key verifies before committing."""
+        for candidate in _make_source(cache, content_ids=True).fetch():
+            assert candidate.id == derive_content_id(
+                source=candidate.source,
+                title=candidate.title,
+                venue=candidate.venue,
+                start=candidate.start_time,
+            )
 
     def test_a_different_listing_still_gets_a_different_id(self, cache):
         other = _calendar(

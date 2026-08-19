@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.network.http import HttpFetcher
-from src.ingestion.candidate_id import derive_content_id
+from src.ingestion.candidate_id import with_content_id
 from src.ingestion.calendars.listing_category import category_metadata
 from src.ingestion.identity import ContentIdRule
 from src.ingestion.ics import VEvent, parse_ics
@@ -178,7 +178,7 @@ class IcsCalendarSource(IngestionSource):
 
         title, venue, city, category = self._split_summary(event.summary)
 
-        return EventCandidate(
+        candidate = EventCandidate(
             id=self._candidate_id(occurrence, event.uid),
             source=self._config.name,
             source_type=self._config.source_type,
@@ -202,6 +202,16 @@ class IcsCalendarSource(IngestionSource):
             metadata=category_metadata(category),
         )
 
+        # Re-keyed after construction, never before: the id has to be a
+        # function of what the row stores. `_place_start` moves an all-day
+        # event onto its own night and `__post_init__` canonicalises to UTC,
+        # so an id computed from `occurrence.start` describes a value this
+        # candidate will never hold — and the listing is re-minted for ever.
+        if self._uses_content_id(self._config.name):
+            return with_content_id(candidate)
+
+        return candidate
+
     def _candidate_id(self, occurrence: Occurrence, uid: str) -> str:
         """Derive a stable id, adding the slot only when the UID is ambiguous.
 
@@ -213,20 +223,10 @@ class IcsCalendarSource(IngestionSource):
         The slot is the *original* one, not where a moved instance landed, so
         rescheduling updates the stored event instead of orphaning it.
 
-        None of which applies to a publisher whose UIDs identify nothing. There
-        the listing itself is the identity, and the start is carried always
-        rather than only for a series — it is what tells one occurrence from the
-        next when title and venue are shared.
+        A source latched to content ids never reaches here — `_to_candidate`
+        re-keys the finished candidate instead, so the id is derived from the
+        fields the row stores rather than from anything on the way to them.
         """
-        if self._uses_content_id(self._config.name):
-            title, venue, city, _ = self._split_summary(occurrence.event.summary)
-            return derive_content_id(
-                source=self._config.name,
-                title=title,
-                venue=venue or self._config.venue,
-                start=occurrence.start,
-            )
-
         base = f"{self._config.name}:{uid}"
         if not occurrence.from_series:
             return base

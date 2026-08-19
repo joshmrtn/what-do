@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.config import FeedConfig
+from src.ingestion.candidate_id import derive_content_id
 from src.ingestion.cinemas.cabot_source import CabotListingSource
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
@@ -271,6 +272,24 @@ class TestWhenTheEventIdsAreNotTrusted:
         )
 
         assert "cabot:1" != source.fetch()[0].id
+
+    def test_every_candidate_is_keyed_on_its_own_stored_fields(self, db):
+        """The id must be a function of what the row holds, not of anything on
+        the way to it — the same invariant the re-key verifies. A Cabot listing
+        with no published hour is moved to the day-start, which is exactly the
+        kind of shift that breaks an id derived too early."""
+        source, _ = _make_source(
+            db, {URL: _page(_item("1", 7), _item("2", 8), total=2)},
+            content_ids=True,
+        )
+
+        for candidate in source.fetch():
+            assert candidate.id == derive_content_id(
+                source=candidate.source,
+                title=candidate.title,
+                venue=candidate.venue,
+                start=candidate.start_time,
+            )
 
     def test_two_events_on_different_days_stay_distinct(self, db):
         source, _ = _make_source(

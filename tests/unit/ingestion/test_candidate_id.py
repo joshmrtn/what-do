@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -10,6 +10,7 @@ from src.ingestion.candidate_id import (
     content_identity,
     derive_candidate_id,
     derive_content_id,
+    with_content_id,
 )
 from src.ingestion.id_churn import content_key
 from src.models.event_candidate import EventCandidate
@@ -140,3 +141,63 @@ class TestTheContentKeyIsSharedWithTheChurnDetector:
         assert derive_content_id(
             source="nsno_ics", title=None, venue=None, start=START
         )
+
+
+class TestTheIdIsDerivedFromWhatIsStored:
+    """The id must be a function of the candidate's **own stored fields**.
+
+    An adapter deriving it from an intermediate value instead is a silent
+    duplicate generator: the stored row is keyed on one thing, the next fetch
+    computes another, and nothing matches. Measured live — the ICS adapter keyed
+    on `occurrence.start` while storing `_place_start(...)`, which shifts an
+    all-day event onto its night, so one all-day listing was re-minted the very
+    first fetch after the re-key.
+
+    It is the same invariant the re-key verifies before committing: every
+    surviving row is keyed on its own content.
+    """
+
+    def _candidate(self, **overrides) -> EventCandidate:
+        fields: dict = {
+            "id": "whatever-the-publisher-said",
+            "source": "nsno_ics",
+            "source_type": "northshorenightout",
+            "title": "Isabel Stover",
+            "venue": "The Joy Nest",
+            "start_time": START,
+            "discovered_at": START,
+        }
+        fields.update(overrides)
+        return EventCandidate(**fields)
+
+    def test_the_id_becomes_a_function_of_the_stored_fields(self):
+        candidate = with_content_id(self._candidate())
+
+        assert candidate.id == derive_content_id(
+            source=candidate.source,
+            title=candidate.title,
+            venue=candidate.venue,
+            start=candidate.start_time,
+        )
+
+    def test_it_reads_the_canonicalised_start_not_the_one_passed_in(self):
+        """`EventCandidate` canonicalises every timestamp to UTC on
+        construction, so an id derived before that step is keyed on a
+        representation the row will never hold."""
+        eastern = timezone(timedelta(hours=-4))
+        local = self._candidate(start_time=START.astimezone(eastern))
+        utc = self._candidate(start_time=START)
+
+        assert with_content_id(local).id == with_content_id(utc).id
+
+    def test_the_rest_of_the_candidate_is_untouched(self):
+        candidate = with_content_id(self._candidate(description="As published"))
+
+        assert candidate.description == "As published"
+        assert candidate.start_time == START
+
+    def test_two_candidates_for_one_listing_agree(self):
+        first = with_content_id(self._candidate(id="uid-1"))
+        second = with_content_id(self._candidate(id="uid-2"))
+
+        assert first.id == second.id

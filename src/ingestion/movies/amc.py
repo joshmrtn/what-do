@@ -8,7 +8,7 @@ from typing import Any, Callable
 import requests
 
 from src.network.http import requests_transient_check
-from src.ingestion.candidate_id import derive_content_id
+from src.ingestion.candidate_id import with_content_id
 from src.ingestion.identity import ContentIdRule
 from src.network.policy import RequestPolicy
 from src.network.protocols import NullCache
@@ -117,8 +117,8 @@ class AmcAdapter(IngestionSource):
             if raw_dt
             else None
         )
-        return EventCandidate(
-            id=self._derive_id(movie, show, start),
+        candidate = EventCandidate(
+            id=self._derive_id(movie, show),
             source="amc",
             source_type=AMC,
             title=movie.get("name"),
@@ -130,24 +130,21 @@ class AmcAdapter(IngestionSource):
             discovered_at=self._get_now(),
         )
 
-    def _derive_id(
-        self, movie: dict[str, Any], show: dict[str, Any], start: datetime | None
-    ) -> str:
+        # Re-keyed after construction, so the id is a function of what the row
+        # stores. A showtime is a listing — a film, at a theatre, at a time — so
+        # the shared key describes it exactly.
+        if self._uses_content_id("amc"):
+            return with_content_id(candidate)
+
+        return candidate
+
+    def _derive_id(self, movie: dict[str, Any], show: dict[str, Any]) -> str:
         """Build a stable id so a nightly refetch updates the showtime's row.
 
-        The fallback answers *"AMC published no showtime id"*; the content rule
-        answers *"its showtime ids identify nothing"*. Different questions, so
-        the fallback keeps its own material and the latched path takes the
-        shared listing key.
+        This fallback answers *"AMC published no showtime id"*, which is a
+        different question from *"its showtime ids identify nothing"* — the
+        latter is the content rule, applied to the finished candidate.
         """
-        if self._uses_content_id("amc"):
-            return derive_content_id(
-                source="amc",
-                title=movie.get("name"),
-                venue=show.get("theatre", {}).get("name"),
-                start=start,
-            )
-
         showtime_id = show.get("id")
         if showtime_id:
             return derive_candidate_id("amc", showtime_id)

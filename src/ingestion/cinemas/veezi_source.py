@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.config import FeedConfig
 from src.network.http import HttpFetcher
-from src.ingestion.candidate_id import derive_content_id
+from src.ingestion.candidate_id import with_content_id
 from src.ingestion.cinemas.veezi_listing import VeeziSession, parse_sessions
 from src.ingestion.identity import ContentIdRule
 from src.ingestion.source import IngestionSource
@@ -74,8 +74,8 @@ class VeeziSessionsSource(IngestionSource):
     def _to_candidate(self, showing: VeeziSession) -> EventCandidate:
         """Map one showing, localising its wall clock to the cinema's zone."""
         start = showing.start.replace(tzinfo=self._zone)
-        return EventCandidate(
-            id=self._candidate_id(showing, start),
+        candidate = EventCandidate(
+            id=f"{self._config.name}:{showing.session_id}",
             source=self._config.name,
             source_type=self._config.source_type,
             title=showing.title,
@@ -96,22 +96,14 @@ class VeeziSessionsSource(IngestionSource):
             discovered_at=self._get_now(),
         )
 
-    def _candidate_id(self, showing: VeeziSession, start: datetime) -> str:
-        """The session id, unless this cinema's session ids identify nothing.
-
-        Veezi publishes a `session_id` and it is the better key while it holds —
-        it survives a retitling, and it tells one screen from another where a
-        content key cannot. The content path exists for when it stops holding.
-        """
+        # Re-keyed after construction, so the id is a function of what the row
+        # stores. A `session_id` is the better key while it holds — it survives
+        # a retitling, and tells one screen from another where a content key
+        # cannot — so this is only for a cinema whose ids stop identifying.
         if self._uses_content_id(self._config.name):
-            return derive_content_id(
-                source=self._config.name,
-                title=showing.title,
-                venue=self._config.venue,
-                start=start,
-            )
+            return with_content_id(candidate)
 
-        return f"{self._config.name}:{showing.session_id}"
+        return candidate
 
 
 def _zone_of(name: str) -> ZoneInfo:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import datetime
 
+from src.models.event_candidate import EventCandidate
 from src.normalization.deduplicator import canonical_title, canonical_venue
 
 _DIGEST_LENGTH = 16
@@ -106,6 +108,35 @@ def derive_candidate_id(source_type: str, *parts: object) -> str:
         raise ValueError(f"no identifying material for a {source_type} candidate")
     digest = hashlib.sha256("|".join(rendered).encode("utf-8")).hexdigest()
     return f"{source_type}:{digest[:_DIGEST_LENGTH]}"
+
+
+def with_content_id(candidate: EventCandidate) -> EventCandidate:
+    """The same candidate, re-keyed on the fields it actually stores.
+
+    **Applied to a built candidate on purpose.** An adapter that derives the id
+    from an intermediate value is a silent duplicate generator: the row is
+    stored keyed on one thing while the next fetch computes another, and nothing
+    ever matches again.
+
+    Measured live. `ics_source` keyed on `occurrence.start` but stores
+    `_place_start(...)`, which moves an all-day event off midnight and onto its
+    own night — so the first fetch after the re-key minted a second row for an
+    all-day listing that was already there. `EventCandidate` also canonicalises
+    every timestamp to UTC in `__post_init__`, which is a second way for an id
+    computed beforehand to describe a value the row will never hold.
+
+    This is the same invariant the re-key verifies before it commits: every row
+    is keyed on its own content.
+    """
+    return replace(
+        candidate,
+        id=derive_content_id(
+            source=candidate.source,
+            title=candidate.title,
+            venue=candidate.venue,
+            start=candidate.start_time,
+        ),
+    )
 
 
 def _render(part: object) -> str:

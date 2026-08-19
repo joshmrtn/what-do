@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.config import DEFAULT_DAY_STARTS_AT, DEFAULT_HORIZON_DAYS, FeedConfig
 from src.network.http import HttpFetcher
-from src.ingestion.candidate_id import derive_content_id
+from src.ingestion.candidate_id import with_content_id
 from src.ingestion.cinemas.cabot_listing import CabotEvent, parse_cabot
 from src.ingestion.identity import ContentIdRule
 from src.ingestion.source import IngestionSource
@@ -139,8 +139,8 @@ class CabotListingSource(IngestionSource):
                 hour=self._day_starts_at.hour, minute=self._day_starts_at.minute
             )
         )
-        return EventCandidate(
-            id=self._candidate_id(event, start),
+        candidate = EventCandidate(
+            id=f"{self._config.name}:{event.event_id}",
             source=self._config.name,
             source_type=self._config.source_type,
             title=event.title,
@@ -162,21 +162,13 @@ class CabotListingSource(IngestionSource):
             discovered_at=self._get_now(),
         )
 
-    def _candidate_id(self, event: CabotEvent, start: datetime) -> str:
-        """The listing's own event id, unless those ids identify nothing.
-
-        The Cabot publishes a stable `event_id` and it is the better key while
-        it holds — it survives a retitling, which a content key does not.
-        """
+        # Re-keyed after construction, so the id is a function of what the row
+        # stores. The Cabot's `event_id` is the better key while it holds — it
+        # survives a retitling, which a content key does not.
         if self._uses_content_id(self._config.name):
-            return derive_content_id(
-                source=self._config.name,
-                title=event.title,
-                venue=_venue_of(event) or self._config.venue,
-                start=start,
-            )
+            return with_content_id(candidate)
 
-        return f"{self._config.name}:{event.event_id}"
+        return candidate
 
     def _localise(self, when: datetime) -> datetime:
         return when.replace(tzinfo=self._zone)

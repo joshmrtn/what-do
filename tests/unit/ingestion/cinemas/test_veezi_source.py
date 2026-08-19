@@ -10,6 +10,7 @@ import pytest
 
 from src.storage.memory.http_cache import InMemoryHttpCache
 from src.config import FeedConfig
+from src.ingestion.candidate_id import derive_content_id
 from src.ingestion.cinemas.veezi_source import VeeziSessionsSource
 from src.models.event_candidate import EventCandidate
 from src.storage.sqlite.connection import init_db
@@ -214,6 +215,17 @@ class TestWhenTheSessionIdsAreNotTrusted:
         results = _make_source(cache, body=body, content_ids=True).fetch()
 
         assert len({c.id for c in results}) == 2
+
+    def test_every_candidate_is_keyed_on_its_own_stored_fields(self, cache):
+        """The id must be a function of what the row holds, not of anything on
+        the way to it — the same invariant the re-key verifies."""
+        for candidate in _make_source(cache, content_ids=True).fetch():
+            assert candidate.id == derive_content_id(
+                source=candidate.source,
+                title=candidate.title,
+                venue=candidate.venue,
+                start=candidate.start_time,
+            )
 
     def test_the_id_is_stable_across_a_refetch(self, cache):
         first = _make_source(cache, content_ids=True).fetch()[0]
