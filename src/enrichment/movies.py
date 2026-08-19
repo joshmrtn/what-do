@@ -13,6 +13,7 @@ from src.network.http import requests_transient_check
 from src.network.policy import RequestPolicy
 from src.storage.protocols import MovieCache
 from src.utils.logging import StructuredLogger
+from src.utils.secret import Secret
 
 #: The host TMDb's API is reached at, named so a caller can look up its
 #: politeness policy without owning a second copy of the address.
@@ -57,7 +58,7 @@ class TMDbProvider(MovieMetadataProvider):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Secret,
         *,
         session: requests.Session,
         policy: RequestPolicy,
@@ -130,7 +131,10 @@ class TMDbProvider(MovieMetadataProvider):
         Two requests, one lookup. They are a single question — *what is this
         film* — and the throttle spaces both because it counts per host.
         """
-        params: dict[str, Any] = {"api_key": self._api_key, "query": title}
+        params: dict[str, str | int] = {
+            "api_key": self._api_key.expose_secret(),
+            "query": title,
+        }
         if year is not None:
             params["year"] = year
 
@@ -147,7 +151,7 @@ class TMDbProvider(MovieMetadataProvider):
 
         detail_resp = self._session.get(
             f"{self._BASE_URL}/movie/{movie_id}",
-            params={"api_key": self._api_key},
+            params={"api_key": self._api_key.expose_secret()},
             timeout=timeout,
         )
         detail_resp.raise_for_status()

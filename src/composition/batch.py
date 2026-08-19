@@ -86,6 +86,7 @@ from src.storage.events import load_tag_embeddings
 from src.utils.logging import StructuredLogger
 from src.utils.llm_transcript import TranscriptSink
 from src.utils.ollama_client import OllamaClient
+from src.utils.secret import Secret
 
 
 @dataclass
@@ -157,11 +158,18 @@ def build_dependencies(
     environ: Mapping[str, str] = os.environ if env is None else env
     skipped: list[str] = []
 
-    def _credential(variable: str, source: str) -> str | None:
-        """Return a usable credential, or record the skip and return None."""
+    def _credential(variable: str, source: str) -> Secret | None:
+        """Return a usable credential, or record the skip and return None.
+
+        One of the two doors credentials enter by — the other is
+        `_credential_from_env` in `src/config.py`. It returns a `Secret`
+        because minting one is what registers the value for redaction: a
+        credential that arrived as a bare `str` is one the log scrubber has
+        never heard of, whatever any adapter then does with it.
+        """
         value = (environ.get(variable) or "").strip()
         if value:
-            return value
+            return Secret(value)
         # Naming the variable is the point: an absent key is a legitimate
         # deployment state, so the only genuinely silent failure left is a
         # mistyped variable name.

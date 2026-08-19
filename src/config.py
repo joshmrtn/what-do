@@ -12,10 +12,26 @@ from dotenv import load_dotenv
 from timezonefinder import TimezoneFinder
 
 from src.models.source_type import RESERVED
+from src.utils.secret import Secret
 
 
 class ConfigError(ValueError):
     """Raised when config.yaml is missing required fields or is malformed."""
+
+
+def _credential_from_env(variable: str) -> Secret | None:
+    """Read a credential from the environment as a `Secret`.
+
+    One of the two doors credentials enter by — the other is `_credential` in
+    `src/composition/batch.py`. Minting is what registers a value for
+    redaction, so a credential that skipped this step is one the log scrubber
+    has never heard of.
+
+    Absence is preserved rather than normalised: an unset variable is `None`,
+    and a variable set to blank keeps whatever the deployment put there.
+    """
+    value = os.environ.get(variable)
+    return None if value is None else Secret(value)
 
 
 @lru_cache(maxsize=1)
@@ -591,7 +607,9 @@ class AppConfig:
     day_starts_at: time = DEFAULT_DAY_STARTS_AT
     synthetic_activities: list[SyntheticActivityRule] = field(default_factory=list)
     ollama_host: str = "http://localhost:11434"
-    gemini_api_key: str | None = None
+    # `ollama_host` above is deliberately a plain `str`: it is a URL with no
+    # auth in it, so there is nothing to protect and nothing to exempt.
+    gemini_api_key: Secret | None = None
     gemini_model: str = "gemini-flash-latest"
 
 
@@ -1308,6 +1326,6 @@ def load_config(
         day_starts_at=_load_day_starts_at(data),
         synthetic_activities=synthetic_activities,
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-        gemini_api_key=os.environ.get("GEMINI_API_KEY"),
+        gemini_api_key=_credential_from_env("GEMINI_API_KEY"),
         gemini_model=os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
     )

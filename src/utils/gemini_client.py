@@ -34,6 +34,7 @@ from src.network.protocols import (
 )
 from src.utils.images import sniff_mime_type
 from src.utils.chat_client import LLMError
+from src.utils.secret import Secret
 
 #: What the policy is assigned to in `network.hosts`. A constant rather than a
 #: literal at the call site, the same way `OPEN_METEO_HOST` is, so the config
@@ -90,7 +91,7 @@ class GeminiClient:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Secret,
         *,
         policy: RequestPolicy,
         get_now: Callable[[], datetime],
@@ -106,7 +107,7 @@ class GeminiClient:
             # No `http_options` timeout here: the policy hands one to each
             # attempt, and a lifetime or a limit with two homes is one that will
             # disagree with itself.
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(api_key=api_key.expose_secret())
 
     def chat(
         self,

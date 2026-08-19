@@ -20,6 +20,7 @@ import requests
 
 from src.enrichment.movies import TMDB_HOST, TMDbProvider, title_key
 from src.storage.memory.movie_cache import InMemoryMovieCache
+from src.utils.secret import Secret
 from tests.support.network import fetcher_policy
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
@@ -65,7 +66,7 @@ def _provider(
     cache_ttl: timedelta | None = timedelta(days=7),
 ) -> TMDbProvider:
     return TMDbProvider(
-        api_key="a-key",
+        api_key=Secret("a-key"),
         session=session,
         policy=fetcher_policy(urls=URL, now=now),
         movie_cache=cache if cache is not None else InMemoryMovieCache(),

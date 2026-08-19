@@ -17,6 +17,7 @@ from src.storage.memory.movie_cache import InMemoryMovieCache
 from tests.support.network import fetcher_policy
 from src.models.event import Event
 from src.utils.logging import StructuredLogger
+from src.utils.secret import Secret
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -34,7 +35,7 @@ def _tmdb_provider(session, *, urls: str = f"https://{TMDB_HOST}/3") -> TMDbProv
     how a test reaches the unassigned-host path.
     """
     return TMDbProvider(
-        "testkey",
+        Secret("testkey"),
         session=session,
         policy=fetcher_policy(urls=urls, now=_TMDB_NOW),
         movie_cache=InMemoryMovieCache(),

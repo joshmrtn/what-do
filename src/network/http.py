@@ -38,6 +38,14 @@ from src.utils.logging import StructuredLogger
 #: Identifies the project rather than impersonating a browser.
 USER_AGENT = "what-do/1.0 (local event aggregator; nightly batch)"
 
+#: What may go in a query string. Deliberately **not** `Mapping[str, Any]`: a
+#: `Secret` is assignable to `Any`, and `urlencode` would then call `str()` on
+#: it and send the redaction placeholder to the provider as the credential —
+#: type-clean, test-clean, and wrong on the wire. Narrowed, `mypy --strict`
+#: names the call site instead, which is the whole mechanism of the `Secret`
+#: type. A caller that means to send one says `expose_secret()`.
+QueryParams = Mapping[str, str | int | float]
+
 #: Statuses that mean "not now" rather than "no". 429 is the server asking for
 #: room; 5xx is it failing in a way that may not repeat. Everything else in the
 #: 4xx range describes the request itself and will fail identically next time.
@@ -291,7 +299,7 @@ class HttpFetcher:
         url: str,
         *,
         label: str,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         cache_key: str | None = None,
         policy: str | None = None,
         max_age: timedelta | None = None,
@@ -355,7 +363,7 @@ class HttpFetcher:
     def _perform(
         self,
         url: str,
-        params: Mapping[str, Any] | None,
+        params: QueryParams | None,
         stored: CachedResponse | None,
         timeout: float,
     ) -> HttpDocument:
@@ -400,7 +408,7 @@ _CREDENTIAL_PARAMS = frozenset(
 )
 
 
-def _keyed(url: str, params: Mapping[str, Any] | None) -> str:
+def _keyed(url: str, params: QueryParams | None) -> str:
     """What identifies this request, for the cache.
 
     Sorted, so two callers spelling the same query in a different order share

@@ -29,6 +29,7 @@ from src.network.policy import RequestPolicy
 from src.network.throttle import InMemoryThrottle
 from src.storage.protocols import DayCache, HttpCache, MovieCache
 from src.utils.logging import StructuredLogger
+from src.utils.secret import Secret
 
 
 def build_request_policy(
@@ -135,7 +136,7 @@ def build_air_quality_provider(
 
 def build_movie_provider(
     config: AppConfig,
-    api_key: str,
+    api_key: Secret,
     *,
     movie_cache: MovieCache,
     get_now: Callable[[], datetime],

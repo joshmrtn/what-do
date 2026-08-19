@@ -78,6 +78,7 @@ def fetcher_policy(
     timeout_seconds: float = 30.0,
     sleeps: list[float] | None = None,
     policy_name: str = TEST_POLICY,
+    logger: Any = None,
 ) -> RequestPolicy:
     """A real policy over a test network config.
 
@@ -100,6 +101,7 @@ def fetcher_policy(
         throttle=InMemoryThrottle(get_now=clock, sleep=record),
         sleep=record,
         random=lambda: 0.5,
+        logger=logger,
     )
 
 
@@ -112,6 +114,7 @@ def fetcher_for(
     cache_ttl: timedelta | None = timedelta(hours=6),
     max_attempts: int = 3,
     sleeps: list[float] | None = None,
+    logger: Any = None,
 ) -> HttpFetcher:
     """A real fetcher whose only stand-in is the session.
 
@@ -126,6 +129,11 @@ def fetcher_for(
         max_attempts: Total attempts before giving up.
         sleeps: Collects what the policy would have waited, for a test that
             cares. Real time is never spent either way.
+        logger: Where the policy reports retries and failures. A test asserting
+            on what reaches a log wants a real `StructuredLogger` over a
+            `StringIO` here, not a recording double — credentials are scrubbed
+            as the line is written, so a double that captures the message
+            earlier would report a leak that production does not have.
     """
     clock: Callable[[], datetime] = now if callable(now) else (lambda: now)
 
@@ -134,7 +142,7 @@ def fetcher_for(
         network=network_for(urls, cache_ttl=cache_ttl, max_attempts=max_attempts),
         policy=fetcher_policy(
             urls=urls, now=clock, cache_ttl=cache_ttl,
-            max_attempts=max_attempts, sleeps=sleeps,
+            max_attempts=max_attempts, sleeps=sleeps, logger=logger,
         ),
         http_cache=http_cache if http_cache is not None else InMemoryHttpCache(),
         get_now=clock,

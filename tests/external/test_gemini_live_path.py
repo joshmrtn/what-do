@@ -27,6 +27,7 @@ from src.ingestion.disambiguation import OllamaDisambiguationProvider
 from src.network.policy import RequestPolicy
 from src.network.throttle import InMemoryThrottle
 from src.utils.gemini_client import GEMINI_HOST, GeminiClient
+from src.utils.secret import Secret
 
 
 def _require_gemini() -> tuple[str, str]:
@@ -60,7 +61,7 @@ def test_real_gemini_disambiguation():
 
     key, model = _require_gemini()
     client = GeminiClient(
-        api_key=key,
+        api_key=Secret(key),
         policy=_live_policy(),
         get_now=lambda: datetime.now(timezone.utc),
     )

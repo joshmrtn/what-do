@@ -17,6 +17,7 @@ from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.source_type import AMC
+from src.utils.secret import Secret
 
 #: The host AMC's API is reached at, named so a caller can look up its
 #: politeness policy without owning a second copy of the address.
@@ -39,7 +40,7 @@ class AmcAdapter(IngestionSource):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Secret,
         postal_code: str,
         session: requests.Session,
         policy: RequestPolicy,
@@ -101,7 +102,7 @@ class AmcAdapter(IngestionSource):
                 "query": _SHOWTIMES_QUERY,
                 "variables": {"postalCode": self._postal_code},
             },
-            headers={"X-AMC-Vendor-Key": self._api_key},
+            headers={"X-AMC-Vendor-Key": self._api_key.expose_secret()},
             timeout=timeout,
         )
         response.raise_for_status()

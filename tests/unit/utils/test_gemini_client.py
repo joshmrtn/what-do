@@ -27,6 +27,7 @@ from src.utils.gemini_client import (
     gemini_transient_check,
 )
 from src.utils.ollama_client import OllamaError
+from src.utils.secret import Secret
 from tests.support.network import fetcher_policy
 
 NOW = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
@@ -69,7 +70,7 @@ def _client(
         timeout_seconds=timeout_seconds,
         sleeps=sleeps,
     )
-    return GeminiClient(api_key="x", client=fake, policy=policy, get_now=lambda: NOW)
+    return GeminiClient(api_key=Secret("x"), client=fake, policy=policy, get_now=lambda: NOW)
 
 
 def _api_error(status: int) -> APIError:
@@ -292,7 +293,7 @@ class TestPoliteness:
     def test_a_client_cannot_be_built_without_a_policy(self):
         """Not optional: `| None = None` is how the refit was built, typed, and
         then never forwarded for a fortnight."""
-        missing_the_policy = {"api_key": "x", "client": _fake_genai_client()}
+        missing_the_policy = {"api_key": Secret("x"), "client": _fake_genai_client()}
         with pytest.raises(TypeError):
             GeminiClient(**missing_the_policy)
 

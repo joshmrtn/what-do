@@ -18,6 +18,7 @@ from src.config import (
     _timezone_finder,
     load_config,
 )
+from src.utils.secret import Secret
 
 
 def _write_config(tmp_path, data):
@@ -84,9 +85,14 @@ def test_ollama_host_reads_from_env(tmp_path, monkeypatch):
 
 
 def test_gemini_api_key_reads_from_env(tmp_path, monkeypatch):
+    """It arrives as a `Secret`, so the comparison is against one.
+
+    `Secret.__eq__` refuses a bare string deliberately: comparing against one
+    would make `==` an oracle that confirms a guessed value.
+    """
     monkeypatch.setenv("GEMINI_API_KEY", "secret-abc")
     cfg = load_config(config_path=_write_config(tmp_path, _valid_location_data()))
-    assert cfg.gemini_api_key == "secret-abc"
+    assert cfg.gemini_api_key == Secret("secret-abc")
 
 
 def test_gemini_api_key_none_when_not_set(tmp_path, monkeypatch):

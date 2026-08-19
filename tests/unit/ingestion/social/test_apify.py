@@ -12,6 +12,7 @@ import pytest
 
 from src.ingestion.social.apify import ApifyAdapter
 from src.models.event_candidate import EventCandidate
+from src.utils.secret import Secret
 from tests.support.network import fetcher_for
 
 FIXED_NOW = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -46,7 +47,7 @@ def _make_adapter(response=None):
     session = _json_session(response or _APIFY_RESPONSE)
 
     return ApifyAdapter(
-        api_key="fake-key",
+        api_key=Secret("fake-key"),
         handles=["@testvenue"],
         fetcher=fetcher_for(session, urls="https://api.apify.com/v2/acts/apify~instagram-scraper/runs", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
@@ -99,7 +100,7 @@ def test_raises_on_http_error():
     session.get.return_value.raise_for_status.side_effect = requests.HTTPError("503")
 
     adapter = ApifyAdapter(
-        api_key="fake-key",
+        api_key=Secret("fake-key"),
         handles=["@testvenue"],
         fetcher=fetcher_for(session, urls="https://api.apify.com/v2/acts/apify~instagram-scraper/runs", now=FIXED_NOW),
         get_now=lambda: FIXED_NOW,
@@ -121,7 +122,7 @@ def test_id_is_stable_across_runs_on_different_days():
 
     session = _json_session(_APIFY_RESPONSE)
     second = ApifyAdapter(
-        api_key="fake-key",
+        api_key=Secret("fake-key"),
         handles=["@testvenue"],
         fetcher=fetcher_for(session, urls="https://api.apify.com/v2/acts/apify~instagram-scraper/runs", now=FIXED_NOW),
         get_now=lambda: later,

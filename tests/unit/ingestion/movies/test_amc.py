@@ -9,6 +9,7 @@ import pytest
 
 from src.ingestion.movies.amc import AMC_HOST, AmcAdapter
 from src.models.event_candidate import EventCandidate
+from src.utils.secret import Secret
 from tests.support.network import fetcher_policy
 
 FIXED_NOW = datetime(2025, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -44,7 +45,7 @@ def _make_adapter(response=None, content_ids=False):
     mock_session.post.return_value.raise_for_status.return_value = None
 
     return AmcAdapter(
-        api_key="fake-amc-key",
+        api_key=Secret("fake-amc-key"),
         postal_code="01970",
         session=mock_session,
         policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=FIXED_NOW),
@@ -91,7 +92,7 @@ def test_raises_on_http_error():
     mock_session.post.return_value.raise_for_status.side_effect = Exception("HTTP 403")
 
     adapter = AmcAdapter(
-        api_key="bad-key",
+        api_key=Secret("bad-key"),
         postal_code="01970",
         session=mock_session,
         policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=FIXED_NOW),
@@ -126,7 +127,7 @@ def test_id_is_stable_across_runs_on_different_days():
     mock_session.post.return_value.json.return_value = _AMC_RESPONSE
     mock_session.post.return_value.raise_for_status.return_value = None
     second = AmcAdapter(
-        api_key="fake-amc-key",
+        api_key=Secret("fake-amc-key"),
         postal_code="01970",
         session=mock_session,
         policy=fetcher_policy(urls=f"https://{AMC_HOST}/graphql", now=later),

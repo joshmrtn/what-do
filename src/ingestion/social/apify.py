@@ -12,6 +12,7 @@ from src.ingestion.candidate_id import derive_candidate_id
 from src.ingestion.source import IngestionSource
 from src.models.event_candidate import EventCandidate
 from src.models.source_type import APIFY
+from src.utils.secret import Secret
 
 APIFY_HOST = "api.apify.com"
 _APIFY_BASE = f"https://{APIFY_HOST}/v2"
@@ -22,7 +23,7 @@ class ApifyAdapter(IngestionSource):
 
     def __init__(
         self,
-        api_key: str,
+        api_key: Secret,
         handles: list[str],
         fetcher: HttpFetcher,
         get_now: Callable[[], datetime] = datetime.now,
@@ -52,7 +53,10 @@ class ApifyAdapter(IngestionSource):
             self._fetcher.get(
                 url,
                 label="apify",
-                params={"token": self._api_key, "usernames": usernames},
+                params={
+                    "token": self._api_key.expose_secret(),
+                    "usernames": usernames,
+                },
                 cache_key=f"{url}?usernames={usernames}",
             )
         )
