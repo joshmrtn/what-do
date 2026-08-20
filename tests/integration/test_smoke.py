@@ -17,6 +17,7 @@ import uuid
 import zoneinfo
 
 import pytest
+import requests
 import yaml
 
 from src.storage.sqlite.day_cache import SqliteDayCache
@@ -25,6 +26,7 @@ from src.config import (
     AppConfig,
     NetworkConfig,
     NetworkPolicy,
+    Patience,
     DeduplicationConfig,
     LocationConfig,
     ScoringConfig,
@@ -86,9 +88,42 @@ from src.storage.sqlite.dedup_decisions import SqliteDedupDecisionRepository
 from src.storage.sqlite.rankings import SqliteRankingRepository
 from src.storage.sqlite.scores import SqliteScoreRepository
 from src.utils.logging import get_logger
+from src.utils.chat_client import GENERATION_PATIENCE
 from src.utils.ollama_client import OllamaClient
 from src.utils.vectors import decode_vector
-from tests.support.network import fetcher_for
+from tests.support.network import fetcher_for, fetcher_policy
+
+_OLLAMA_HOST = "http://localhost:11434"
+
+
+def _ollama_client(**kwargs) -> OllamaClient:
+    """A real client against the real local model, with a real policy behind it.
+
+    Nothing is faked here — this tier exists to touch Ollama. The policy is
+    wired because it is the only way out of the process now, and its patience is
+    generous for the same reason the batch's is.
+    """
+    now = datetime.now(timezone.utc)
+    return OllamaClient(
+        _OLLAMA_HOST,
+        session=requests.Session(),
+        policy=fetcher_policy(
+            urls=_OLLAMA_HOST,
+            now=now,
+            cache_ttl=None,
+            timeout_seconds=180.0,
+            patience={
+                GENERATION_PATIENCE: Patience(
+                    timeout_seconds=1200.0,
+                    max_attempts=2,
+                    backoff_base_seconds=5.0,
+                    backoff_max_seconds=30.0,
+                )
+            },
+        ),
+        get_now=lambda: now,
+        **kwargs,
+    )
 
 
 @pytest.fixture
@@ -503,7 +538,7 @@ def test_semantic_matching_smoke(tmp_path: Path) -> None:
             return self.inner.embed(text)
 
     provider = CountingProvider(
-        OllamaEmbeddingProvider(client=OllamaClient("http://localhost:11434", timeout=180))
+        OllamaEmbeddingProvider(client=_ollama_client())
     )
     repo = PreferenceRepository(provider, db_path, logger)
 
@@ -727,7 +762,7 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     dislikes = tmp_path / "dislikes.txt"
     dislikes.write_text("nightclubs\nsports bars\ndancing\n")
 
-    provider = OllamaEmbeddingProvider(client=OllamaClient("http://localhost:11434", timeout=180))
+    provider = OllamaEmbeddingProvider(client=_ollama_client())
     prefs = PreferenceRepository(provider, db_path, logger).load(likes, dislikes)
 
     run_date = date(2026, 8, 6)

@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+import requests
+
 from src.ingestion.disambiguation import OllamaDisambiguationProvider
 from src.models.tag import Tag
 from src.processing.extraction import OllamaExtractionProvider
 from src.utils.chat_client import ChatClient
 from src.utils.ollama_client import OllamaClient
 
+from tests.support.network import fetcher_policy
+
+_HOST = "http://localhost:11434"
+_NOW = datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc)
+
 
 def test_ollama_client_satisfies_chat_client_protocol():
 
-    client = OllamaClient(host="http://localhost:11434", timeout=1)
+    client = OllamaClient(
+        _HOST,
+        session=requests.Session(),
+        policy=fetcher_policy(urls=_HOST, now=_NOW),
+        get_now=lambda: _NOW,
+    )
     assert isinstance(client, ChatClient)
 
 

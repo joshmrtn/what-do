@@ -11,9 +11,14 @@ all — never because a model gave an answer someone disliked.
 from __future__ import annotations
 
 import argparse
+import random
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import requests
 
 from src.bench.disambiguation import (
     HandleSample,
@@ -25,8 +30,16 @@ from src.bench.report import format_report, load_run, write_run
 from src.bench.runner import Measurement, Variant, run_variant
 from src.bench.samples import SampleError, load_samples, samples_from_db
 from src.composition.storage import build_view_storage
-from src.config import DEFAULT_EMBEDDING_MODEL
+from src.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    NetworkConfig,
+    NetworkPolicy,
+    Patience,
+)
+from src.network.policy import RequestPolicy
+from src.network.throttle import InMemoryThrottle
 from src.storage.sqlite.connection import DEFAULT_DB_PATH
+from src.utils.chat_client import GENERATION_PATIENCE
 from src.utils.ollama_client import OllamaClient
 
 DEFAULT_SAMPLES = Path("data/bench-samples.yaml")
@@ -36,6 +49,18 @@ DEFAULT_LOG_DIR = Path("logs")
 #: local model on CPU runs for minutes, and a bench that times out measures the
 #: timeout.
 _TIMEOUT_SECONDS = 3600
+
+#: The bench's own policy, because the bench is its own composition root and its
+#: numbers are deliberately not the pipeline's.
+#:
+#: It waits far longer — measuring a model that may be slow is the whole point,
+#: and a ceiling that ended the run would be reporting our patience rather than
+#: its speed. And it makes **one attempt**: a silent retry would fold two runs
+#: into one measurement, which is worse than a failed sample.
+#:
+#: Declared here rather than read from `config.yaml` so the bench still runs
+#: without one, and so a deliberate difference is visible where it is used.
+_BENCH_POLICY = "bench_local_model"
 
 #: The handles the disambiguation prompt has actually been wrong about. Held
 #: here rather than in the sample file because they are invented already — no
@@ -95,6 +120,43 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return args
 
 
+def _bench_policy(host: str) -> RequestPolicy:
+    """One policy over the model under test, at the bench's own numbers."""
+    waiting = Patience(
+        timeout_seconds=float(_TIMEOUT_SECONDS),
+        max_attempts=1,
+        backoff_base_seconds=0.0,
+        backoff_max_seconds=0.0,
+    )
+    network = NetworkConfig(
+        # The host policy and the generation patience carry the same numbers
+        # here: everything the bench asks of this host is a model call.
+        policies={
+            _BENCH_POLICY: NetworkPolicy(
+                min_interval_seconds=0.0,
+                timeout_seconds=waiting.timeout_seconds,
+                max_attempts=waiting.max_attempts,
+                backoff_base_seconds=waiting.backoff_base_seconds,
+                backoff_max_seconds=waiting.backoff_max_seconds,
+                cache_ttl=None,
+            )
+        },
+        hosts={urlsplit(host).hostname or host: _BENCH_POLICY},
+        patience={GENERATION_PATIENCE: waiting},
+    )
+    return RequestPolicy(
+        network=network,
+        throttle=InMemoryThrottle(get_now=_utc_now, sleep=time.sleep),
+        sleep=time.sleep,
+        random=random.random,
+    )
+
+
+def _utc_now() -> datetime:
+    """The bench's clock. Its own, because it is its own composition root."""
+    return datetime.now(timezone.utc)
+
+
 def build_variants(specs: list[str], host: str) -> list[Variant]:
     """Turn `--variant` strings into variants.
 
@@ -106,6 +168,7 @@ def build_variants(specs: list[str], host: str) -> list[Variant]:
     if not specs:
         raise BenchError("give at least one --variant")
 
+    policy = _bench_policy(host)
     variants: list[Variant] = []
     seen: set[str] = set()
     for spec in specs:
@@ -119,7 +182,12 @@ def build_variants(specs: list[str], host: str) -> list[Variant]:
             Variant(
                 name=name,
                 model=model,
-                client=OllamaClient(host=host, timeout=_TIMEOUT_SECONDS),
+                client=OllamaClient(
+                    host,
+                    session=requests.Session(),
+                    policy=policy,
+                    get_now=_utc_now,
+                ),
             )
         )
     return variants

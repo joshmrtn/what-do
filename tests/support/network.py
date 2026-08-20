@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit
 
-from src.config import NetworkConfig, NetworkPolicy
+from src.config import NetworkConfig, NetworkPolicy, Patience
 from src.network.http import HttpFetcher
 from src.network.policy import RequestPolicy
 from src.network.throttle import InMemoryThrottle
@@ -35,6 +35,7 @@ def network_for(
     max_attempts: int = 3,
     timeout_seconds: float = 30.0,
     policy_name: str = TEST_POLICY,
+    patience: dict[str, Patience] | None = None,
 ) -> NetworkConfig:
     """One policy, assigned to every host in `urls`.
 
@@ -66,6 +67,7 @@ def network_for(
             )
         },
         hosts=hosts,
+        patience=patience or {},
     )
 
 
@@ -78,6 +80,7 @@ def fetcher_policy(
     timeout_seconds: float = 30.0,
     sleeps: list[float] | None = None,
     policy_name: str = TEST_POLICY,
+    patience: dict[str, Patience] | None = None,
     logger: Any = None,
 ) -> RequestPolicy:
     """A real policy over a test network config.
@@ -93,6 +96,7 @@ def fetcher_policy(
         max_attempts=max_attempts,
         timeout_seconds=timeout_seconds,
         policy_name=policy_name,
+        patience=patience,
     )
     record = sleeps.append if sleeps is not None else (lambda seconds: None)
 

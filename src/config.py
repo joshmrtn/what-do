@@ -407,10 +407,6 @@ DEFAULT_DISAMBIGUATION_MODEL = "gemma4:e2b"
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 
 
-#: Ceiling on one model call, in seconds. Twenty minutes, because the batch VM
-#: runs these on four CPU cores with no GPU.
-DEFAULT_LLM_TIMEOUT_SECONDS = 1200
-
 #: Ollama's own default is 4096, and a model that reasons fills that with
 #: thinking before a single character of the answer is emitted — which is how
 #: 44% of one night's extractions came back with empty content. 32768 leaves
@@ -438,11 +434,6 @@ class ModelsConfig:
     llm_extraction: str = DEFAULT_EXTRACTION_MODEL
     llm_disambiguation: str = DEFAULT_DISAMBIGUATION_MODEL
     embeddings: str = DEFAULT_EMBEDDING_MODEL
-    #: How long one model call may take. Generous because the target is CPU
-    #: inference: measured on the batch VM, a single extraction runs for
-    #: minutes, so the old 60-second default failed *every* call and left the
-    #: whole batch with no tags at all.
-    request_timeout_seconds: int = DEFAULT_LLM_TIMEOUT_SECONDS
     temperature: float = DEFAULT_LLM_TEMPERATURE
     top_p: float = DEFAULT_LLM_TOP_P
     num_ctx: int = DEFAULT_LLM_NUM_CTX
@@ -1155,19 +1146,6 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
             raise ConfigError(f"Model name '{key}' is blank")
         return value
 
-    timeout = defaults.request_timeout_seconds
-    if "request_timeout_seconds" in raw:
-        try:
-            timeout = int(raw["request_timeout_seconds"])
-        except (TypeError, ValueError) as error:
-            raise ConfigError(
-                f"models.request_timeout_seconds is not a number: {raw['request_timeout_seconds']!r}"
-            ) from error
-        if timeout <= 0:
-            raise ConfigError(
-                f"models.request_timeout_seconds must be positive, got {timeout}"
-            )
-
     def _min_tags(default: int) -> int:
         """Read the extraction floor, rejecting anything below one.
 
@@ -1243,7 +1221,6 @@ def _load_models(raw: dict[str, Any]) -> ModelsConfig:
         llm_extraction=_name("llm_extraction", defaults.llm_extraction),
         llm_disambiguation=_name("llm_disambiguation", defaults.llm_disambiguation),
         embeddings=_name("embeddings", defaults.embeddings),
-        request_timeout_seconds=timeout,
         temperature=temperature,
         top_p=top_p,
         num_ctx=num_ctx,

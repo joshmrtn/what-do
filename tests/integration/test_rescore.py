@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 import requests
 
+from src.composition.network import build_request_policy
+from src.utils.chat_client import GENERATION_PATIENCE
 from src.composition.storage import build_view_storage
 from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.weather import OPEN_METEO_HOST, OpenMeteoProvider
@@ -24,6 +26,7 @@ from src.config import (
     AppConfig,
     NetworkConfig,
     NetworkPolicy,
+    Patience,
     ComfortCurve,
     LocationConfig,
     ScoringConfig,
@@ -133,11 +136,14 @@ def _curve(ideal, zero, floor, weight=1.0, supersedes=()):
 
 
 def _network() -> NetworkConfig:
-    """Declares the one host enrichment reads a cache lifetime for.
+    """Declares the hosts the read path calls: the forecast, and the model.
 
     There is deliberately no default policy, so a config that never mentions
     Open-Meteo is refused rather than guessed at — which is the behaviour, and
-    means every config that enriches weather must say so.
+    means every config that enriches weather must say so. The model host is on
+    the same terms since #36: the read path embeds edited preference lines, and
+    an unassigned host abandons the rescore rather than silently going round
+    the policy.
     """
     return NetworkConfig(
         policies={
@@ -148,9 +154,29 @@ def _network() -> NetworkConfig:
                 backoff_base_seconds=1.0,
                 backoff_max_seconds=60.0,
                 cache_ttl=timedelta(hours=12),
+            ),
+            "local_model": NetworkPolicy(
+                min_interval_seconds=0.0,
+                timeout_seconds=30.0,
+                max_attempts=2,
+                backoff_base_seconds=1.0,
+                backoff_max_seconds=10.0,
+                cache_ttl=None,
+            ),
+        },
+        hosts={
+            OPEN_METEO_HOST: "open_meteo",
+            AIR_QUALITY_HOST: "open_meteo",
+            "localhost": "local_model",
+        },
+        patience={
+            GENERATION_PATIENCE: Patience(
+                timeout_seconds=1200.0,
+                max_attempts=2,
+                backoff_base_seconds=5.0,
+                backoff_max_seconds=30.0,
             )
         },
-        hosts={OPEN_METEO_HOST: "open_meteo", AIR_QUALITY_HOST: "open_meteo"},
     )
 
 def _config() -> AppConfig:
@@ -630,10 +656,15 @@ def _real_embedder():
     first cut of these tests failed, in the fixture rather than the code.
     """
     config = load_config(Path("config/config.yaml"))
+    now = datetime.now(timezone.utc)
     return OllamaEmbeddingProvider(
         OllamaClient(
             config.ollama_host,
-            timeout=config.models.request_timeout_seconds,
+            session=requests.Session(),
+            # The live policy, because the read path's is the live one: an
+            # embedding takes its host's terms and names no patience.
+            policy=build_request_policy(config, get_now=lambda: now),
+            get_now=lambda: now,
             component="embedding",
         ),
         model=config.models.embeddings,

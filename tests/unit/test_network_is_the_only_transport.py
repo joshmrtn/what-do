@@ -70,17 +70,20 @@ _CLIENTS = {
 
 #: May perform a request directly, and why.
 #:
-#: `network/http.py` is deliberately **absent**: the adapter performs through the
-#: session it was handed, so it never calls the module and this rule never sees
-#: it. That is the same blindness rule three exists to cover, and it is why the
-#: adapter is not privileged here — if it ever reaches for `requests` directly,
-#: it earns an entry like anyone else.
-_PERFORMERS = {
-    # LOCALHOST. The exemption is the address, never "the model client" — that
-    # phrasing survives a provider swap and would silently exempt a hosted API.
-    # Gemini is a third party and goes through the adapter like everything else.
-    "utils/ollama_client.py",
-}
+#: **Empty since 2026-08-20**, and that is the point: `utils/ollama_client.py`
+#: was the last entry, exempt as *localhost*. Locality excuses spacing — there is
+#: no third party at this address — and excuses nothing about a dropped request,
+#: so the model client now performs through an injected session behind the policy
+#: like everything else (#36). An exemption asserted by module path could not see
+#: OLLAMA_HOST being repointed at another machine; an address in `network.hosts`
+#: can.
+#:
+#: `network/http.py` is deliberately **absent** for a different reason: the
+#: adapter performs through the session it was handed, so it never calls the
+#: module and this rule never sees it. That is the same blindness rule three
+#: exists to cover, and it is why the adapter is not privileged here — if it ever
+#: reaches for `requests` directly, it earns an entry like anyone else.
+_PERFORMERS: set[str] = set()
 
 #: May construct a transport client, and why.
 _TRANSPORT_BUILDERS = {
@@ -88,6 +91,12 @@ _TRANSPORT_BUILDERS = {
     # it is the reason the eight adapters no longer default to a bare session.
     "composition/network.py",
     "composition/batch.py",
+    # The read path, which builds the model client the CLI embeds through.
+    "composition/view.py",
+    # The bench's own root. It talks only to the model under test, and its
+    # numbers are deliberately not the pipeline's — one attempt, and an hour to
+    # answer, because a retry would fold two runs into one measurement.
+    "bench/cli.py",
     # The SDK boundary itself: it builds the vendor client lazily and every call
     # it makes on it goes through the policy. Same standing as `network/http.py`
     # has for `requests` — the module that owns a transport may name it.

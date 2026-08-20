@@ -50,6 +50,18 @@ class RequestPolicy:
         self._random = random
         self._logger = logger
 
+    def limits_for(self, host: str) -> NetworkPolicy:
+        """What a host's assignment allows, resolved without making a request.
+
+        So a caller can fail where it is *built* — the message naming the host,
+        the batch not yet having spent a minute — rather than on its first call,
+        which for a seasonal source is months away and for extraction is hours.
+
+        Raises:
+            ConfigError: If the host has no assigned policy.
+        """
+        return self._network.for_host(host)
+
     def call(
         self,
         *,

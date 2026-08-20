@@ -11,10 +11,12 @@ import pytest
 from src.composition.batch import build_dependencies
 from src.config import (
     AppConfig,
+    ConfigError,
     DeduplicationConfig,
     FeedConfig,
     LocationConfig,
     ModelsConfig,
+    Patience,
     ScrapingConfig,
     SourcesConfig,
     VenueDiscoveryConfig,
@@ -32,6 +34,7 @@ from src.storage.sqlite.connection import init_db
 from src.enrichment.air_quality import AIR_QUALITY_HOST
 from src.enrichment.movies import TMDB_HOST
 from src.enrichment.weather import OPEN_METEO_HOST
+from src.utils.chat_client import GENERATION_PATIENCE
 from src.utils.logging import get_logger
 from tests.support.network import network_for
 
@@ -51,12 +54,24 @@ def _config(**overrides) -> AppConfig:
         # Composition resolves the weather host's policy, so a config that
         # never mentions Open-Meteo is refused here rather than on the first
         # fetch of a nightly run. That is the design: absence is loud.
+        # The model host is in the list because the model client is a caller
+        # like any other now: composition resolves its policy, so an unassigned
+        # one is named here rather than hours into extraction.
         "network": network_for(
             [
                 f"https://{OPEN_METEO_HOST}/v1/forecast",
                 f"https://{AIR_QUALITY_HOST}/v1/air-quality",
                 f"https://{TMDB_HOST}/3",
-            ]
+                "http://localhost:11434",
+            ],
+            patience={
+                GENERATION_PATIENCE: Patience(
+                    timeout_seconds=1200.0,
+                    max_attempts=2,
+                    backoff_base_seconds=5.0,
+                    backoff_max_seconds=30.0,
+                )
+            },
         ),
     }
     fields.update(overrides)
@@ -275,13 +290,26 @@ def test_an_absent_blocklist_file_is_not_an_error(paths, tmp_path):
     assert deps.ranking_engine._blocklist == []
 
 
-def test_the_llm_timeout_reaches_the_ollama_client(paths):
-    """A 60-second default failed every extraction on the batch VM."""
-    config = _config(models=ModelsConfig(request_timeout_seconds=900))
+def test_the_model_client_goes_through_the_shared_request_policy(paths):
+    """What replaces the client's own timeout, and more than it was.
 
-    deps = _build(paths, config=config)
+    The timeout is the policy's now, so what matters here is that the model
+    client is on the *same* policy as everything else in the process: two
+    policies would be two sets of manners, only one of them configured, and the
+    model client's would be the one nobody could see.
+    """
+    deps = _build(paths)
+    client = deps.extraction_stage._provider._client
 
-    assert deps.extraction_stage._provider._client._timeout == 900
+    assert client._policy is deps.embedding_stage._provider._client._policy
+
+
+def test_a_model_host_with_no_policy_stops_the_batch_being_built(paths):
+    """Named at composition, hours before extraction would have found it."""
+    config = _config(ollama_host="http://gpu-box.lan:11434")
+
+    with pytest.raises(ConfigError, match="gpu-box.lan"):
+        _build(paths, config=config)
 
 
 class TestPersistenceIsWiredToTheDatabase:

@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import requests
+
 from src.composition.pipeline import load_blocklist
 from src.composition.storage import ViewStorage
 from src.config import (
@@ -32,7 +34,7 @@ from src.config import (
     DEFAULT_LIKES_PATH,
     AppConfig,
 )
-from src.composition.network import build_air_quality_provider
+from src.composition.network import build_air_quality_provider, build_request_policy
 from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import WeatherProvider
@@ -103,13 +105,22 @@ def build_rescore_pipeline(
             this as "fall back to the stored ranking", never as a reason to lose
             the listing.
     """
+    # One policy for this process, shared by everything that leaves it, so the
+    # read path spaces and retries on the same terms the batch does.
+    request_policy = build_request_policy(config, get_now=get_now, logger=logger)
+
     # Built exactly as the batch builds it, so a vector produced here and one
     # produced overnight are bit-identical. No chat parameters: `/api/embed`
-    # takes none and the embedding model neither samples nor reasons.
+    # takes none and the embedding model neither samples nor reasons — and no
+    # timeout, because `embed` names no patience and takes its host's, which is
+    # the short one. A generation's ceiling here would be a hang on the one path
+    # that promises to be snappy.
     embedding_provider = OllamaEmbeddingProvider(
         OllamaClient(
             config.ollama_host,
-            timeout=config.models.request_timeout_seconds,
+            session=requests.Session(),
+            policy=request_policy,
+            get_now=get_now,
             component="embedding",
             keep_alive=config.models.keep_alive,
         ),
@@ -140,6 +151,7 @@ def build_rescore_pipeline(
                 config,
                 air_quality_cache=storage.air_quality_cache,
                 get_now=get_now,
+                policy=request_policy,
                 logger=logger,
             ),
             get_now=get_now,

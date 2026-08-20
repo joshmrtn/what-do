@@ -344,12 +344,16 @@ def build_dependencies(
             )
         )
 
-    # Two clients over one host: they differ only in the name their calls carry
-    # into the transcript, which is what makes a slow extraction distinguishable
-    # from the hundreds of embedding calls around it.
+    # Two clients over one host: they differ in the name their calls carry into
+    # the transcript, which is what makes a slow extraction distinguishable from
+    # the hundreds of embedding calls around it — and in nothing else. How long
+    # each is waited for is decided by the *request*: `chat` names the generation
+    # patience and `embed` does not, so neither client is told a timeout.
     extraction_client = OllamaClient(
         config.ollama_host,
-        timeout=config.models.request_timeout_seconds,
+        session=requests.Session(),
+        policy=request_policy,
+        get_now=get_now,
         transcript=llm_transcript,
         component="extraction",
         options={
@@ -365,7 +369,9 @@ def build_dependencies(
     # model neither samples nor reasons.
     embedding_client = OllamaClient(
         config.ollama_host,
-        timeout=config.models.request_timeout_seconds,
+        session=requests.Session(),
+        policy=request_policy,
+        get_now=get_now,
         transcript=llm_transcript,
         component="embedding",
         keep_alive=config.models.keep_alive,
