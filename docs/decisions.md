@@ -2601,3 +2601,122 @@ itself, which is the whole point of the refit being automatic.
 **Per-feed throughout.** A single global detector would reset everything whenever one feed
 altered its listings, and the "hold until re-armed" would then bite the entire corpus each
 time.
+
+## There is no default network policy, and an unassigned host is a config error
+
+**Decision:** `network.policies` declares named policies, each complete; `network.hosts` assigns
+every host to one **by name**. No `defaults:` block, no code default. An unassigned host and an
+unknown policy name both raise `ConfigError`.
+
+**Rationale:** The first pass shipped working defaults plus per-host overrides, so that an absent
+section left the system polite rather than switched off. Rejected in review: *a default is a
+policy nobody decided, applied silently to a host nobody considered.* Every provider's reasonable
+rate and cache lifetime differ, so a central number is impolite to one host and useless against
+another. Absence must be loud.
+
+`what-do-check-config` names every host the config will call that has no policy, all at once.
+
+## The request policy wraps a call, not a URL
+
+**Decision:** `RequestPolicy.call(host, perform, is_transient, cache, label)` takes a callable and
+hands it the timeout. Two things are injected per provider: a transient-failure predicate and a
+cache strategy.
+
+**Rationale:** Throttle, retry, backoff and logging inspect no URL, so a vendor SDK goes through
+unchanged. `perform` receives the timeout because it cannot be imposed on an opaque callable from
+outside in a single-threaded program.
+
+**Rewriting `gemini_client.py` onto `requests` was offered and declined** — it trades one injected
+predicate for re-implementing auth, parsing and error mapping against a vendor API, and does not
+generalise to the next SDK.
+
+Bounding *what is asked* deliberately stays with the caller: only it knows its provider's horizon.
+See `src/network/policy.py` and `src/network/http.py`.
+
+## The cache is injected; its lifetime is configured
+
+**Decision:** The caller supplies the cache strategy and therefore the key; `cache_ttl_seconds` in
+the policy supplies the lifetime.
+
+**Rationale:** Caches are not keyed alike — TMDb on normalised title and year, weather on
+`(date, lat, lng)`, a feed on its URL — and one URL-keyed table would mangle the first two. The
+split keeps keying where it is obvious while leaving the TTL somewhere a config check can read it.
+
+## httpx is a direct dependency, not a transitive one
+
+**Decision:** `httpx` is listed in `pyproject.toml` even though it arrives with the Gemini SDK.
+
+**Rationale:** We read it directly. `google.genai`'s timeout and connection failures carry no HTTP
+status, so `gemini_transient_check` has to recognise them by type. **Arriving transitively is not
+the same as being depended on** — the same reasoning as `numpy` beside it. An upstream that swaps
+transports would otherwise break us silently.
+
+## The batch heartbeat is a file beside the lock, not a database row
+
+**Decision:** In-flight batch state goes to a heartbeat file, not a table.
+
+**Rationale:** It is neither raw nor derived — it is process state. It expires when the process
+does, and nobody will query it tomorrow. A row would mean DDL, a migration, and rows outliving the
+run that wrote them.
+
+## The stage report brackets each item, before and after
+
+**Decision:** Extraction reports "k of n, at t" both entering and leaving each item.
+
+**Rationale:** A report only on completion names the last event that *survived*, not the one that
+killed the batch — which is the event you actually want. `logs/llm-*.jsonl` cannot fill the gap:
+every `record()` in `ollama_client.py` fires after the call returns or raises, so an item whose
+process was killed mid-call appears in no transcript row at all.
+
+## A credential is a type, and the redaction registry is centralized
+
+**Decision:** Credentials are `Secret` (`src/utils/secret.py`). Minting one registers its value;
+`_JSONFormatter.format` scrubs registered values out of every log line. The registry is
+process-wide, not injected.
+
+**Rationale:** Registering as a *side effect of minting* removes the rule to remember, which is
+the failure this exists to prevent. Centralized was chosen on failure mode alone: this design
+over-redacts when it is wrong — a test sees the placeholder, loud and harmless — where an injected
+registry a construction site forgot yields a logger indistinguishable from a working one until the
+day it prints a key. The cost is one autouse fixture in `tests/conftest.py`.
+
+## There is no localhost exemption for secrecy
+
+**Decision:** Secrecy is a property of the value, never its destination. A local database password
+would still be a `Secret`. `OLLAMA_HOST` is a plain `str` because it holds no credential, not
+because it is local.
+
+**Rationale:** "It's localhost" is a runtime property of a configurable host — repoint it at a
+hosted endpoint and the reasoning evaporates with no code change to notice. And a log is not a
+local artefact; it gets pasted into an issue.
+
+**The politeness adapter's localhost exemption answers a different question and must not be
+reused here.** Throttling protects a third party from us, and there is no third party. Redaction
+protects a value from a file. CLAUDE.md already carries a table of three over-generalisations of
+this shape; conflating these would have been the fourth.
+
+## TMDb uses the v4 token, and v3 is removed rather than kept as a fallback
+
+**Decision:** `TMDB_READ_ACCESS_TOKEN` in an `Authorization: Bearer` header. Every v3 reference
+deleted — no fallback.
+
+**Rationale:** The v3 key can *only* travel as `?api_key=`, so keeping it means keeping a
+credential in a URL and depending on log redaction to hide it — a backstop standing in for a fix.
+Free to remove, because TMDb had never been switched on.
+
+Worth recording because the code will simply look as though it always used v4.
+
+## The credential guard forbids operations, never possession
+
+**Decision:** `tests/unit/test_no_credential_escapes_its_type.py` forbids reading the environment
+outside the two door modules, and calling `expose_secret()` outside a reasoned allowlist. Holding
+a `Secret`, storing it, passing it on is never a violation.
+
+**Rationale:** Possession is most of the surface and all of it is fine, so a possession or import
+rule would fire on modules that are correct — which is how a guard gets switched off. Same lesson
+as `test_network_is_the_only_transport.py`.
+
+**The environment rule allowlists modules (`_ENV_READERS`), never credential-shaped names.** Both
+doors read through a *variable* (`os.environ.get(variable)`), so the only literal env reads left in
+`src/` are `OLLAMA_HOST` and `GEMINI_MODEL` — the two non-credentials. A name rule would have been
+blind to both doors and fired only on the values that do not matter.

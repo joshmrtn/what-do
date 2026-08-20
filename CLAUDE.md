@@ -247,6 +247,30 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
    Both failed *silently*, because an absent key and a configured-empty one are
    indistinguishable to `raw.get("x") or {}` behind a `default_factory=dict`.
 
+8. **A decision that would have us scratching our heads later earns an entry in
+   `docs/decisions.md`.** Write it **when the planned work item completes**, not
+   at some later tidy-up — the reasoning is only cheap to record while it is
+   still in hand.
+
+   The bar is *did we deliberate, and is the answer underivable from the code?*
+   A deviation from the norm, something unexpected, a road not taken. **Adding a
+   dependency when we thought we were done adding them** is the canonical case:
+   `httpx` went into `pyproject.toml` on 2026-08-18 for a real reason, and
+   without an entry the future question "why do we depend on httpx?" has no
+   answer but archaeology.
+
+   **Not every small implementation choice.** Most of what a phase decides is
+   visible in the diff and belongs nowhere else. The log is for the ones that
+   stood out.
+
+   > **It is append-only.** A decision that turns out to be wrong gets a **new
+   > entry marked superseded**, pointing at the old one. Never edit or delete
+   > the original — the wrong reasoning is why the right one exists, and a log
+   > that rewrites itself cannot be trusted about anything.
+
+   Its fate is revisited at v1: kept as-is, or archived. Until then it keeps
+   growing.
+
 ## Test structure
 
 Tests live in `tests/` and mirror the `src/` package structure.
@@ -447,6 +471,7 @@ row whose truth depends on our own code staying put is the wrong kind.
 | A tunable whose default is empty | It is a feature that ships switched off, and nothing says so. `weather.comfort` defaults to `{}`, so a missing section meant `compute_comfort` iterated nothing, returned no factors, and every weather adjustment was 0.0 — for every run ever stored. The other weather numbers have real code defaults; the curves were the odd ones out. Prefer a working default, or refuse to start |
 | Editing `config.example.yaml` and stopping there | The example is tracked and documents; `config.yaml` is gitignored and *runs*. A key added to one never reaches the other, `git status` stays clean, and the suite passes because every test builds its own config. Ask before touching the live file — but always ask |
 | Saving an event to "update" it | `INSERT OR REPLACE INTO events` is a **delete and an insert**, so every table cascading from `events` goes with it — `event_scores`, and `rankings` behind it. Saving an event therefore destroys its stored placement. Harmless in the batch, which saves before it ranks; anything that saves *after* having a ranking must write the events first and the placements second, or a failure in between leaves the run with no ranking at all |
+| Trusting a type to protect a value that passes through `Any` | **A type-based protection dissolves at an `Any` boundary.** `Secret` is assignable to `Any`, so `params: Mapping[str, Any]` let `mypy --strict` pass a credential straight through — `urlencode` then called `str()` on it and sent the *redaction placeholder* to the provider as the key. Type-clean, test-clean, wrong on the wire, and nothing could see it. Narrow the parameter type, or the guard is decorative |
 | Attributing an LLM transcript prompt to one event | A recurring series produces **byte-identical `extraction_input` across dates** — the same title, venue and category on every occurrence. Two events matched one prompt and a whole diagnosis was built on the wrong one. Key on the stored hash, never on prompt text |
 
 ---
@@ -526,8 +551,15 @@ kept. `0 kept of 0 fetched` means broken or empty; `0 kept of 213 fetched` means
 and its dates are landing outside the window. Add `--raw [PATH]` to dump every candidate **as
 fetched, before filtering**, as JSON Lines with the discard reason.
 
-Baseline as of 2026-08-14 evening: **1275 ingested from 18 sources** at `horizon_days: 90` (1234
-earlier the same day; was 1091 at
-45 days on 2026-08-13 — raising the horizon a whole quarter added only ~143, because most sources
-simply do not publish that far out). Expected zeroes are `do617_koto`, `do617_bit_bar` and `moon`;
-anything else at zero is a regression.
+Baseline as of **2026-08-20 02:37**: `success`, **1339 ingested** at `horizon_days: 90`, from
+**16 producing sources** of the 19 listed, `id churn: none`. `apify`, `amc` and `tmdb` are
+key-skipped, which is the normal state and not a fault. Expected zeroes are `do617_koto`,
+`do617_bit_bar` and `moon`; anything else at zero is a regression.
+
+Read the count as a **range, not a target** — it tracks what venues have published, so it moves
+on its own: 1091 at 45 days on 08-13, 1275 on 08-14 (raising the horizon a whole quarter added
+only ~143, because most sources simply do not publish that far out), 1193 on 08-19, 1339 now.
+A *source dropping to zero* is the regression signal; the total is context.
+
+The earlier "18 sources" figure counted differently and could not be reconciled — the run
+reports 19 rows, three of them expected zeroes. Take the table over any number written here.
