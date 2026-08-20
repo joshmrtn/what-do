@@ -6,9 +6,10 @@ so a ``GeminiClient`` is a drop-in for ``OllamaClient`` behind ``ChatClient``.
 
 **A hosted model is a third party like any other**, so every call goes through
 the shared request policy — throttled, retried, backed off, timed out from
-config. Ollama is exempt because it is *localhost*, never because it is "the
-model client": that phrasing survives a provider swap and would silently exempt
-a hosted API.
+config — as does the local model, which is spaced at zero because there is no
+third party at that address rather than being exempt from the policy. The
+difference is an *address*, never "the model client": that phrasing survives a
+provider swap and would silently exempt a hosted API.
 
 This is the one caller reached through a vendor SDK rather than ``requests``,
 which is why the policy wraps a **call** and not a URL. Configuring retry on the

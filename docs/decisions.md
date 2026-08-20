@@ -2720,3 +2720,32 @@ as `test_network_is_the_only_transport.py`.
 doors read through a *variable* (`os.environ.get(variable)`), so the only literal env reads left in
 `src/` are `OLLAMA_HOST` and `GEMINI_MODEL` — the two non-credentials. A name rule would have been
 blind to both doors and fired only on the values that do not matter.
+
+## Spacing belongs to the host; patience belongs to the request
+
+**Decision:** `network.patience` names a request shape's timeout, attempts and backoff, composed
+onto whatever policy its host has. It states no spacing and no cache lifetime. A caller naming
+none is unchanged.
+
+**Rationale:** A policy bundles both, which holds until one host answers two shapes. Ollama
+serves `/api/chat` and `/api/embed` at one address — minutes against milliseconds — and no
+per-host timeout is right for both. Not a local quirk: Gemini serves embeddings alongside
+generation on one host too. A second policy per host would have meant one per vendor.
+
+## Retry is reliability; politeness is the third party
+
+**Decision:** Ollama goes through `RequestPolicy` like every other caller. Locality is an
+assignment — `local_model`, `min_interval_seconds: 0.0` — not an exemption, and `_PERFORMERS` in
+`tests/unit/test_network_is_the_only_transport.py` is now empty. Resolves **#36**.
+
+**Rationale:** The localhost exemption answers politeness alone. There is no third party at that
+address to space requests for; a dropped connection is still ours, and extraction is where it
+costs most. It was asserted by *module path*, so repointing `OLLAMA_HOST` at another machine kept
+it silently — the exact failure `utils/secret.py` and `gemini_client.py` both warn about in
+words. The host is read from config now.
+
+`requests_transient_check` needed no change to serve a caller it was not written for, which is
+the evidence the seam is in the right place. `models.request_timeout_seconds` is gone with it: a
+code-only 1200s that also governed embeddings, so a hung model stalled the CLI for twenty
+minutes. The bench keeps its own policy at one attempt — a silent retry folds two runs into one
+measurement.

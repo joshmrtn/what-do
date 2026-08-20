@@ -200,8 +200,15 @@ summary_weight and match_multipliers live in `config.yaml`, not code.
    > `tests/unit/test_network_is_the_only_transport.py` forbids performing a request, building
    > a transport client, or holding one without reaching for the policy — and
    > `what-do-check-config` names every host this config will call that has no policy, all at
-   > once. Ollama is exempt as **localhost**, never as "the model client". Resolves **#10**,
-   > and more than it asked.
+   > once. Resolves **#10**, and more than it asked.
+   >
+   > **Locality excuses spacing and nothing else.** `localhost` is assigned a policy with
+   > `min_interval_seconds: 0.0` — there is no third party at that address — rather than being
+   > exempt from the guard, because retry is *our pipeline's* reliability and not politeness
+   > (**#36**). The old exemption was asserted by module path, so repointing `OLLAMA_HOST` at
+   > another machine kept it silently. **Every** outbound call, local or not, goes through
+   > `RequestPolicy`, and how long each is waited for comes from `network.patience`: spacing is
+   > the host's, patience is the request's, because one host can answer two shapes.
 
 3. **No network calls in tests.** All external services injected as dependencies so tests
    substitute fakes. Violation = bug. The `external` tier is the only exception:

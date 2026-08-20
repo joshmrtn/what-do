@@ -266,9 +266,11 @@ network:
       backoff_max_seconds: 60.0
       cache_ttl_seconds: 2592000    # 30d — an address's coordinates do not move
 
-    # A hosted model is a third party like any other. Ollama is exempt because
-    # it is LOCALHOST — never because it is "the model client", which is the
-    # phrasing that survives a provider swap and silently exempts a hosted API.
+    # A hosted model is a third party like any other, and the local one is not
+    # exempt from the policy — it is assigned `local_model` below, which spaces
+    # nothing because there is nobody at that address to be polite to. The
+    # difference is an ADDRESS, never "the model client": that phrasing survives
+    # a provider swap and would silently exempt a hosted API.
     gemini:
       min_interval_seconds: 0.5
       timeout_seconds: 120.0
