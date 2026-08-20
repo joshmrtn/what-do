@@ -34,6 +34,16 @@ production does not have, so the only stand-in here is the stream.
 AMC is in the list as the control: its credential has always travelled in a
 header, so it must pass from the first run. An assertion that cannot tell AMC
 from the others is not measuring anything.
+
+**Gemini is here for a different reason.** Every other case goes through a
+`requests` failure we understand. Gemini's transport belongs to a vendor SDK, so
+what lands in the log is whatever `google.genai` chose to put in its exception —
+and it chose a lot: `APIError.__str__` is `f'{code} {status}. {details}'`, where
+`details` is the **entire response body**. The SDK's own `_to_replay_record`
+omits `details` with the comment that it "may expose internal information",
+which is the provider agreeing with the premise. Verified against the installed
+package rather than assumed, because assuming is the failure this design is
+about.
 """
 
 from __future__ import annotations
@@ -45,6 +55,8 @@ from typing import Any
 from unittest.mock import MagicMock
 from urllib.parse import urlencode
 
+from google.genai.errors import APIError
+
 import pytest
 import requests
 
@@ -52,6 +64,7 @@ from src.enrichment.movies import TMDB_HOST, TMDbProvider
 from src.ingestion.movies.amc import AMC_HOST, AmcAdapter
 from src.ingestion.social.apify import APIFY_HOST, ApifyAdapter
 from src.storage.memory.movie_cache import InMemoryMovieCache
+from src.utils.gemini_client import GEMINI_HOST, GeminiClient
 from src.utils.logging import get_logger
 from src.utils.secret import Secret
 from tests.support.network import fetcher_for, fetcher_policy
@@ -138,8 +151,51 @@ def _drive_amc(logger: Any) -> None:
     ).fetch()
 
 
-#: Every adapter that holds a credential, and how to make it fail.
-DRIVERS = {"apify": _drive_apify, "tmdb": _drive_tmdb, "amc": _drive_amc}
+def _sdk_error(credential: str) -> Any:
+    """The real `google.genai` error, carrying a credential on both surfaces.
+
+    A duck would prove nothing: the question is what *this* SDK puts where, and
+    the two places we log from are `str(error)` — which embeds `details`, the
+    whole response body — and `error.response.text`, which the policy appends
+    as what the provider said. Both are provider-authored text that nothing we
+    wrote composed, which is exactly the population the value layer exists for.
+
+    400 rather than 503, so the policy gives up at once instead of retrying an
+    error that will never change.
+    """
+    body = {
+        "error": {
+            "code": 400,
+            "status": "INVALID_ARGUMENT",
+            "message": f"API key not valid: x-goog-api-key={credential}",
+        }
+    }
+    response = requests.Response()
+    response.status_code = 400
+    response._content = json.dumps(body).encode()
+    return APIError(400, body, response)
+
+
+def _drive_gemini(logger: Any, credential: str = SENTINEL) -> None:
+    client = MagicMock()
+    client.models.generate_content.side_effect = _sdk_error(credential)
+    GeminiClient(
+        api_key=Secret(SENTINEL),
+        client=client,
+        policy=fetcher_policy(
+            urls=f"https://{GEMINI_HOST}", now=FIXED_NOW, logger=logger
+        ),
+        get_now=lambda: FIXED_NOW,
+    ).chat("gemini-flash-latest", [{"role": "user", "content": "hi"}])
+
+
+#: Every client that holds a credential, and how to make it fail.
+DRIVERS = {
+    "apify": _drive_apify,
+    "tmdb": _drive_tmdb,
+    "amc": _drive_amc,
+    "gemini": _drive_gemini,
+}
 
 
 @pytest.mark.parametrize("provider", sorted(DRIVERS))
@@ -189,3 +245,24 @@ def test_the_sentinel_would_be_visible_if_it_leaked():
         )
 
     assert "not-a-secret-9f3a2c7e5b" in "\n".join(_lines(stream))
+
+
+def test_an_sdk_error_body_would_be_visible_if_it_leaked():
+    """The Gemini case's own liveness proof, and the point of phase 6.
+
+    `test_the_sentinel_would_be_visible_if_it_leaked` above proves the *requests*
+    path reaches the log. It says nothing about a vendor SDK, whose exception we
+    do not build and whose contents we do not choose. This drives an unprotected
+    value through the real `APIError` and finds it in the log — so the Gemini row
+    above is known to be scrubbing something rather than testing a path where
+    nothing was ever written.
+    """
+    logger, stream = _log_to()
+    unprotected = "not-a-secret-1c7e4b93af"
+
+    try:
+        _drive_gemini(logger, credential=unprotected)
+    except Exception:  # noqa: BLE001
+        pass
+
+    assert unprotected in "\n".join(_lines(stream))
