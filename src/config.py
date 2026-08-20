@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import time, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -520,6 +520,33 @@ class NetworkPolicy:
 
 
 @dataclass(frozen=True)
+class Patience:
+    """How long one *shape* of request is worth waiting for.
+
+    Spacing describes the host — two callers of one server are one conversation
+    from its side. Patience describes the ask: a generation takes minutes
+    whoever runs it, and an embedding takes milliseconds whoever runs it. A
+    policy bundles both, which holds until **one host answers two shapes** —
+    Ollama on `/api/chat` and `/api/embed`, or a hosted provider serving
+    generation and embeddings from one address. Then the timeout that suits one
+    is absurd for the other, and no per-host number can be right.
+
+    Named at the call site and composed onto whatever policy the host already
+    has, so it survives a provider swap: the client keeps asking for the same
+    patience and picks up the new host's manners for free.
+
+    **It states no spacing and no lifetime**, and may not: those are the host's,
+    and a per-request licence to out-pace another caller of the same server is
+    exactly the impoliteness the policy exists to prevent.
+    """
+
+    timeout_seconds: float
+    max_attempts: int
+    backoff_base_seconds: float
+    backoff_max_seconds: float
+
+
+@dataclass(frozen=True)
 class NetworkConfig:
     """Named politeness policies, and the hosts assigned to each.
 
@@ -531,6 +558,10 @@ class NetworkConfig:
     #: Host -> policy name. Every assignment is checked against `policies` at
     #: load, so a typo fails then rather than whenever that host is next fetched.
     hosts: dict[str, str] = field(default_factory=dict)
+    #: Request shape -> how long that shape is worth waiting for. Optional in a
+    #: way policies are not: a config whose callers all ask for ordinary things
+    #: needs none, and every existing caller names none.
+    patience: dict[str, Patience] = field(default_factory=dict)
 
     def for_host(self, host: str) -> NetworkPolicy:
         """The policy assigned to a host.
@@ -566,6 +597,40 @@ class NetworkConfig:
                 f"Declared policies: {declared}."
             )
         return policy
+
+    def for_patience(self, name: str) -> Patience:
+        """How long a named shape of request is worth waiting for.
+
+        Raises:
+            ConfigError: If no patience of that name is declared.
+        """
+        patience = self.patience.get(name)
+        if patience is None:
+            declared = ", ".join(sorted(self.patience)) or "none"
+            raise ConfigError(
+                f"No request patience named {name!r} is declared. "
+                f"Declared patience: {declared}."
+            )
+        return patience
+
+    def with_patience(self, limits: NetworkPolicy, name: str) -> NetworkPolicy:
+        """`limits` with this request shape's waiting substituted in.
+
+        The host's spacing and cache lifetime survive untouched, so naming a
+        patience can lengthen our own wait and never shorten somebody else's
+        breathing room.
+
+        Raises:
+            ConfigError: If no patience of that name is declared.
+        """
+        patience = self.for_patience(name)
+        return replace(
+            limits,
+            timeout_seconds=patience.timeout_seconds,
+            max_attempts=patience.max_attempts,
+            backoff_base_seconds=patience.backoff_base_seconds,
+            backoff_max_seconds=patience.backoff_max_seconds,
+        )
 
 
 @dataclass
@@ -740,6 +805,16 @@ _POLICY_KEYS: dict[str, Callable[[Any], Any]] = {
     "backoff_max_seconds": float,
 }
 
+#: Every numeric key a patience must state. The policy keys minus
+#: `min_interval_seconds`, because spacing is the host's and not the request's.
+_PATIENCE_KEYS: dict[str, Callable[[Any], Any]] = {
+    key: read for key, read in _POLICY_KEYS.items() if key != "min_interval_seconds"
+}
+
+#: What a patience may not state, because the host already does. Refused rather
+#: than ignored: both read as configured and would silently do nothing.
+_HOSTS_OWN_KEYS = ("min_interval_seconds", "cache_ttl_seconds")
+
 #: The one value `cache_ttl_seconds` accepts besides a positive number. A word
 #: rather than `0`, because a sentinel drawn from inside the value domain is a
 #: collision waiting for someone to type it — `--upcoming 0` and `--limit -5`
@@ -818,30 +893,85 @@ def _load_policy(raw: dict[str, Any], name: str) -> NetworkPolicy:
 
     policy = NetworkPolicy(**values, cache_ttl=_load_cache_ttl(raw, name))
 
-    for key in ("min_interval_seconds", "backoff_base_seconds", "backoff_max_seconds"):
-        if getattr(policy, key) < 0:
-            raise ConfigError(f"Invalid {key} for policy {name!r}: must be non-negative")
-
-    if policy.timeout_seconds <= 0:
+    if policy.min_interval_seconds < 0:
         raise ConfigError(
-            f"Invalid timeout_seconds {policy.timeout_seconds} for policy {name!r}: "
+            f"Invalid min_interval_seconds for policy {name!r}: must be non-negative"
+        )
+
+    _check_waiting(policy, kind="policy", name=name)
+
+    return policy
+
+
+def _check_waiting(waiting: NetworkPolicy | Patience, *, kind: str, name: str) -> None:
+    """Validate the four numbers that say how long to wait for an answer.
+
+    Shared because a policy and a patience state the same waiting — the policy
+    for its host's ordinary requests, the patience for one shape of request
+    wherever it is sent. Two copies of these bounds would be two chances to
+    disagree about what a valid wait is.
+
+    Raises:
+        ConfigError: If any bound is out of range, naming what declared it.
+    """
+    for key in ("backoff_base_seconds", "backoff_max_seconds"):
+        if getattr(waiting, key) < 0:
+            raise ConfigError(f"Invalid {key} for {kind} {name!r}: must be non-negative")
+
+    if waiting.timeout_seconds <= 0:
+        raise ConfigError(
+            f"Invalid timeout_seconds {waiting.timeout_seconds} for {kind} {name!r}: "
             "must be positive — requests reads zero as no timeout at all"
         )
 
-    if policy.max_attempts < 1:
+    if waiting.max_attempts < 1:
         raise ConfigError(
-            f"Invalid max_attempts {policy.max_attempts} for policy {name!r}: "
+            f"Invalid max_attempts {waiting.max_attempts} for {kind} {name!r}: "
             "must be at least one, or the call is never made"
         )
 
-    if policy.backoff_max_seconds < policy.backoff_base_seconds:
+    if waiting.backoff_max_seconds < waiting.backoff_base_seconds:
         raise ConfigError(
-            f"Invalid backoff_max_seconds {policy.backoff_max_seconds} for policy "
+            f"Invalid backoff_max_seconds {waiting.backoff_max_seconds} for {kind} "
             f"{name!r}: must not be below backoff_base_seconds "
-            f"{policy.backoff_base_seconds}"
+            f"{waiting.backoff_base_seconds}"
         )
 
-    return policy
+
+def _load_patience(raw: dict[str, Any], name: str) -> Patience:
+    """Read one complete named patience.
+
+    Raises:
+        ConfigError: If a key is absent, unreadable, out of range, or belongs to
+            the host rather than to the request.
+    """
+    for host_key in _HOSTS_OWN_KEYS:
+        if host_key in raw:
+            raise ConfigError(
+                f"Patience {name!r} declares {host_key}, which belongs to the host "
+                "rather than to the request. Spacing and cache lifetime are stated "
+                "once per host under network.policies; a patience says only how "
+                "long to wait for an answer."
+            )
+
+    values: dict[str, Any] = {}
+    for key, read in _PATIENCE_KEYS.items():
+        if key not in raw or raw[key] is None:
+            raise ConfigError(
+                f"Patience {name!r} declares no {key}. Every patience is complete "
+                "or it is not one; there is no default to inherit."
+            )
+        try:
+            values[key] = read(raw[key])
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                f"Invalid {key} for patience {name!r}: {raw[key]!r} ({error})"
+            ) from error
+
+    patience = Patience(**values)
+    _check_waiting(patience, kind="patience", name=name)
+
+    return patience
 
 
 def _load_network(raw: dict[str, Any]) -> NetworkConfig:
@@ -851,6 +981,10 @@ def _load_network(raw: dict[str, Any]) -> NetworkConfig:
         for name, entry in (raw.get("policies") or {}).items()
     }
     hosts = {str(host): str(name) for host, name in (raw.get("hosts") or {}).items()}
+    patience = {
+        str(name): _load_patience(entry or {}, str(name))
+        for name, entry in (raw.get("patience") or {}).items()
+    }
 
     for host, name in hosts.items():
         if name not in policies:
@@ -860,7 +994,7 @@ def _load_network(raw: dict[str, Any]) -> NetworkConfig:
                 f"not declared. Declared policies: {declared}."
             )
 
-    return NetworkConfig(policies=policies, hosts=hosts)
+    return NetworkConfig(policies=policies, hosts=hosts, patience=patience)
 
 
 def _optional_text(entry: dict[str, Any], key: str, kind: str, name: str) -> str | None:

@@ -59,6 +59,7 @@ class RequestPolicy:
         cache: CacheStrategy[T],
         label: str,
         policy: str | None = None,
+        patience: str | None = None,
     ) -> T:
         """Perform a request politely, or serve what the caller already had.
 
@@ -76,14 +77,21 @@ class RequestPolicy:
                 knowable in advance — an image URL points at whatever CDN a venue
                 uses, so those hosts cannot be assigned in config. Omitted, the
                 host's own assignment is used, and an unassigned host is refused.
+            patience: Names how long *this shape of request* is worth waiting
+                for, replacing the timeout, attempts and backoff while leaving
+                the host's spacing alone. The other override, and not the same
+                one: `policy` is for a host that has no assignment and cannot
+                have one, `patience` is for a host that has one and an ask it
+                does not fit — a generation against a server that also answers
+                in milliseconds.
 
         Returns:
             The cached value when there is a fresh one, otherwise the result of
             the call.
 
         Raises:
-            ConfigError: If the host has no assigned policy, or `policy` names
-                one that is not declared.
+            ConfigError: If the host has no assigned policy, or `policy` or
+                `patience` names one that is not declared.
             BaseException: Whatever `perform` raised on its final attempt.
         """
         cached = cache.get()
@@ -95,6 +103,8 @@ class RequestPolicy:
             if policy is not None
             else self._network.for_host(host)
         )
+        if patience is not None:
+            limits = self._network.with_patience(limits, patience)
         last_error: BaseException | None = None
 
         for attempt in range(1, limits.max_attempts + 1):

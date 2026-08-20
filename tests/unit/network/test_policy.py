@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import requests
 
-from src.config import ConfigError, NetworkConfig, NetworkPolicy
+from src.config import ConfigError, NetworkConfig, NetworkPolicy, Patience
 from src.network.policy import RequestPolicy
 from src.network.protocols import DO_NOT_RETRY, RETRY_WITH_BACKOFF, RetryAdvice
 from src.network.throttle import InMemoryThrottle
@@ -93,6 +93,27 @@ def _limits(
         backoff_base_seconds=backoff_base_seconds,
         backoff_max_seconds=backoff_max_seconds,
         cache_ttl=cache_ttl,
+    )
+
+
+def _patience(
+    *,
+    timeout_seconds: float = 300.0,
+    max_attempts: int = 2,
+    backoff_base_seconds: float = 5.0,
+    backoff_max_seconds: float = 30.0,
+) -> Patience:
+    """A complete patience, for tests about one field at a time.
+
+    It states no spacing and no lifetime: those describe the host, and a
+    patience that could set them would be a per-request licence to out-pace
+    another caller of the same server.
+    """
+    return Patience(
+        timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        backoff_base_seconds=backoff_base_seconds,
+        backoff_max_seconds=backoff_max_seconds,
     )
 
 
@@ -268,6 +289,120 @@ class TestACategoryNamedAtTheCallSite:
                 perform=lambda timeout: "bytes",
                 is_transient=_never_transient, cache=RecordingCache(), label="image",
             )
+
+
+class TestPatienceIsNamedByTheRequest:
+    """Spacing is the host's; how long to wait for an answer is the request's.
+
+    A generation takes minutes whoever runs it; an embedding takes milliseconds
+    whoever runs it. One host answering both — Ollama on `/api/chat` and
+    `/api/embed`, or a hosted provider serving generation and embeddings from
+    one address — is the case a single per-host policy cannot express, and the
+    reason this is not a second policy named `local_model_extraction`.
+
+    A caller naming no patience is unaffected, which is what let this arrive
+    without touching the eight callers that already existed.
+    """
+
+    def _network(self, **patience_overrides) -> NetworkConfig:
+        return NetworkConfig(
+            policies={POLICY: _limits(min_interval_seconds=0.0, timeout_seconds=30.0)},
+            hosts={HOST: POLICY},
+            patience={"generation": _patience(**patience_overrides)},
+        )
+
+    def test_the_named_patience_supplies_the_timeout(self, clock, logger):
+        seen: list[float] = []
+
+        _policy(clock, logger, self._network(timeout_seconds=900.0)).call(
+            host=HOST, patience="generation",
+            perform=lambda timeout: seen.append(timeout),
+            is_transient=_never_transient, cache=RecordingCache(), label="extraction",
+        )
+
+        assert seen == [900.0]
+
+    def test_naming_none_leaves_the_host_in_charge(self, clock, logger):
+        """The existing callers must not change behaviour by standing still."""
+        seen: list[float] = []
+
+        _policy(clock, logger, self._network(timeout_seconds=900.0)).call(
+            host=HOST, perform=lambda timeout: seen.append(timeout),
+            is_transient=_never_transient, cache=RecordingCache(), label="embedding",
+        )
+
+        assert seen == [30.0]
+
+    def test_the_named_patience_supplies_the_attempts(self, clock, logger):
+        attempts: list[int] = []
+
+        network = NetworkConfig(
+            policies={POLICY: _limits(min_interval_seconds=0.0, max_attempts=5)},
+            hosts={HOST: POLICY},
+            patience={"generation": _patience(max_attempts=2)},
+        )
+
+        def perform(timeout: float) -> str:
+            attempts.append(1)
+            raise RuntimeError("503 unavailable")
+
+        with pytest.raises(RuntimeError):
+            _policy(clock, logger, network).call(
+                host=HOST, patience="generation", perform=perform,
+                is_transient=_always_transient, cache=RecordingCache(), label="extraction",
+            )
+
+        assert len(attempts) == 2
+
+    def test_the_named_patience_supplies_the_backoff(self, clock, logger):
+        network = NetworkConfig(
+            policies={POLICY: _limits(min_interval_seconds=0.0, backoff_base_seconds=1.0)},
+            hosts={HOST: POLICY},
+            patience={"generation": _patience(max_attempts=2, backoff_base_seconds=5.0)},
+        )
+
+        with pytest.raises(RuntimeError):
+            _policy(clock, logger, network).call(
+                host=HOST, patience="generation", perform=_raising,
+                is_transient=_always_transient, cache=RecordingCache(), label="extraction",
+            )
+
+        assert clock.slept == [pytest.approx(5.0)]
+
+    def test_the_hosts_spacing_survives_being_named(self, clock, logger):
+        """Patience says nothing about spacing, so it cannot make us impolite.
+
+        The case that matters is a hosted provider: name `generation` against
+        it and it still waits the interval its host was assigned.
+        """
+        network = NetworkConfig(
+            policies={POLICY: _limits(min_interval_seconds=2.0)},
+            hosts={HOST: POLICY},
+            patience={"generation": _patience()},
+        )
+        policy = _policy(clock, logger, network)
+
+        for _ in range(2):
+            policy.call(
+                host=HOST, patience="generation", perform=lambda timeout: "answer",
+                is_transient=_never_transient, cache=RecordingCache(), label="extraction",
+            )
+
+        assert clock.slept == [pytest.approx(2.0)]
+
+    def test_an_undeclared_patience_is_refused_before_anything_is_asked(
+        self, clock, logger
+    ):
+        performed: list[float] = []
+
+        with pytest.raises(ConfigError, match="transcription"):
+            _policy(clock, logger, self._network()).call(
+                host=HOST, patience="transcription",
+                perform=lambda timeout: performed.append(timeout),
+                is_transient=_never_transient, cache=RecordingCache(), label="whisper",
+            )
+
+        assert performed == []
 
 
 class TestRetry:

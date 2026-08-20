@@ -108,6 +108,11 @@ WORKING_WHEN_EMPTY = {
     # an entry only pins a source out of the measurement. A config naming none
     # is the ordinary case, not one somebody forgot to fill in.
     "sources.identity": "unassigned means auto, which is the working default",
+    # A patience is named at the call site, so an empty section cannot be a
+    # feature quietly doing nothing: a caller asking for one gets a ConfigError
+    # naming it. That is the opposite of `weather.comfort`, which this check
+    # exists for — it went missing and every adjustment was silently 0.0.
+    "network.patience": "a caller naming an undeclared patience fails loudly",
 }
 
 

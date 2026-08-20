@@ -1518,6 +1518,107 @@ class TestNetworkConfig:
             with pytest.raises(ConfigError, match="images"):
                 network.for_category("images")
 
+    class TestPatienceBelongsToTheRequest:
+        """Spacing describes the host; patience describes what is being asked.
+
+        A generation takes minutes whoever runs it and an embedding takes
+        milliseconds whoever runs it, so the numbers saying how long to wait
+        travel with the request rather than with the server. **One host serving
+        two request shapes** is what forces the split: Ollama answers chat and
+        embed on one address, and a hosted provider offering generation and
+        embeddings collides identically — which is why this is not expressed as
+        a second policy per host.
+        """
+
+        def test_a_patience_loads_its_four_numbers(self, tmp_path):
+            patience = _load(tmp_path, {"network": {
+                "policies": {"local_model": _policy_block()},
+                "hosts": {"localhost": "local_model"},
+                "patience": {"generation": _patience_block(
+                    timeout_seconds=1200.0, max_attempts=2,
+                    backoff_base_seconds=5.0, backoff_max_seconds=30.0,
+                )},
+            }}).network.for_patience("generation")
+
+            assert patience.timeout_seconds == 1200.0
+            assert patience.max_attempts == 2
+            assert patience.backoff_base_seconds == 5.0
+            assert patience.backoff_max_seconds == 30.0
+
+        def test_it_replaces_the_waiting_and_keeps_the_hosts_own_terms(self, tmp_path):
+            """The whole point: substitute patience, leave the host alone.
+
+            Spacing and the cache lifetime are the server's business and survive
+            untouched, so naming a patience can never make a caller impolite.
+            """
+            network = _load(tmp_path, {"network": {
+                "policies": {"local_model": _policy_block(
+                    min_interval_seconds=2.0, timeout_seconds=30.0,
+                    max_attempts=3, cache_ttl_seconds=3600,
+                )},
+                "hosts": {"localhost": "local_model"},
+                "patience": {"generation": _patience_block(
+                    timeout_seconds=1200.0, max_attempts=2,
+                )},
+            }}).network
+
+            limits = network.with_patience(network.for_host("localhost"), "generation")
+
+            assert limits.timeout_seconds == 1200.0
+            assert limits.max_attempts == 2
+            assert limits.min_interval_seconds == 2.0
+            assert limits.cache_ttl == timedelta(hours=1)
+
+        def test_an_unknown_patience_is_refused(self, tmp_path):
+            network = _load(tmp_path, {"network": {
+                "policies": {"local_model": _policy_block()},
+                "hosts": {"localhost": "local_model"},
+                "patience": {"generation": _patience_block()},
+            }}).network
+
+            with pytest.raises(ConfigError, match="transcription"):
+                network.for_patience("transcription")
+
+        @pytest.mark.parametrize(
+            "missing",
+            [
+                "timeout_seconds",
+                "max_attempts",
+                "backoff_base_seconds",
+                "backoff_max_seconds",
+            ],
+        )
+        def test_a_patience_missing_any_key_is_refused(self, tmp_path, missing):
+            """Complete or absent, exactly as a policy is."""
+            block = _patience_block()
+            del block[missing]
+
+            with pytest.raises(ConfigError, match=missing):
+                _load(tmp_path, {"network": {
+                    "policies": {}, "hosts": {}, "patience": {"generation": block},
+                }})
+
+        @pytest.mark.parametrize(
+            "belongs_to_the_host", ["min_interval_seconds", "cache_ttl_seconds"]
+        )
+        def test_a_patience_may_not_state_the_hosts_terms(
+            self, tmp_path, belongs_to_the_host
+        ):
+            """Refused rather than ignored, because it is a plausible mistake.
+
+            Spacing per request would let one caller quietly out-pace another
+            against the same server, and a lifetime has exactly one home. Both
+            read as configured and would do nothing, which is the shape of an
+            error nobody finds.
+            """
+            block = _patience_block()
+            block[belongs_to_the_host] = 1.0
+
+            with pytest.raises(ConfigError, match=belongs_to_the_host):
+                _load(tmp_path, {"network": {
+                    "policies": {}, "hosts": {}, "patience": {"generation": block},
+                }})
+
     @pytest.mark.parametrize(
         "missing",
         [
@@ -1627,6 +1728,18 @@ class TestNetworkConfig:
                 )},
                 "hosts": {},
             }})
+
+
+def _patience_block(**overrides):
+    """A complete patience block: how long to wait, and nothing about the host."""
+    block = {
+        "timeout_seconds": 300.0,
+        "max_attempts": 2,
+        "backoff_base_seconds": 5.0,
+        "backoff_max_seconds": 30.0,
+    }
+    block.update(overrides)
+    return block
 
 
 def _policy_block(**overrides):

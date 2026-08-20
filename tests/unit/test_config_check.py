@@ -175,6 +175,28 @@ def test_no_identity_assignments_is_not_a_finding():
     assert "sources.identity" not in _paths(findings)
 
 
+def test_no_declared_patience_is_not_a_finding():
+    """An absent patience cannot be silently off, which is what this check hunts.
+
+    `weather.comfort` empty meant every adjustment was 0.0 and nothing said so.
+    A patience is named at the call site, so an empty section means any caller
+    asking for one gets a `ConfigError` naming it — loud, at load, and the
+    opposite of a feature quietly doing nothing. A config whose callers all ask
+    for ordinary things declares none, and that is the ordinary case.
+    """
+    findings = check_config(_config(network=NetworkConfig()))
+
+    assert "network.patience" not in _paths(findings)
+
+
+def test_the_patience_exemption_does_not_cover_its_neighbours():
+    """No policies and no hosts is a config that cannot make a single call."""
+    findings = check_config(_config(network=NetworkConfig()))
+
+    assert "network.policies" in _paths(findings)
+    assert "network.hosts" in _paths(findings)
+
+
 def test_the_identity_exemption_does_not_cover_its_neighbours():
     """An exemption that swallowed the rest of `sources` would hide a genuinely
     empty feed list, which is the shape that means a source silently never runs."""
