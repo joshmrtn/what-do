@@ -332,9 +332,12 @@ class HttpFetcher:
 
         Raises:
             ConfigError: If the host has no assigned policy.
-            ValueError: If the server answers 304 with nothing stored to serve.
+            ValueError: If the cache key would carry a credential, or if the
+                server answers 304 with nothing stored to serve.
         """
-        key = cache_key if cache_key is not None else _keyed(url, params)
+        key = _credential_free(
+            cache_key if cache_key is not None else _keyed(url, params), label
+        )
         host = _host_of(url)
         limits = (
             self._network.for_category(policy)
@@ -407,6 +410,34 @@ class HttpFetcher:
 _CREDENTIAL_PARAMS = frozenset(
     {"token", "api_key", "apikey", "key", "access_token", "auth", "password", "secret"}
 )
+
+
+def _credential_free(key: str, label: str) -> str:
+    """The cache key, having confirmed it carries no credential we minted.
+
+    `_keyed`'s two rules see only the derived path — a caller passing an
+    explicit `cache_key` skips the function and both rules with it, and the
+    hatch exists precisely for callers whose query carries a credential. This
+    is the same property asked once, of the value that actually gets written,
+    however it was arrived at. It also covers a credential sitting in the
+    **URL**, which `_keyed` returns untouched when there are no params.
+
+    It cannot name a parameter, because the key need not have come from one.
+    So it names the source, which is what a reader needs and is safe to print:
+    quoting the key would put the credential in a traceback, and a traceback
+    is not routed through the log formatter that would have scrubbed it.
+
+    Raises:
+        ValueError: If the key carries a registered credential.
+    """
+    if contains_secret(key):
+        raise ValueError(
+            f"Refusing to store a cache key for '{label}': it carries a credential "
+            "this process minted. The key is written to http_cache, so this would "
+            "put a credential at rest. Key on what identifies the request, not on "
+            "what authenticates it."
+        )
+    return key
 
 
 def _keyed(url: str, params: QueryParams | None) -> str:

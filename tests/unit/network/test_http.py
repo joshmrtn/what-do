@@ -685,6 +685,48 @@ def test_a_credential_inside_a_longer_value_is_still_refused():
         )
 
 
+def test_an_explicit_cache_key_carrying_a_credential_is_refused():
+    """The escape hatch is not an exemption.
+
+    `cache_key=` exists so a caller whose query carries a credential can say
+    what actually identifies the request — and it skips `_keyed` entirely, so
+    both rules there are skipped with it. A caller who builds the key out of
+    the credential anyway lands exactly where the hatch was meant to avoid.
+    """
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError, match="apify"):
+        _fetcher(session).get(
+            URL,
+            label="apify",
+            params={"usernames": "a,b"},
+            cache_key=f"{URL}?token={_MINTED.expose_secret()}",
+        )
+    assert session.calls == []
+
+
+def test_a_credential_in_the_url_itself_is_refused():
+    """`_keyed` returns the URL untouched when there are no params."""
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError, match="apify"):
+        _fetcher(session).get(
+            f"{URL}?token={_MINTED.expose_secret()}", label="apify"
+        )
+    assert session.calls == []
+
+
+def test_the_key_refusal_names_the_label_and_never_the_value():
+    """It cannot name a parameter — the key may not have come from one — so it
+    names the source, which is what a reader needs and is safe to print."""
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError) as raised:
+        _fetcher(session).get(
+            URL, label="apify", cache_key=f"{URL}?token={_MINTED.expose_secret()}"
+        )
+
+    assert "apify" in str(raised.value)
+    assert _MINTED.expose_secret() not in str(raised.value)
+
+
 def test_a_value_that_was_never_minted_is_keyed_unchanged():
     """Veezi's `siteToken`, which is the case this must not break.
 
