@@ -25,6 +25,7 @@ from src.network.http import (
 from src.network.policy import RequestPolicy
 from src.network.throttle import InMemoryThrottle
 from src.storage.memory.http_cache import InMemoryHttpCache
+from src.utils.secret import Secret
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
 URL = "https://example.org/events"
@@ -629,3 +630,76 @@ def test_the_explicit_key_is_what_gets_stored():
 
     assert store.get(key) is not None
     assert store.get(URL) is None
+
+
+# ---------------------------------------------------------------------------
+# The value check: a credential is refused whatever the parameter is called
+# ---------------------------------------------------------------------------
+#
+# The name denylist above can only recognise the spellings we thought of, and a
+# denylist is the thing this design replaces. Here the actual values are in
+# hand, so the question is asked directly: is this value a credential we minted?
+# Exact where the name rule guesses, and it needs to know nothing about the
+# provider.
+#
+# The two rules are belt and braces, not duplicates. The name rule still catches
+# a credential that was never minted as a `Secret` — a value the registry has
+# never heard of — and the value rule catches one that was, under a name nobody
+# would have put on a list.
+
+
+#: Long enough to clear `MIN_REDACTABLE_LENGTH`, so minting registers it.
+_MINTED = Secret("minted-credential-8b3f1c7e02")
+
+
+@pytest.mark.parametrize("name", ["q", "sig", "usernames"])
+def test_a_registered_credential_refuses_to_become_a_cache_key(name):
+    """Innocuous names, and the value is what gives it away."""
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError, match=name):
+        _fetcher(session).get(URL, label="x", params={name: _MINTED.expose_secret()})
+    assert session.calls == []
+
+
+def test_the_refusal_names_the_parameter_and_never_the_value():
+    """A message quoting the credential would be the leak it exists to stop.
+
+    `ValueError` text reaches a traceback, and a traceback is not routed
+    through the log formatter, so the scrub at that boundary would never see
+    it. The one thing this must not do is print what it found.
+    """
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError) as raised:
+        _fetcher(session).get(URL, label="x", params={"sig": _MINTED.expose_secret()})
+
+    assert "sig" in str(raised.value)
+    assert _MINTED.expose_secret() not in str(raised.value)
+
+
+def test_a_credential_inside_a_longer_value_is_still_refused():
+    """A signature built by concatenation carries the whole credential."""
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError, match="sig"):
+        _fetcher(session).get(
+            URL, label="x", params={"sig": f"v1:{_MINTED.expose_secret()}:2026"}
+        )
+
+
+def test_a_value_that_was_never_minted_is_keyed_unchanged():
+    """Veezi's `siteToken`, which is the case this must not break.
+
+    It is a public page identifier printed on the cinema's own website, so it
+    is a plain `str` and was never registered — opaque and credential-shaped,
+    and still not a credential. The type is what says so, and nobody has to
+    remember it.
+    """
+    store = InMemoryHttpCache()
+    session = _FakeSession(_response(body="showtimes"))
+    site_token = "9f3a2c7e5b1d40886ec4"
+
+    body = _fetcher(session, http_cache=store).get(
+        URL, label="veezi", params={"siteToken": site_token}
+    )
+
+    assert body == "showtimes"
+    assert store.get(f"{URL}?siteToken={site_token}") is not None

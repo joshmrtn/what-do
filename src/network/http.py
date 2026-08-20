@@ -34,6 +34,7 @@ from src.config import NetworkConfig
 from src.storage.http_cache import CachedResponse
 from src.storage.protocols import HttpCache
 from src.utils.logging import StructuredLogger
+from src.utils.secret import contains_secret
 
 #: Identifies the project rather than impersonating a browser.
 USER_AGENT = "what-do/1.0 (local event aggregator; nightly batch)"
@@ -414,9 +415,19 @@ def _keyed(url: str, params: QueryParams | None) -> str:
     Sorted, so two callers spelling the same query in a different order share
     an answer rather than each storing their own.
 
+    Two rules, and they are belt and braces rather than duplicates. The **name**
+    rule catches a credential that was never minted as a `Secret` — a value the
+    registry has never heard of. The **value** rule catches one that was, under
+    a parameter name nobody would have put on a list, and it needs to know
+    nothing about the provider to do it.
+
+    Neither message may quote what it found. A `ValueError` reaches a traceback,
+    and a traceback is not routed through the log formatter, so the scrub at
+    that boundary would never see it.
+
     Raises:
-        ValueError: If a parameter looks like a credential and no explicit
-            `cache_key` was given.
+        ValueError: If a parameter looks like a credential, or carries one, and
+            no explicit `cache_key` was given.
     """
     if not params:
         return url
@@ -426,6 +437,15 @@ def _keyed(url: str, params: QueryParams | None) -> str:
         raise ValueError(
             f"Refusing to build a cache key containing {', '.join(offending)}: the "
             "key is stored in http_cache, so this would put a credential at rest. "
+            "Pass cache_key= naming what actually identifies the request."
+        )
+
+    minted = sorted(str(name) for name, value in params.items() if contains_secret(str(value)))
+    if minted:
+        raise ValueError(
+            f"Refusing to build a cache key containing {', '.join(minted)}: its value "
+            "is a credential this process minted, whatever the parameter is called. "
+            "The key is stored in http_cache, so this would put a credential at rest. "
             "Pass cache_key= naming what actually identifies the request."
         )
 

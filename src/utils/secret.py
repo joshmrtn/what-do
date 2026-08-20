@@ -66,6 +66,10 @@ class _Redactions:
             text = text.replace(value, PLACEHOLDER)
         return text
 
+    def contains(self, text: str) -> bool:
+        """Whether any registered value appears anywhere in `text`."""
+        return any(value in text for value in self._values)
+
     def snapshot(self) -> frozenset[str]:
         """The registered values, for a test to restore afterwards."""
         return frozenset(self._values)
@@ -135,6 +139,22 @@ class Secret:
 def scrub(text: str) -> str:
     """Replace every registered credential in `text` with the placeholder."""
     return _REDACTIONS.scrub(text)
+
+
+def contains_secret(text: str) -> bool:
+    """Whether `text` carries a registered credential.
+
+    The refusing half of the same registry `scrub` reads. `scrub` is for text
+    already on its way to a log, where redacting is the best still available;
+    this is for a value about to be written somewhere durable, where the answer
+    is to refuse instead.
+
+    It matches on the value, so it is exact where a rule over parameter *names*
+    can only recognise the spellings somebody thought of — and it needs to know
+    nothing about the provider. Its limit is the same as `scrub`'s: a credential
+    that was never minted as a `Secret` is one the registry has never heard of.
+    """
+    return _REDACTIONS.contains(text)
 
 
 def snapshot_redactions() -> frozenset[str]:
