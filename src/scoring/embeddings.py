@@ -22,7 +22,7 @@ class EmbeddingError(LLMError):
 
 
 @runtime_checkable
-class EmbeddingProvider(Protocol):
+class Embedder(Protocol):
     """Turns text into a vector."""
 
     def embed(self, text: str) -> list[float]:
@@ -38,8 +38,11 @@ class EmbeddingClient(Protocol):
         ...
 
 
-class OllamaEmbeddingProvider:
-    """Generates embeddings via an Ollama-compatible client.
+class EmbeddingProvider:
+    """Generates embeddings through an injected embedding client.
+
+    Which model, and whose, is the composition root's decision: extraction and
+    embedding are separate slots and need not be answered by the same provider.
 
     Args:
         client: Transport exposing embed(model, text). Injected so tests

@@ -53,7 +53,7 @@ from src.storage.memory.events import InMemoryEventRepository
 from src.storage.memory.rankings import InMemoryRankingRepository
 from src.storage.memory.scores import InMemoryScoreRepository
 from src.scoring.embedding_stage import embedding_input_hash
-from src.scoring.embeddings import OllamaEmbeddingProvider
+from src.scoring.embeddings import EmbeddingProvider
 from src.scoring.similarity import Reason, SimilarityResult
 from src.utils.vectors import encode_vector
 from src.storage.events import save_events
@@ -657,7 +657,7 @@ def _real_embedder():
     """
     config = load_config(Path("config/config.yaml"))
     now = datetime.now(timezone.utc)
-    return OllamaEmbeddingProvider(
+    return EmbeddingProvider(
         OllamaClient(
             config.ollama_host,
             session=requests.Session(),

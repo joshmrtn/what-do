@@ -11,7 +11,7 @@ import pytest
 from src.models.event import Event
 from src.models.source_type import SYNTHETIC
 from src.models.tag import Tag
-from src.processing.extraction import ExtractionError, ExtractionResult, OllamaExtractionProvider
+from src.processing.extraction import ExtractionError, ExtractionResult, ExtractionProvider
 from src.processing.extraction_stage import (
     ExtractionStage,
     extraction_input,
@@ -455,7 +455,7 @@ def test_bypass_not_called_when_the_input_is_unchanged():
     client = MagicMock()
     client.chat.side_effect = AssertionError("Ollama should not be called when done")
 
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
     stage = ExtractionStage(provider=provider, image_fetcher=None, logger=_make_logger())
 
     event = _make_event(

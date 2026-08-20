@@ -13,7 +13,7 @@ from typing import Callable
 
 from src.models.event import Event
 from src.observability.reporter import FINISHED, STARTED, Progress, ProgressFn
-from src.scoring.embeddings import EmbeddingError, EmbeddingProvider
+from src.scoring.embeddings import EmbeddingError, Embedder
 from src.utils.logging import StructuredLogger
 from src.utils.vectors import encode_vector
 
@@ -69,7 +69,7 @@ class EmbeddingStage:
 
     def __init__(
         self,
-        provider: EmbeddingProvider,
+        provider: Embedder,
         logger: StructuredLogger,
         preload: Callable[[], dict[str, bytes]] | None = None,
         get_now: Callable[[], datetime] = _utc_now,

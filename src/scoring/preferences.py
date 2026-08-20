@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.scoring.embeddings import EmbeddingError, EmbeddingProvider
+from src.scoring.embeddings import EmbeddingError, Embedder
 from src.utils.logging import StructuredLogger
 from src.utils.text import normalize_embedding_text
 from src.utils.vectors import decode_vector, encode_vector
@@ -131,7 +131,7 @@ class PreferenceRepository:
 
     def __init__(
         self,
-        provider: EmbeddingProvider,
+        provider: Embedder,
         db_path: Path | str,
         logger: StructuredLogger,
     ) -> None:

@@ -839,10 +839,10 @@ def test_blank_model_name_rejected(tmp_path, key, blank):
 
 def test_provider_defaults_come_from_the_config_defaults(tmp_path):
     """One source of truth: a provider's fallback cannot drift from config."""
-    from src.processing.extraction import OllamaExtractionProvider
+    from src.processing.extraction import ExtractionProvider
 
     cfg = _load(tmp_path, {})
-    provider = OllamaExtractionProvider(client=object())
+    provider = ExtractionProvider(client=object())
     assert provider._model == cfg.models.llm_extraction
 
 

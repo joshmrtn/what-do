@@ -8,7 +8,7 @@ import requests
 
 from src.ingestion.disambiguation import OllamaDisambiguationProvider
 from src.models.tag import Tag
-from src.processing.extraction import OllamaExtractionProvider
+from src.processing.extraction import ExtractionProvider
 from src.utils.chat_client import ChatClient
 from src.utils.ollama_client import OllamaClient
 
@@ -52,7 +52,7 @@ def test_extraction_provider_accepts_any_chat_client():
         def chat(self, model, messages, images=None):
             return '{"tags": ["a", "b", "c", "d", "e"], "summary": "a summary"}'
 
-    provider = OllamaExtractionProvider(client=Stub(), min_tags=5)
+    provider = ExtractionProvider(client=Stub(), min_tags=5)
     result = provider.extract("some event text")
     assert result.tags == [Tag(text=c) for c in "abcde"]
 

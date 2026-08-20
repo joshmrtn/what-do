@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.scoring.embeddings import EmbeddingError, EmbeddingProvider, OllamaEmbeddingProvider
+from src.scoring.embeddings import EmbeddingError, Embedder, EmbeddingProvider
 from src.utils.chat_client import LLMError
 
 
@@ -32,9 +32,9 @@ class _FakeClient:
 
 def test_ollama_provider_satisfies_embedding_provider():
 
-    provider = OllamaEmbeddingProvider(client=_FakeClient())
+    provider = EmbeddingProvider(client=_FakeClient())
 
-    assert isinstance(provider, EmbeddingProvider)
+    assert isinstance(provider, Embedder)
 
 
 def test_any_object_with_embed_satisfies_protocol():
@@ -44,17 +44,17 @@ def test_any_object_with_embed_satisfies_protocol():
         def embed(self, text: str) -> list[float]:
             return [1.0, 2.0]
 
-    assert isinstance(Stub(), EmbeddingProvider)
+    assert isinstance(Stub(), Embedder)
 
 
 # ---------------------------------------------------------------------------
-# OllamaEmbeddingProvider
+# EmbeddingProvider
 # ---------------------------------------------------------------------------
 
 
 def test_embed_returns_vector():
 
-    provider = OllamaEmbeddingProvider(client=_FakeClient(vector=[0.5, 0.6]))
+    provider = EmbeddingProvider(client=_FakeClient(vector=[0.5, 0.6]))
 
     assert provider.embed("karaoke") == [0.5, 0.6]
 
@@ -62,7 +62,7 @@ def test_embed_returns_vector():
 def test_embed_passes_configured_model_through():
 
     client = _FakeClient()
-    provider = OllamaEmbeddingProvider(client=client, model="custom-embed-model")
+    provider = EmbeddingProvider(client=client, model="custom-embed-model")
 
     provider.embed("karaoke")
 
@@ -72,14 +72,14 @@ def test_embed_passes_configured_model_through():
 def test_default_model_is_nomic_embed_text():
 
     client = _FakeClient()
-    OllamaEmbeddingProvider(client=client).embed("karaoke")
+    EmbeddingProvider(client=client).embed("karaoke")
 
     assert client.calls[0][0] == "nomic-embed-text"
 
 
 def test_client_failure_raises_embedding_error():
 
-    provider = OllamaEmbeddingProvider(client=_FakeClient(error=LLMError("refused")))
+    provider = EmbeddingProvider(client=_FakeClient(error=LLMError("refused")))
 
     with pytest.raises(EmbeddingError, match="refused"):
         provider.embed("karaoke")
@@ -94,7 +94,7 @@ def test_embedding_error_is_an_llm_error():
 def test_empty_text_raises_without_calling_client():
 
     client = _FakeClient()
-    provider = OllamaEmbeddingProvider(client=client)
+    provider = EmbeddingProvider(client=client)
 
     with pytest.raises(EmbeddingError, match="empty"):
         provider.embed("   ")
@@ -104,7 +104,7 @@ def test_empty_text_raises_without_calling_client():
 
 def test_empty_vector_response_raises():
 
-    provider = OllamaEmbeddingProvider(client=_FakeClient(vector=[]))
+    provider = EmbeddingProvider(client=_FakeClient(vector=[]))
 
     with pytest.raises(EmbeddingError, match="empty"):
         provider.embed("karaoke")
@@ -115,7 +115,7 @@ def test_no_network_call_made_by_provider_itself():
 
     client = MagicMock()
     client.embed.return_value = [0.1]
-    provider = OllamaEmbeddingProvider(client=client)
+    provider = EmbeddingProvider(client=client)
 
     provider.embed("karaoke")
 
@@ -131,7 +131,7 @@ def test_text_is_lowercased_before_embedding():
     """Capitalised words hit [UNK]: 'Karaoke', 'Trivia' and 'Death' all embed identically."""
 
     client = _FakeClient()
-    OllamaEmbeddingProvider(client=client).embed("Karaoke Night at Koto")
+    EmbeddingProvider(client=client).embed("Karaoke Night at Koto")
 
     assert client.calls == [("nomic-embed-text", "karaoke night at koto")]
 
@@ -140,7 +140,7 @@ def test_case_differences_produce_one_cache_hit():
     """Both sides of a comparison must be folded identically."""
 
     client = _FakeClient()
-    provider = OllamaEmbeddingProvider(client=client)
+    provider = EmbeddingProvider(client=client)
 
     assert provider.embed("KARAOKE") == provider.embed("karaoke")
 
@@ -148,4 +148,4 @@ def test_case_differences_produce_one_cache_hit():
 def test_blank_after_folding_still_raises():
 
     with pytest.raises(EmbeddingError, match="empty"):
-        OllamaEmbeddingProvider(client=_FakeClient()).embed("   ")
+        EmbeddingProvider(client=_FakeClient()).embed("   ")

@@ -54,7 +54,7 @@ from src.models.venue import Venue
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.normalization.service import NormalizationService
 from src.scoring.embedding_stage import EmbeddingStage
-from src.scoring.embeddings import OllamaEmbeddingProvider
+from src.scoring.embeddings import EmbeddingProvider
 from src.scoring.preference_revision import build_revision
 from src.scoring.preferences import PreferenceRepository, PreferenceSet, UserPreference
 from src.scoring.ranking import RankingEngine
@@ -538,7 +538,7 @@ def test_semantic_matching_smoke(tmp_path: Path) -> None:
             return self.inner.embed(text)
 
     provider = CountingProvider(
-        OllamaEmbeddingProvider(client=_ollama_client())
+        EmbeddingProvider(client=_ollama_client())
     )
     repo = PreferenceRepository(provider, db_path, logger)
 
@@ -762,7 +762,7 @@ def test_ranking_smoke(tmp_path: Path) -> None:
     dislikes = tmp_path / "dislikes.txt"
     dislikes.write_text("nightclubs\nsports bars\ndancing\n")
 
-    provider = OllamaEmbeddingProvider(client=_ollama_client())
+    provider = EmbeddingProvider(client=_ollama_client())
     prefs = PreferenceRepository(provider, db_path, logger).load(likes, dislikes)
 
     run_date = date(2026, 8, 6)

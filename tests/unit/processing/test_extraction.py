@@ -1,4 +1,4 @@
-"""Unit tests for ExtractionProvider and OllamaExtractionProvider."""
+"""Unit tests for Extractor and ExtractionProvider."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ import pytest
 from src.models.tag import Tag
 from src.processing.extraction import (
     ExtractionError,
-    ExtractionProvider,
+    Extractor,
     ExtractionResult,
-    OllamaExtractionProvider,
+    ExtractionProvider,
 )
 
 
@@ -39,7 +39,7 @@ def _valid_response(tags: list[str] | None = None, include_summary: bool = True)
 
 
 
-def _provider(min_tags: int = 1, tags=None) -> OllamaExtractionProvider:
+def _provider(min_tags: int = 1, tags=None) -> ExtractionProvider:
     """A provider whose model returns exactly the tags a test names."""
     payload = {
         "title": None,
@@ -51,10 +51,10 @@ def _provider(min_tags: int = 1, tags=None) -> OllamaExtractionProvider:
         "setting": "unknown",
     }
     client = _make_client(json.dumps(payload))
-    return OllamaExtractionProvider(client=client, min_tags=min_tags)
+    return ExtractionProvider(client=client, min_tags=min_tags)
 
 
-def _sent_prompt(provider: OllamaExtractionProvider) -> str:
+def _sent_prompt(provider: ExtractionProvider) -> str:
     return provider._client.chat.call_args.kwargs["messages"][0]["content"]
 
 
@@ -66,7 +66,7 @@ def _sent_prompt(provider: OllamaExtractionProvider) -> str:
 def test_reference_date_injected_into_prompt():
 
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
     provider.extract("some event text", reference_date=datetime(2026, 8, 3))
 
     prompt = client.chat.call_args.kwargs["messages"][0]["content"]
@@ -76,7 +76,7 @@ def test_reference_date_injected_into_prompt():
 def test_no_reference_date_omits_date_context():
 
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
     provider.extract("some event text")
 
     prompt = client.chat.call_args.kwargs["messages"][0]["content"]
@@ -91,7 +91,7 @@ def test_no_reference_date_omits_date_context():
 def test_result_names_the_model_that_answered():
     """Configured and actual can differ, and the refit needs the actual one."""
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -103,7 +103,7 @@ def test_result_names_the_model_after_a_retry():
     result must describe the attempt that actually produced it."""
     client = MagicMock()
     client.chat.side_effect = ["not json at all", _valid_response()]
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e2b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e2b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -112,7 +112,7 @@ def test_result_names_the_model_after_a_retry():
 
 def test_result_carries_a_prompt_version():
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -121,8 +121,8 @@ def test_result_carries_a_prompt_version():
 
 def test_prompt_version_is_stable_across_calls():
     """It groups rows for the refit, so it cannot vary with the event text."""
-    first = OllamaExtractionProvider(client=_make_client(_valid_response()), min_tags=5)
-    second = OllamaExtractionProvider(client=_make_client(_valid_response()), min_tags=5)
+    first = ExtractionProvider(client=_make_client(_valid_response()), min_tags=5)
+    second = ExtractionProvider(client=_make_client(_valid_response()), min_tags=5)
 
     assert (
         first.extract("a jazz night").prompt_version
@@ -161,13 +161,13 @@ def test_prompt_version_changes_when_the_extract_prompt_changes():
 
 
 # ---------------------------------------------------------------------------
-# ExtractionProvider ABC
+# Extractor ABC
 # ---------------------------------------------------------------------------
 
 
 def test_mock_provider_satisfies_abc():
 
-    class MockProvider(ExtractionProvider):
+    class MockProvider(Extractor):
         def extract(self, text: str, image_bytes: bytes | None = None) -> ExtractionResult:
             return ExtractionResult(
                 title="test",
@@ -187,14 +187,14 @@ def test_mock_provider_satisfies_abc():
 
 
 # ---------------------------------------------------------------------------
-# OllamaExtractionProvider — valid output
+# ExtractionProvider — valid output
 # ---------------------------------------------------------------------------
 
 
 def test_valid_response_parsed_correctly():
 
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("Come hear jazz tonight at The Vault Lounge starting at 8pm!")
 
@@ -216,7 +216,7 @@ def test_null_optional_fields_are_none():
         "summary": "An event with minimal info.",
     }
     client = _make_client(json.dumps(payload))
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("vague post")
     assert result.title is None
@@ -227,7 +227,7 @@ def test_null_optional_fields_are_none():
 def test_start_time_parsed_as_datetime():
 
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("Jazz night at 8pm")
     assert isinstance(result.start_time, datetime)
@@ -242,7 +242,7 @@ def test_fewer_than_min_tags_degrades_after_retry():
 
     # Both calls return only 3 tags
     client = _make_client(_valid_response(tags=["a", "b", "c"]))
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -253,7 +253,7 @@ def test_fewer_than_min_tags_degrades_after_retry():
 def test_missing_summary_degrades_after_retry():
 
     client = _make_client(_valid_response(include_summary=False))
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -265,7 +265,7 @@ def test_missing_summary_degrades_after_retry():
 def test_invalid_json_degrades_after_retry():
 
     client = _make_client("Here is the event info: Jazz night tonight, it should be fun!")
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -278,7 +278,7 @@ def test_json_wrapped_in_a_markdown_fence_is_accepted():
     lost event. Constrained decoding prevents it upstream; this is the belt to
     that pair of braces, and costs one strip() to have."""
     client = _make_client(f"```json\n{_valid_response()}\n```")
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -289,7 +289,7 @@ def test_json_wrapped_in_a_markdown_fence_is_accepted():
 
 def test_a_bare_fence_without_a_language_tag_is_accepted():
     client = _make_client(f"```\n{_valid_response()}\n```")
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     assert provider.extract("some event text").summary
     assert client.chat.call_count == 1
@@ -297,7 +297,7 @@ def test_a_bare_fence_without_a_language_tag_is_accepted():
 
 def test_a_fence_with_surrounding_chatter_is_accepted():
     client = _make_client(f"Here you go:\n\n```json\n{_valid_response()}\n```\n\nHope that helps!")
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     assert provider.extract("some event text").summary
     assert client.chat.call_count == 1
@@ -306,7 +306,7 @@ def test_a_fence_with_surrounding_chatter_is_accepted():
 def test_prose_with_no_json_at_all_still_fails():
     """Stripping a fence must not become 'find something vaguely brace-shaped'."""
     client = _make_client("Jazz night tonight, it should be fun!")
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("some event text")
 
@@ -322,7 +322,7 @@ def test_retry_succeeds_on_second_attempt():
         "Oops I forgot to format that as JSON",  # first: invalid
         _valid_response(),                         # second: valid
     ]
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     result = provider.extract("Jazz night at The Vault")
     assert result.tags is not None
@@ -334,7 +334,7 @@ def test_min_tags_configurable():
 
     # With min_tags=3, a 3-tag response should succeed
     client = _make_client(_valid_response(tags=["a", "b", "c"]))
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=3)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=3)
 
     result = provider.extract("some event")
     assert len(result.tags) == 3
@@ -348,7 +348,7 @@ def test_min_tags_configurable():
 def test_image_bytes_passed_to_client():
 
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     provider.extract("event text", image_bytes=b"\x89PNG fake image data")
 
@@ -361,7 +361,7 @@ def test_image_bytes_passed_to_client():
 def test_no_image_bytes_no_images_kwarg():
 
     client = _make_client(_valid_response())
-    provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
+    provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=5)
 
     provider.extract("event text", image_bytes=None)
 
@@ -396,7 +396,7 @@ _FIVE_WEIGHTED = [
 def test_weighted_tags_preserve_weights():
 
     client = _make_client(_weighted(_FIVE_WEIGHTED))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -407,7 +407,7 @@ def test_bare_string_tags_default_to_full_weight():
     """Models drift; a plain string list must not fail extraction."""
 
     client = _make_client(_valid_response(tags=["jazz", "live music", "venue", "evening", "lounge"]))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("jazz tonight")
 
@@ -420,7 +420,7 @@ def test_missing_weight_defaults_to_full_weight():
     payload = json.loads(_weighted(_FIVE_WEIGHTED))
     del payload["tags"][2]["weight"]
     client = _make_client(json.dumps(payload))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -432,7 +432,7 @@ def test_non_numeric_weight_defaults_to_full_weight():
     payload = json.loads(_weighted(_FIVE_WEIGHTED))
     payload["tags"][1]["weight"] = "very important"
     client = _make_client(json.dumps(payload))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -445,7 +445,7 @@ def test_out_of_range_weight_is_clamped(raw_weight, expected):
     payload = json.loads(_weighted(_FIVE_WEIGHTED))
     payload["tags"][0]["weight"] = raw_weight
     client = _make_client(json.dumps(payload))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -455,7 +455,7 @@ def test_out_of_range_weight_is_clamped(raw_weight, expected):
 def test_min_tag_count_enforced_on_weighted_tags():
 
     client = _make_client(_weighted(_FIVE_WEIGHTED[:3]))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -466,7 +466,7 @@ def test_tag_entry_without_text_is_skipped():
 
     payload = json.loads(_weighted(_FIVE_WEIGHTED + [("", 0.5)]))
     client = _make_client(json.dumps(payload))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -477,7 +477,7 @@ def test_tag_entry_without_text_is_skipped():
 def test_prompt_requests_centrality_weights():
 
     client = _make_client(_weighted(_FIVE_WEIGHTED))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
     provider.extract("punk show tonight")
 
     prompt = client.chat.call_args.kwargs["messages"][0]["content"]
@@ -491,7 +491,7 @@ def test_emoji_stripped_from_tag_text():
     pairs = [("🎤 karaoke", 1.0), ("live music 🎸", 0.9), ("punk rock", 0.7),
              ("all ages", 0.5), ("bar", 0.1)]
     client = _make_client(_weighted(pairs))
-    provider = OllamaExtractionProvider(client=client, min_tags=5)
+    provider = ExtractionProvider(client=client, min_tags=5)
 
     result = provider.extract("punk show tonight")
 
@@ -504,7 +504,7 @@ def test_emoji_only_tag_falls_back_to_its_name():
 
     pairs = _FIVE_WEIGHTED + [("🎤", 0.4)]
     client = _make_client(_weighted(pairs))
-    provider = OllamaExtractionProvider(client=client, min_tags=6)
+    provider = ExtractionProvider(client=client, min_tags=6)
 
     result = provider.extract("punk show tonight")
 
@@ -515,7 +515,7 @@ def test_tag_of_only_invisible_characters_is_dropped():
 
     pairs = _FIVE_WEIGHTED + [("​﻿", 0.4)]
     client = _make_client(_weighted(pairs))
-    provider = OllamaExtractionProvider(client=client, min_tags=6)
+    provider = ExtractionProvider(client=client, min_tags=6)
 
     result = provider.extract("punk show tonight")
 
@@ -541,7 +541,7 @@ def _response_with_setting(setting=_OMIT) -> str:
 def _extract_setting(setting=_OMIT) -> str:
 
     client = _make_client(_response_with_setting(setting))
-    return OllamaExtractionProvider(client=client, min_tags=5).extract("text").setting
+    return ExtractionProvider(client=client, min_tags=5).extract("text").setting
 
 
 @pytest.mark.parametrize("value", ["indoor", "outdoor", "unknown"])
@@ -566,14 +566,14 @@ def test_missing_setting_key_coerces_to_unknown():
 def test_off_enum_setting_does_not_trigger_a_retry():
 
     client = _make_client(_response_with_setting("outside"))
-    OllamaExtractionProvider(client=client, min_tags=5).extract("text")
+    ExtractionProvider(client=client, min_tags=5).extract("text")
     assert client.chat.call_count == 1
 
 
 def test_prompt_requests_the_setting_field():
 
     client = _make_client(_valid_response())
-    OllamaExtractionProvider(client=client, min_tags=5).extract("text")
+    ExtractionProvider(client=client, min_tags=5).extract("text")
     prompt = client.chat.call_args.kwargs["messages"][0]["content"]
     assert "setting" in prompt
     assert "outdoor" in prompt
@@ -688,7 +688,7 @@ class TestDegradationIsRecordedNotRaised:
         they are the shortest inputs — the region the curve is most sensitive
         in. A degraded row with no model on it is a row the refit cannot use."""
         client = _make_client(_valid_response(tags=[]))
-        provider = OllamaExtractionProvider(client=client, model="gemma4:e4b", min_tags=1)
+        provider = ExtractionProvider(client=client, model="gemma4:e4b", min_tags=1)
 
         result = provider.extract("Limón Dance Company")
 
@@ -712,7 +712,7 @@ class TestDegradationIsRecordedNotRaised:
                 }
             )
         )
-        provider = OllamaExtractionProvider(client=client, min_tags=1)
+        provider = ExtractionProvider(client=client, min_tags=1)
 
         result = provider.extract("Stand-up Comedy")
 
@@ -737,7 +737,7 @@ class TestDegradationIsRecordedNotRaised:
                 }
             )
         )
-        provider = OllamaExtractionProvider(client=client, min_tags=1)
+        provider = ExtractionProvider(client=client, min_tags=1)
 
         result = provider.extract("Limón Dance Company")
 
@@ -750,7 +750,7 @@ class TestDegradationIsRecordedNotRaised:
         because unlike a shortfall it may well succeed tomorrow."""
         client = MagicMock()
         client.chat.side_effect = ExtractionError("model unavailable")
-        provider = OllamaExtractionProvider(client=client, min_tags=1)
+        provider = ExtractionProvider(client=client, min_tags=1)
 
         with pytest.raises(ExtractionError):
             provider.extract("Jazz Night")
@@ -772,7 +772,7 @@ class TestTheEchoTestCoversTheVenueLine:
             "title": None, "venue": None, "start_time": None, "end_time": None,
             "tags": tags, "summary": "An evening of live music.", "setting": "unknown",
         }
-        return OllamaExtractionProvider(client=_make_client(json.dumps(payload)), min_tags=1)
+        return ExtractionProvider(client=_make_client(json.dumps(payload)), min_tags=1)
 
     def test_a_tag_echoing_the_city_is_dropped(self):
         provider = self._provider(

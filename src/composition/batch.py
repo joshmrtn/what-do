@@ -56,11 +56,11 @@ from src.ingestion.social.dumpor import DumporAdapter
 from src.ingestion.social.picuki import PicukiAdapter
 from src.normalization.semantic_dedup import SemanticDeduplicationEngine
 from src.normalization.service import NormalizationService
-from src.processing.extraction import OllamaExtractionProvider
+from src.processing.extraction import ExtractionProvider
 from src.processing.extraction_stage import ExtractionStage
 from src.processing.image_fetcher import HttpImageFetcher
 from src.scoring.embedding_stage import EmbeddingStage
-from src.scoring.embeddings import OllamaEmbeddingProvider
+from src.scoring.embeddings import EmbeddingProvider
 from src.models.preference_revision import PreferenceRevision
 from src.scoring.preference_revision import build_revision
 from src.scoring.preferences import PreferenceRepository
@@ -376,7 +376,7 @@ def build_dependencies(
         component="embedding",
         keep_alive=config.models.keep_alive,
     )
-    embedding_provider = OllamaEmbeddingProvider(
+    embedding_provider = EmbeddingProvider(
         embedding_client, model=config.models.embeddings
     )
 
@@ -439,7 +439,7 @@ def build_dependencies(
             logger=logger,
         ),
         extraction_stage=ExtractionStage(
-            provider=OllamaExtractionProvider(
+            provider=ExtractionProvider(
                 extraction_client,
                 model=config.models.llm_extraction,
                 min_tags=config.models.min_tags,

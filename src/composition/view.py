@@ -39,7 +39,7 @@ from src.enrichment.astronomical import AstronomicalCalculator
 from src.enrichment.service import EnrichmentService
 from src.enrichment.weather import WeatherProvider
 from src.scoring.embedding_stage import EmbeddingStage
-from src.scoring.embeddings import OllamaEmbeddingProvider
+from src.scoring.embeddings import EmbeddingProvider
 from src.models.preference_revision import PreferenceRevision
 from src.scoring.preference_revision import build_revision
 from src.scoring.preferences import PreferenceRepository
@@ -115,7 +115,7 @@ def build_rescore_pipeline(
     # timeout, because `embed` names no patience and takes its host's, which is
     # the short one. A generation's ceiling here would be a hang on the one path
     # that promises to be snappy.
-    embedding_provider = OllamaEmbeddingProvider(
+    embedding_provider = EmbeddingProvider(
         OllamaClient(
             config.ollama_host,
             session=requests.Session(),

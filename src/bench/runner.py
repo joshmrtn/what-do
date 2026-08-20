@@ -18,7 +18,7 @@ from typing import Callable
 
 from src.models.event import Event
 from src.models.tag import Tag
-from src.processing.extraction import OllamaExtractionProvider
+from src.processing.extraction import ExtractionProvider
 from src.processing.extraction_input import extraction_input
 from src.utils.chat_client import ChatClient, LLMError
 
@@ -110,7 +110,7 @@ def run_variant(sample: Sample, variant: Variant) -> Measurement:
     exists to compare, and a table missing a column is worth less than one whose
     column reads `unreachable`.
     """
-    provider = OllamaExtractionProvider(
+    provider = ExtractionProvider(
         client=variant.client, model=variant.model, min_tags=variant.min_tags
     )
     text = variant.input_builder(sample.as_event())

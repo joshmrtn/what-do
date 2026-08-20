@@ -164,7 +164,7 @@ def _parse_setting(raw: Any) -> str:
     return "unknown"
 
 
-class ExtractionProvider(ABC):
+class Extractor(ABC):
     """Extracts structured data from raw event text."""
 
     @abstractmethod
@@ -275,8 +275,11 @@ def _prompt_version() -> str:
     return hashlib.sha256(material).hexdigest()[:8]
 
 
-class OllamaExtractionProvider(ExtractionProvider):
-    """Extracts structured event data using a local Ollama LLM.
+class ExtractionProvider(Extractor):
+    """Extracts structured event data by prompting a chat model.
+
+    Which model, and whose, is the composition root's decision: the client is
+    injected and nothing here names a vendor.
 
     Args:
         client: Any ChatClient (e.g. OllamaClient, GeminiClient).

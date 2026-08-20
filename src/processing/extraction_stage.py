@@ -20,7 +20,7 @@ from src.processing.extraction_input import (
 from src.models.tag import Tag
 from src.processing.extraction import (
     ExtractionError,
-    ExtractionProvider,
+    Extractor,
     ExtractionResult,
 )
 from src.processing.image_fetcher import ImageFetchError, ImageFetcher
@@ -126,7 +126,7 @@ class ExtractionStage:
 
     def __init__(
         self,
-        provider: ExtractionProvider,
+        provider: Extractor,
         image_fetcher: ImageFetcher | None,
         logger: Any,
         get_now: Callable[[], datetime] = datetime.now,
