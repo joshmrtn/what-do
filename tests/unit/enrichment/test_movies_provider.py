@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 import pytest
 import requests
@@ -47,8 +48,10 @@ class _FakeSession:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    def get(self, url: str, *, params=None, timeout=None):
-        self.calls.append({"url": url, "params": params, "timeout": timeout})
+    def get(self, url: str, *, params=None, headers=None, timeout=None):
+        self.calls.append(
+            {"url": url, "params": params, "headers": headers, "timeout": timeout}
+        )
         if not self._responses:
             raise AssertionError(f"unexpected extra request to {url}")
         return self._responses.pop(0)
@@ -66,7 +69,7 @@ def _provider(
     cache_ttl: timedelta | None = timedelta(days=7),
 ) -> TMDbProvider:
     return TMDbProvider(
-        api_key=Secret("a-key"),
+        read_access_token=Secret("a-key"),
         session=session,
         policy=fetcher_policy(urls=URL, now=now),
         movie_cache=cache if cache is not None else InMemoryMovieCache(),
@@ -190,3 +193,43 @@ def test_one_cinemas_spelling_hits_the_others_cached_answer():
 
 def test_different_films_are_not_collapsed():
     assert title_key("The Thing") != title_key("The Thing II")
+
+
+# ---------------------------------------------------------------------------
+# How the credential travels
+# ---------------------------------------------------------------------------
+#
+# TMDb's v3 API key can *only* go in the query string. The v4 read access token
+# goes in an `Authorization` header, so moving to it is what makes the header
+# form available at all — which is why v3 support is removed outright rather
+# than kept as a fallback. Keeping it would mean keeping a credential in a URL
+# and depending on the log scrubbing to hide it: a backstop standing in for a
+# fix. It costs nothing, because TMDb has never been switched on.
+
+
+def test_both_requests_send_the_bearer_token():
+    """Search and detail are one question, and both must authenticate."""
+    session = _found_session()
+    _provider(session).fetch("Back to the Future", 1985)
+
+    assert [c["headers"]["Authorization"] for c in session.calls] == [
+        "Bearer a-key",
+        "Bearer a-key",
+    ]
+
+
+def test_no_request_carries_a_credential_in_the_query():
+    session = _found_session()
+    _provider(session).fetch("Back to the Future", 1985)
+
+    for call in session.calls:
+        assert "api_key" not in (call["params"] or {})
+        assert "a-key" not in urlencode(call["params"] or {})
+
+
+def test_the_search_query_is_otherwise_unchanged():
+    """Only the credential moves; the question itself is the same one."""
+    session = _found_session()
+    _provider(session).fetch("Back to the Future", 1985)
+
+    assert session.calls[0]["params"] == {"query": "Back to the Future", "year": 1985}

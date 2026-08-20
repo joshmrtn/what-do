@@ -136,7 +136,7 @@ def build_air_quality_provider(
 
 def build_movie_provider(
     config: AppConfig,
-    api_key: Secret,
+    read_access_token: Secret,
     *,
     movie_cache: MovieCache,
     get_now: Callable[[], datetime],
@@ -150,7 +150,7 @@ def build_movie_provider(
     on every run for ever.
     """
     return TMDbProvider(
-        api_key,
+        read_access_token,
         session=requests.Session(),
         policy=policy
         if policy is not None

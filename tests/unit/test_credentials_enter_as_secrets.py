@@ -42,7 +42,7 @@ from tests.unit.test_composition import _config
 SENTINELS = {
     "APIFY_API_KEY": "apify-sentinel-4d9f2a7c1e",
     "AMC_API_KEY": "amc-sentinel-b83c1f6e02",
-    "TMDB_API_KEY": "tmdb-sentinel-7a41d0c95f",
+    "TMDB_READ_ACCESS_TOKEN": "tmdb-sentinel-7a41d0c95f",
 }
 
 GEMINI_SENTINEL = "gemini-sentinel-2c5e8b1943"

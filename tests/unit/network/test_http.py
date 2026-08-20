@@ -358,6 +358,22 @@ def test_the_project_identifies_itself():
     assert session.calls[0]["headers"]["User-Agent"] == USER_AGENT
 
 
+def test_a_callers_headers_are_sent():
+    """An Authorization line is why this parameter exists."""
+    session = _FakeSession(_response())
+    _fetcher(session).get(URL, label="x", headers={"Authorization": "Bearer abc"})
+    assert session.calls[0]["headers"]["Authorization"] == "Bearer abc"
+
+
+def test_a_caller_cannot_replace_the_politeness_headers():
+    """The User-Agent identifying this project, and the validators that let a
+    server answer 304, belong to the politeness contract rather than to
+    whoever is asking. Ours win the collision."""
+    session = _FakeSession(_response())
+    _fetcher(session).get(URL, label="x", headers={"User-Agent": "Mozilla/5.0"})
+    assert session.calls[0]["headers"]["User-Agent"] == USER_AGENT
+
+
 def test_the_timeout_comes_from_the_host_policy():
     """Several callers pass none at all today, and none blocks for ever."""
     session = _FakeSession(_response())
@@ -653,12 +669,41 @@ _MINTED = Secret("minted-credential-8b3f1c7e02")
 
 
 @pytest.mark.parametrize("name", ["q", "sig", "usernames"])
-def test_a_registered_credential_refuses_to_become_a_cache_key(name):
+def test_a_registered_credential_is_refused_from_the_query(name):
     """Innocuous names, and the value is what gives it away."""
     session = _FakeSession(_response())
     with pytest.raises(ValueError, match=name):
         _fetcher(session).get(URL, label="x", params={name: _MINTED.expose_secret()})
     assert session.calls == []
+
+
+def test_an_explicit_cache_key_does_not_license_a_credential_in_the_query():
+    """The hatch answers "what identifies this request", not "send anything".
+
+    Naming a key keeps the credential out of `http_cache`, and that is all it
+    does. The value still goes on the wire in the query string, where it reaches
+    the provider's access log and any intermediary's — surfaces this process
+    does not own and cannot scrub. Before the adapters moved to bearer headers
+    this had to be allowed, because Apify's own call depended on it.
+    """
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError, match="sig"):
+        _fetcher(session).get(
+            URL,
+            label="x",
+            params={"sig": _MINTED.expose_secret()},
+            cache_key=f"{URL}?identified-by=something-else",
+        )
+    assert session.calls == []
+
+
+def test_the_query_refusal_points_at_the_header_form():
+    """The advice must be the fix, and `cache_key=` is no longer the fix."""
+    session = _FakeSession(_response())
+    with pytest.raises(ValueError) as raised:
+        _fetcher(session).get(URL, label="x", params={"sig": _MINTED.expose_secret()})
+
+    assert "Authorization" in str(raised.value)
 
 
 def test_the_refusal_names_the_parameter_and_never_the_value():

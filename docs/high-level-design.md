@@ -1176,7 +1176,7 @@ Required secrets (`.env.example`):
 
 ```
 APIFY_API_KEY=
-TMDB_API_KEY=
+TMDB_READ_ACCESS_TOKEN=
 AMC_API_KEY=
 OLLAMA_HOST=http://localhost:11434
 ```

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from unittest.mock import MagicMock
+from urllib.parse import urlencode
 
 import requests
 
@@ -151,3 +152,39 @@ def test_falls_back_to_stable_id_without_a_post_id():
     """Missing natural key still yields a repeatable id, never a fresh uuid."""
     post = {k: v for k, v in _APIFY_RESPONSE[0].items() if k != "id"}
     assert _make_adapter([post]).fetch()[0].id == _make_adapter([post]).fetch()[0].id
+
+
+# ---------------------------------------------------------------------------
+# How the credential travels
+# ---------------------------------------------------------------------------
+#
+# Apify's own docs make this plan's argument from the provider's side: the URL
+# parameter form is "less secure" because "URLs are often stored in browser
+# history and server logs." The header form is what they recommend.
+#
+# After the Secret type and the log scrubbing, this is no longer *the* fix —
+# a token in the query string is already scrubbed out of `str(HTTPError)`. It
+# removes the dependence on that backstop: a value that never enters the URL
+# cannot leak through a surface nobody thought of, including surfaces outside
+# our logging entirely — an uncaught traceback, an intermediary's access log.
+
+
+def _sent(adapter) -> dict:
+    """What the transport was actually asked for."""
+    adapter.fetch()
+    return adapter._fetcher._session.get.call_args.kwargs
+
+
+def test_the_token_travels_as_a_bearer_header():
+    assert _sent(_make_adapter())["headers"]["Authorization"] == "Bearer fake-key"
+
+
+def test_the_token_is_absent_from_the_query():
+    sent = _sent(_make_adapter())
+    assert "token" not in sent["params"]
+    assert "fake-key" not in urlencode(sent["params"])
+
+
+def test_the_usernames_still_travel_as_a_parameter():
+    """The rest of the query is untouched — only the credential moves."""
+    assert _sent(_make_adapter())["params"]["usernames"] == "@testvenue"

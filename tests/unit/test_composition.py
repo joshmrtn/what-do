@@ -37,7 +37,7 @@ from tests.support.network import network_for
 
 FULL_ENV = {
     "APIFY_API_KEY": "apify-key",
-    "TMDB_API_KEY": "tmdb-key",
+    "TMDB_READ_ACCESS_TOKEN": "tmdb-token",
     "AMC_API_KEY": "amc-key",
 }
 
@@ -114,6 +114,20 @@ def test_the_warning_names_the_variable_it_looked_for(paths):
     assert "APIFY_API_KEY" in stream.getvalue()
 
 
+def test_the_tmdb_warning_names_the_read_access_token(paths):
+    """Renaming the variable must reach the message, or `--ingest-only` tells a
+    user to set a variable that no longer exists — which is precisely the
+    mistyped-name case the warning was written to make impossible."""
+    stream = io.StringIO()
+    env = {k: v for k, v in FULL_ENV.items() if k != "TMDB_READ_ACCESS_TOKEN"}
+
+    _build(paths, env=env, stream=stream)
+
+    written = stream.getvalue()
+    assert "TMDB_READ_ACCESS_TOKEN" in written
+    assert "TMDB_API_KEY" not in written
+
+
 def test_a_blank_credential_counts_as_absent(paths):
     """.env.example ships every key blank, so copying it leaves real blanks."""
     env = dict(FULL_ENV, APIFY_API_KEY="")
@@ -130,7 +144,7 @@ def test_no_credentials_at_all_still_builds(paths):
 
 
 def test_a_missing_tmdb_key_leaves_enrichment_without_a_movie_provider(paths):
-    env = {k: v for k, v in FULL_ENV.items() if k != "TMDB_API_KEY"}
+    env = {k: v for k, v in FULL_ENV.items() if k != "TMDB_READ_ACCESS_TOKEN"}
 
     deps = _build(paths, env=env)
 

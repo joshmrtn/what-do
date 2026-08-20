@@ -301,6 +301,7 @@ class HttpFetcher:
         *,
         label: str,
         params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
         cache_key: str | None = None,
         policy: str | None = None,
         max_age: timedelta | None = None,
@@ -314,6 +315,12 @@ class HttpFetcher:
             params: Query parameters. Part of what identifies the request, so
                 they are part of the cache key by default — two addresses are
                 two questions, not one answered twice.
+            headers: Extra request headers — an `Authorization` line, in
+                practice. **This is where a credential belongs**: headers are
+                not part of the URL, so they reach no cache key, no browser
+                history and no intermediary's access log. Typed `str` rather
+                than `Any` so a `Secret` cannot arrive here by accident either;
+                a caller sending one says `expose_secret()`.
             cache_key: What to store the answer under, when the URL and its
                 query are the wrong key. Required whenever a parameter looks
                 like a credential: the key is written to `http_cache`, so a
@@ -335,6 +342,7 @@ class HttpFetcher:
             ValueError: If the cache key would carry a credential, or if the
                 server answers 304 with nothing stored to serve.
         """
+        _no_credential_on_the_wire(params, label)
         key = _credential_free(
             cache_key if cache_key is not None else _keyed(url, params), label
         )
@@ -356,7 +364,9 @@ class HttpFetcher:
 
         document = self._policy.call(
             host=host,
-            perform=lambda timeout: self._perform(url, params, cache.stored(), timeout),
+            perform=lambda timeout: self._perform(
+                url, params, headers, cache.stored(), timeout
+            ),
             is_transient=self._is_transient,
             cache=cache,
             label=label,
@@ -368,11 +378,18 @@ class HttpFetcher:
         self,
         url: str,
         params: QueryParams | None,
+        extra_headers: Mapping[str, str] | None,
         stored: CachedResponse | None,
         timeout: float,
     ) -> HttpDocument:
-        """One attempt: a conditional request, and what its answer means."""
-        headers = {"User-Agent": USER_AGENT}
+        """One attempt: a conditional request, and what its answer means.
+
+        The caller's headers go on first so that ours win the collisions. A
+        caller cannot replace the User-Agent that identifies this project, nor
+        the validators that let a server answer 304 — those belong to the
+        politeness contract rather than to whoever is asking.
+        """
+        headers = {**(extra_headers or {}), "User-Agent": USER_AGENT}
         if stored is not None:
             if stored.etag:
                 headers["If-None-Match"] = stored.etag
@@ -412,6 +429,38 @@ _CREDENTIAL_PARAMS = frozenset(
 )
 
 
+def _no_credential_on_the_wire(params: QueryParams | None, label: str) -> None:
+    """Refuse a query parameter whose value is a credential we minted.
+
+    Asked of **every** request, not only of those whose key gets built from the
+    query. `cache_key=` answers "what identifies this request" and nothing more:
+    it keeps the value out of `http_cache`, and leaves it in the URL that goes
+    to the provider — reaching their access log, and any intermediary's, which
+    are surfaces this process neither owns nor can scrub.
+
+    Exact where a rule over parameter *names* guesses, and it needs to know
+    nothing about the provider. Its limit is the registry's: a credential never
+    minted as a `Secret` is invisible here, which is what `_keyed`'s name rule
+    is still for.
+
+    Raises:
+        ValueError: If any parameter carries a registered credential.
+    """
+    if not params:
+        return
+    offending = sorted(
+        str(name) for name, value in params.items() if contains_secret(str(value))
+    )
+    if offending:
+        raise ValueError(
+            f"Refusing to send {', '.join(offending)} for '{label}': its value is a "
+            "credential this process minted, whatever the parameter is called. A URL "
+            "is logged, cached and keyed on by everyone it passes through. Send it in "
+            "an Authorization header instead — cache_key= does not license this, it "
+            "only keeps the value out of our own database."
+        )
+
+
 def _credential_free(key: str, label: str) -> str:
     """The cache key, having confirmed it carries no credential we minted.
 
@@ -446,19 +495,19 @@ def _keyed(url: str, params: QueryParams | None) -> str:
     Sorted, so two callers spelling the same query in a different order share
     an answer rather than each storing their own.
 
-    Two rules, and they are belt and braces rather than duplicates. The **name**
-    rule catches a credential that was never minted as a `Secret` — a value the
-    registry has never heard of. The **value** rule catches one that was, under
-    a parameter name nobody would have put on a list, and it needs to know
-    nothing about the provider to do it.
+    The rule here is about **names**, and it is the belt for a credential that
+    was never minted as a `Secret` — a value the registry has never heard of, so
+    the value rule in `_no_credential_on_the_wire` cannot see it. It stays local
+    to key-building because it can only ever be a guess: a caller who means to
+    cache such a request says what the key is.
 
-    Neither message may quote what it found. A `ValueError` reaches a traceback,
+    The message may not quote what it found. A `ValueError` reaches a traceback,
     and a traceback is not routed through the log formatter, so the scrub at
     that boundary would never see it.
 
     Raises:
-        ValueError: If a parameter looks like a credential, or carries one, and
-            no explicit `cache_key` was given.
+        ValueError: If a parameter looks like a credential and no explicit
+            `cache_key` was given.
     """
     if not params:
         return url
@@ -468,15 +517,6 @@ def _keyed(url: str, params: QueryParams | None) -> str:
         raise ValueError(
             f"Refusing to build a cache key containing {', '.join(offending)}: the "
             "key is stored in http_cache, so this would put a credential at rest. "
-            "Pass cache_key= naming what actually identifies the request."
-        )
-
-    minted = sorted(str(name) for name, value in params.items() if contains_secret(str(value)))
-    if minted:
-        raise ValueError(
-            f"Refusing to build a cache key containing {', '.join(minted)}: its value "
-            "is a credential this process minted, whatever the parameter is called. "
-            "The key is stored in http_cache, so this would put a credential at rest. "
             "Pass cache_key= naming what actually identifies the request."
         )
 

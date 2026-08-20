@@ -374,7 +374,7 @@ def build_dependencies(
         embedding_client, model=config.models.embeddings
     )
 
-    tmdb_key = _credential("TMDB_API_KEY", "tmdb")
+    tmdb_token = _credential("TMDB_READ_ACCESS_TOKEN", "tmdb")
 
     preferences = PreferenceRepository(embedding_provider, db_path, logger).load(
         likes_path, dislikes_path
@@ -409,13 +409,13 @@ def build_dependencies(
             movie_provider=(
                 build_movie_provider(
                     config,
-                    tmdb_key,
+                    tmdb_token,
                     movie_cache=storage.movie_cache,
                     get_now=get_now,
                     policy=request_policy,
                     logger=logger,
                 )
-                if tmdb_key
+                if tmdb_token
                 else None
             ),
             astronomical_calculator=AstronomicalCalculator(),

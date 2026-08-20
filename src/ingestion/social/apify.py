@@ -42,20 +42,26 @@ class ApifyAdapter(IngestionSource):
         self._get_now = get_now
 
     def fetch(self) -> list[EventCandidate]:
-        """Fetch recent posts for configured handles via Apify."""
+        """Fetch recent posts for configured handles via Apify.
+
+        **The token travels as `Authorization: Bearer`, never as `?token=`.**
+        Apify supports both and recommends the header, in their words because
+        "URLs are often stored in browser history and server logs". A value
+        that never enters the URL cannot leak through a surface we did not
+        think of — including surfaces outside this process entirely.
+        """
         url = f"{_APIFY_BASE}/acts/apify~instagram-scraper/runs"
         usernames = ",".join(self._handles)
-        # The token is deliberately absent from the cache key. A key is written
-        # to `http_cache`, so keying on the query string as sent would put a
-        # paid credential at rest in the database — which the fetcher refuses
-        # to do by accident, and this is the deliberate alternative.
+        # The explicit key predates the header form and is still right: what
+        # identifies this request is which handles were asked about, and that
+        # stays true however the call authenticates.
         posts: list[dict[str, Any]] = json.loads(
             self._fetcher.get(
                 url,
                 label="apify",
-                params={
-                    "token": self._api_key.expose_secret(),
-                    "usernames": usernames,
+                params={"usernames": usernames},
+                headers={
+                    "Authorization": f"Bearer {self._api_key.expose_secret()}"
                 },
                 cache_key=f"{url}?usernames={usernames}",
             )

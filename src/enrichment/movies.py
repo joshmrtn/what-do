@@ -52,13 +52,21 @@ class MovieMetadataProvider(ABC):
 
 
 class TMDbProvider(MovieMetadataProvider):
-    """Movie metadata provider backed by The Movie Database (TMDb) API."""
+    """Movie metadata provider backed by The Movie Database (TMDb) API.
+
+    **Authenticates with a v4 read access token in an `Authorization` header.**
+    TMDb's older v3 key can only travel as `?api_key=`, and support for it is
+    removed rather than kept as a fallback: keeping it would mean keeping a
+    credential in a URL and relying on log scrubbing to hide it, which is a
+    backstop standing in for a fix. A value that never enters the URL cannot
+    leak through a surface nobody predicted.
+    """
 
     _BASE_URL = f"https://{TMDB_HOST}/3"
 
     def __init__(
         self,
-        api_key: Secret,
+        read_access_token: Secret,
         *,
         session: requests.Session,
         policy: RequestPolicy,
@@ -68,7 +76,10 @@ class TMDbProvider(MovieMetadataProvider):
     ) -> None:
         """
         Args:
-            api_key: TMDb credential.
+            read_access_token: TMDb credential. Named for the label TMDb itself
+                puts on it, so the parameter matches the page the value is
+                copied from — and because a parameter called `api_key` is what
+                made the query-string form look natural in the first place.
             session: Injected HTTP session, so tests never reach the network.
             policy: Throttle, retry and timeout for this host.
             movie_cache: Answers keyed on canonical title and year, **misses
@@ -77,7 +88,7 @@ class TMDbProvider(MovieMetadataProvider):
                 `never`.
             get_now: Injected clock.
         """
-        self._api_key = api_key
+        self._token = read_access_token
         self._session = session
         self._policy = policy
         self._cache = movie_cache
@@ -131,15 +142,16 @@ class TMDbProvider(MovieMetadataProvider):
         Two requests, one lookup. They are a single question — *what is this
         film* — and the throttle spaces both because it counts per host.
         """
-        params: dict[str, str | int] = {
-            "api_key": self._api_key.expose_secret(),
-            "query": title,
-        }
+        params: dict[str, str | int] = {"query": title}
         if year is not None:
             params["year"] = year
+        headers = {"Authorization": f"Bearer {self._token.expose_secret()}"}
 
         search_resp = self._session.get(
-            f"{self._BASE_URL}/search/movie", params=params, timeout=timeout
+            f"{self._BASE_URL}/search/movie",
+            params=params,
+            headers=headers,
+            timeout=timeout,
         )
         search_resp.raise_for_status()
         results = search_resp.json().get("results", [])
@@ -151,7 +163,7 @@ class TMDbProvider(MovieMetadataProvider):
 
         detail_resp = self._session.get(
             f"{self._BASE_URL}/movie/{movie_id}",
-            params={"api_key": self._api_key.expose_secret()},
+            headers=headers,
             timeout=timeout,
         )
         detail_resp.raise_for_status()

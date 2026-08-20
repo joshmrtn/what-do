@@ -216,7 +216,7 @@ Directory structure:
 
 Required files:
 
-- `.env.example` exists and lists all required secret keys: `APIFY_API_KEY`, `TMDB_API_KEY`, `AMC_API_KEY`, `OLLAMA_HOST`
+- `.env.example` exists and lists all required secret keys: `APIFY_API_KEY`, `TMDB_READ_ACCESS_TOKEN`, `AMC_API_KEY`, `OLLAMA_HOST`
 - `config.yaml` exists
 - `data/likes.txt` exists
 - `data/dislikes.txt` exists

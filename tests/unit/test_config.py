@@ -133,7 +133,7 @@ def test_dotenv_values_loaded(tmp_path, monkeypatch):
 
 
 def test_missing_optional_secrets_no_error(tmp_path, monkeypatch):
-    for key in ("APIFY_API_KEY", "TMDB_API_KEY", "AMC_API_KEY"):
+    for key in ("APIFY_API_KEY", "TMDB_READ_ACCESS_TOKEN", "AMC_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     load_config(config_path=_write_config(tmp_path, _valid_location_data()))
 
