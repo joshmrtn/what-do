@@ -279,6 +279,26 @@ network:
                                     # extraction already skips on
                                     # extraction_input_hash one layer up
 
+    # The model this machine talks to, wherever OLLAMA_HOST points. No spacing:
+    # at localhost there is no third party to be polite to — and that is stated
+    # here as an assignment rather than as a hole in the guard, so repointing
+    # OLLAMA_HOST at a LAN box or a hosted endpoint fails the config check
+    # instead of silently keeping an exemption it was never owed.
+    #
+    # These numbers are the ordinary local call — an embedding, a tenth of a
+    # second. A generation names the `generation` patience below instead.
+    local_model:
+      min_interval_seconds: 0.0
+      timeout_seconds: 30.0
+      max_attempts: 2               # a local model failing twice is dead, not
+                                    # busy: out of memory, or not running. A
+                                    # third ask improves neither.
+      backoff_base_seconds: 1.0
+      backoff_max_seconds: 10.0
+      cache_ttl_seconds: never      # a prompt is not a cacheable resource, and
+                                    # extraction already skips on
+                                    # extraction_input_hash one layer up
+
   # Every host we call, assigned by name. Adding a source means adding one line.
   hosts:
     7gables.org: web_listings
@@ -303,6 +323,28 @@ network:
     www.picuki.com: social_mirrors
     nominatim.openstreetmap.org: nominatim
     generativelanguage.googleapis.com: gemini
+    localhost: local_model          # wherever OLLAMA_HOST points; move this
+                                    # line if the model moves
+
+  # How long a *shape* of request is worth waiting for, named at the call site
+  # and composed onto whatever policy its host already has. Spacing and cache
+  # lifetime are not stated here and may not be: those belong to the host, and a
+  # per-request licence to out-pace another caller of the same server is the
+  # impoliteness the policies above exist to prevent.
+  #
+  # The split exists because one host can answer two shapes. Ollama serves chat
+  # and embed at one address; a hosted provider serving generation and
+  # embeddings collides the same way — so the timeout cannot live with the host.
+  patience:
+    # A model producing tokens takes minutes whoever runs it. 1200s is the
+    # ceiling extraction has always had; two attempts, because a generation that
+    # times out has usually died rather than slowed, and a retry spends the
+    # extraction budget twice.
+    generation:
+      timeout_seconds: 1200.0
+      max_attempts: 2
+      backoff_base_seconds: 5.0
+      backoff_max_seconds: 30.0
 
 # Public ICS calendars to ingest. Many venues and local aggregators publish one,
 # and it is a far better source than scraping: structured, forward-looking, and

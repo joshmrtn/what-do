@@ -1,6 +1,7 @@
 """Unit tests for the config completeness check."""
 
 import ast
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -12,6 +13,7 @@ from src.config import (
     NetworkPolicy,
     LocationConfig,
     NetworkConfig,
+    Patience,
     ScoringConfig,
     ScrapingConfig,
     SourcesConfig,
@@ -20,12 +22,15 @@ from src.config import (
     VenueDiscoveryConfig,
     WeatherConfig,
 )
+from src.utils.chat_client import GENERATION_PATIENCE
 from src.config_check import (
+    CONFIGURED_HOSTS,
     ERROR,
     INFO,
     NEVER_FETCHED,
     PROVIDER_HOSTS,
     WARNING,
+    CALL_SITE_PATIENCE,
     CALL_SITE_POLICIES,
     Finding,
     check_config,
@@ -89,10 +94,24 @@ def _config(**overrides) -> AppConfig:
                 )
             },
             # Every host this config will call, because that is now part of
-            # being a correct config: the feed above, and every host a provider
-            # module hardcodes. One policy serves them all here — the assignment
-            # is what is being tested, not the numbers.
-            hosts={host: "tmdb" for host in [*PROVIDER_HOSTS, "example.test"]},
+            # being a correct config: the feed above, every host a provider
+            # module hardcodes, and the model host `ollama_host` points at. One
+            # policy serves them all here — the assignment is what is being
+            # tested, not the numbers.
+            hosts={
+                host: "tmdb"
+                for host in [*PROVIDER_HOSTS, "example.test", "localhost"]
+            },
+            # Named at the chat client's call site, so a complete config
+            # declares it for the same reason it declares `data_derived`.
+            patience={
+                GENERATION_PATIENCE: Patience(
+                    timeout_seconds=1200.0,
+                    max_attempts=2,
+                    backoff_base_seconds=5.0,
+                    backoff_max_seconds=30.0,
+                )
+            },
         ),
         sources=SourcesConfig(
             ics_calendars=[feed], html_calendars=[feed], veezi_cinemas=[feed],
@@ -114,6 +133,82 @@ def _config(**overrides) -> AppConfig:
 
 def _paths(findings) -> list[str]:
     return [f.path for f in findings]
+
+
+class TestTheModelHostIsCoveredLikeAnyOther:
+    """The model this config calls needs a policy, wherever it turns out to be.
+
+    Locality used to be asserted by *module path* — `utils/ollama_client.py` sat
+    in the transport guard's list of modules allowed to perform a request — so
+    pointing `OLLAMA_HOST` at a LAN box or a hosted endpoint kept the exemption
+    silently. The exemption is the **address**, and the address is configured,
+    so it is read from the config rather than assumed.
+    """
+
+    def test_an_unassigned_model_host_is_an_error(self):
+        base = _config()
+        hosts = {h: n for h, n in base.network.hosts.items() if h != "localhost"}
+
+        findings = check_hosts(_config(network=replace(base.network, hosts=hosts)))
+
+        assert "network.hosts.localhost" in _paths(findings)
+        assert [f.level for f in findings if f.path == "network.hosts.localhost"] == [ERROR]
+
+    def test_the_error_says_which_setting_asked_for_it(self):
+        """A host nobody can trace back to a config line is a host nobody fixes."""
+        base = _config()
+        hosts = {h: n for h, n in base.network.hosts.items() if h != "localhost"}
+
+        findings = check_hosts(_config(network=replace(base.network, hosts=hosts)))
+
+        detail = next(f.detail for f in findings if f.path == "network.hosts.localhost")
+        assert "OLLAMA_HOST" in detail
+
+    def test_a_remote_model_is_checked_at_its_own_address(self):
+        """The case the old exemption could not see.
+
+        `localhost` stays assigned here and buys nothing, because the model is
+        somewhere else — which is precisely when politeness starts to matter and
+        precisely when a module-path exemption stops noticing.
+        """
+        findings = check_hosts(_config(ollama_host="http://gpu-box.lan:11434"))
+
+        assert "network.hosts.gpu-box.lan" in _paths(findings)
+
+    def test_a_covered_model_host_reports_nothing(self):
+        assert check_hosts(_config()) == []
+
+
+class TestPatienceIsCheckedLikeAPolicy:
+    """A patience is named at a call site, so both halves need saying.
+
+    Undeclared, the call that names it is refused; declared and named by
+    nothing, it is config that looks live and does nothing. The same pair
+    `CALL_SITE_POLICIES` already gets, for the same reason.
+    """
+
+    def test_a_patience_named_in_code_and_not_declared_is_an_error(self):
+        base = _config()
+
+        findings = check_hosts(_config(network=replace(base.network, patience={})))
+
+        assert f"network.patience.{GENERATION_PATIENCE}" in _paths(findings)
+        assert ERROR in [f.level for f in findings]
+
+    def test_a_patience_nothing_names_is_dead_config(self):
+        base = _config()
+        patience = dict(base.network.patience)
+        patience["transcription"] = patience[GENERATION_PATIENCE]
+
+        findings = check_hosts(_config(network=replace(base.network, patience=patience)))
+
+        dead = [f for f in findings if f.path == "network.patience.transcription"]
+        assert [f.level for f in dead] == [WARNING]
+
+    def test_the_registry_names_only_patience_the_code_asks_for(self):
+        """The list is a second artefact, so it is pinned to the constant the
+        call site itself uses rather than to a string spelled twice."""
+        assert GENERATION_PATIENCE in CALL_SITE_PATIENCE
 
 
 def test_a_fully_populated_config_reports_nothing():
@@ -335,6 +430,15 @@ def _network(hosts: dict[str, str], policies: list[str] | None = None) -> Networ
         else sorted(set(hosts.values()) | set(CALL_SITE_POLICIES))
     )
     return NetworkConfig(
+        patience={
+            name: Patience(
+                timeout_seconds=1200.0,
+                max_attempts=2,
+                backoff_base_seconds=5.0,
+                backoff_max_seconds=30.0,
+            )
+            for name in CALL_SITE_PATIENCE
+        },
         policies={
             name: NetworkPolicy(
                 min_interval_seconds=1.0,
@@ -351,8 +455,16 @@ def _network(hosts: dict[str, str], policies: list[str] | None = None) -> Networ
 
 
 def _covered(extra_hosts: tuple[str, ...] = ()) -> dict[str, str]:
-    """Every host that must be assigned, plus any the test adds."""
-    return {host: "everything" for host in [*PROVIDER_HOSTS, "example.test", *extra_hosts]}
+    """Every host that must be assigned, plus any the test adds.
+
+    `localhost` is in it because the model client is a caller like any other —
+    it is where `ollama_host` points by default, and it is read from the config
+    rather than assumed.
+    """
+    return {
+        host: "everything"
+        for host in [*PROVIDER_HOSTS, "example.test", "localhost", *extra_hosts]
+    }
 
 
 class TestHostCoverage:
@@ -519,10 +631,33 @@ class TestTheRegistryCannotDrift:
         """The other way in: a module that hardcodes a URL rather than naming a
         constant. Each one is either a host we call — and so registered — or one
         we demonstrably do not, recorded with its reason."""
-        unaccounted = self._literal_hosts() - set(PROVIDER_HOSTS) - set(NEVER_FETCHED)
+        unaccounted = (
+            self._literal_hosts()
+            - set(PROVIDER_HOSTS)
+            - set(NEVER_FETCHED)
+            - set(CONFIGURED_HOSTS)
+        )
 
         assert unaccounted == set(), f"unregistered host(s) in src/: {sorted(unaccounted)}"
 
     def test_nothing_is_excused_that_is_actually_called(self):
         """The exclusion list is where this check would go quietly wrong."""
         assert set(NEVER_FETCHED).isdisjoint(PROVIDER_HOSTS)
+
+    def test_no_excused_host_appears_among_the_hosts_actually_called(self):
+        """The stronger form, and the one that would have caught `localhost`.
+
+        Disjointness from `PROVIDER_HOSTS` only sees hosts a module hardcodes.
+        `localhost` sat excused as "never fetched" while being fetched from all
+        night, because it arrives from config rather than from a constant. Asking
+        the check itself which hosts it wants covered sees both routes.
+        """
+        base = _config()
+        findings = check_hosts(_config(network=replace(base.network, hosts={})))
+        wanted = {
+            f.path.removeprefix("network.hosts.")
+            for f in findings
+            if f.path.startswith("network.hosts.")
+        }
+
+        assert wanted.isdisjoint(NEVER_FETCHED)

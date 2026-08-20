@@ -44,6 +44,7 @@ from src.ingestion.social.apify import APIFY_HOST
 from src.ingestion.social.dumpor import DUMPOR_HOST
 from src.ingestion.social.picuki import PICUKI_HOST
 from src.processing.image_fetcher import DATA_DERIVED_POLICY
+from src.utils.chat_client import GENERATION_PATIENCE
 from src.utils.gemini_client import GEMINI_HOST
 
 #: The config cannot run as it stands. Today that means exactly one thing: a
@@ -83,15 +84,25 @@ NEVER_FETCHED = {
     # A vocabulary URI. It identifies a schema.org type in markup we parse and is
     # never dereferenced.
     "schema.org": "a vocabulary URI in parsed markup, never fetched",
-    # Ollama, and the bench's default pointing at the same place. Localhost is
-    # the exemption — not "the model client", which would survive a provider swap
-    # and silently exempt a hosted API.
-    "localhost": "localhost: Ollama runs on this machine",
+}
+
+#: Hosts written into `src/` only as the **default** for a configurable address.
+#: They are fetched from, so they are not `NEVER_FETCHED` — but the host actually
+#: called is read from the loaded config, which is where the coverage check finds
+#: it. `localhost` sat excused as never-fetched until 2026-08-20 while being
+#: fetched all night, because it arrives from config rather than from a constant.
+CONFIGURED_HOSTS = {
+    "localhost": "the default OLLAMA_HOST; the real one is read from the config",
 }
 
 #: Policies named at a call site rather than assigned to a host, because their
 #: hosts arrive from fetched data. Imported from the call site that names each.
 CALL_SITE_POLICIES = (DATA_DERIVED_POLICY,)
+
+#: Request shapes named at a call site, which a complete config must declare.
+#: Imported from the module that names each, so the check and the caller cannot
+#: spell it differently.
+CALL_SITE_PATIENCE = (GENERATION_PATIENCE,)
 
 #: Collections whose **empty state is the working one**, with the reason each is
 #: not a switched-off feature. Short by design, on the same terms as
@@ -282,6 +293,42 @@ def check_hosts(config: Any) -> list[Finding]:
         for name in sorted(declared - used)
     )
 
+    findings.extend(_patience_findings(config))
+
+    return findings
+
+
+def _patience_findings(config: Any) -> list[Finding]:
+    """Both halves of a request shape being named in code and declared in config.
+
+    Undeclared, the call naming it is refused at the moment it is made — which
+    for extraction is hours into a nightly run. Declared and named by nothing, it
+    is config that reads as live and changes no request. The same pair
+    `CALL_SITE_POLICIES` gets, because it is the same arrangement: a name in code
+    meeting a name in the file.
+    """
+    declared = set(config.network.patience)
+    named = set(CALL_SITE_PATIENCE)
+
+    findings = [
+        Finding(
+            level=ERROR,
+            path=f"network.patience.{name}",
+            detail="named at a call site and not declared — the request that "
+            "asks for it will be refused",
+        )
+        for name in sorted(named - declared)
+    ]
+
+    findings.extend(
+        Finding(
+            level=WARNING,
+            path=f"network.patience.{name}",
+            detail="declared but nothing names it — dead config",
+        )
+        for name in sorted(declared - named)
+    )
+
     return findings
 
 
@@ -293,6 +340,16 @@ def _hosts_called(config: Any) -> dict[str, str]:
     produced it.
     """
     called = {host: "a provider module" for host in PROVIDER_HOSTS}
+
+    # The model host is neither: no module hardcodes it and no `sources:` entry
+    # names it, so it is read from where it is actually configured. That is what
+    # makes the exemption an *address* — repoint OLLAMA_HOST at a LAN box and
+    # the new host is checked, where a module-path exemption would not have
+    # noticed the model had left the machine.
+    model_host = urlsplit(config.ollama_host).hostname
+    if model_host is not None:
+        called[model_host] = "the model client (OLLAMA_HOST)"
+
     for feed in config.sources.all_feeds():
         host = urlsplit(feed.url).hostname
         if host is None:

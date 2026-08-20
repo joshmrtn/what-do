@@ -9,6 +9,15 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+#: How long a *generation* is worth waiting for, named in `network.patience`.
+#:
+#: Declared here rather than in either client because it describes the ask and
+#: not the answerer: a model producing tokens takes minutes whoever runs it,
+#: where an embedding from the same host takes milliseconds. Any `ChatClient`
+#: names this, so moving extraction to another provider changes which host's
+#: spacing applies and nothing about how long we are willing to wait.
+GENERATION_PATIENCE = "generation"
+
 
 class LLMError(Exception):
     """Base error for any chat/LLM provider failure.
